@@ -78,7 +78,7 @@ final class OwnershipAndClosureTest {
                 define class Counter as
                   pub let int value = 0;
 
-                  pub bump(self &mut Counter)(): void {
+                  pub bump(mut self Counter)(): void {
                     self.value = self.value + 1;
                     return;
                   }
@@ -103,7 +103,7 @@ final class OwnershipAndClosureTest {
                         define class Counter as
                           pub let int value = 0;
 
-                          pub bump(self &mut Counter)(): void {
+                          pub bump(mut self Counter)(): void {
                             self.value = self.value + 1;
                             return;
                           }
@@ -125,14 +125,14 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc change(&mut Bar b): void {
+                fnc change(borrow mut Bar b): void {
                   b.foo = "borrowed";
                   return;
                 }
 
                 pub routine main(): void {
                   let mut Bar b = new Bar();
-                  change(&mut b);
+                  change(rt mut borrow b);
                   stdio.stdout.write(b.foo);
                   return;
                 }
@@ -148,15 +148,15 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc mutate(&mut Bar b): void {
+                        fnc mutate(borrow mut Bar b): void {
                           b.foo = "changed";
                           return;
                         }
 
                         fnc bad(): void {
                           let Bar b = new Bar();
-                          val &Bar read = &b;
-                          mutate(&mut b);
+                          val borrow Bar read = rt borrow b;
+                          mutate(rt mut borrow b);
                           stdio.println(read.foo);
                           return;
                         }
@@ -194,12 +194,12 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc bad(): &Bar {
+                        fnc bad(): borrow Bar {
                           let Bar b = new Bar();
-                          return &b;
+                          return rt borrow b;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("outlive its owner"));
+        assertTrue(error.getMessage().contains("outlive"), error::getMessage);
     }
 
     @Test
@@ -209,7 +209,7 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc identity(&Bar b): &Bar {
+                fnc identity(borrow Bar b): borrow Bar {
                   return b;
                 }
                 """)));
@@ -225,8 +225,8 @@ final class OwnershipAndClosureTest {
 
                 fnc ok(): void {
                   let Bar b = new Bar();
-                  val &Bar first = &b;
-                  val &Bar second = &b;
+                  val borrow Bar first = rt borrow b;
+                  val borrow Bar second = rt borrow b;
                   stdio.println(first.foo);
                   stdio.println(second.foo);
                   return;
@@ -244,8 +244,8 @@ final class OwnershipAndClosureTest {
 
                         fnc bad(): void {
                           let Bar b = new Bar();
-                          val &mut Bar first = &mut b;
-                          val &mut Bar second = &mut b;
+                          val borrow mut Bar first = rt mut borrow b;
+                          val borrow mut Bar second = rt mut borrow b;
                           stdio.println(first.foo);
                           stdio.println(second.foo);
                           return;
@@ -266,7 +266,7 @@ final class OwnershipAndClosureTest {
 
                         fnc bad(): void {
                           let Bar b = new Bar();
-                          val &Bar read = &b;
+                          val borrow Bar read = rt borrow b;
                           consume(b);
                           stdio.println(read.foo);
                           return;
@@ -282,7 +282,7 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc mutate(&mut Bar b): void {
+                fnc mutate(borrow mut Bar b): void {
                   b.foo = "changed";
                   return;
                 }
@@ -290,10 +290,10 @@ final class OwnershipAndClosureTest {
                 fnc ok(): void {
                   let mut Bar b = new Bar();
                   if true; do
-                    val &Bar read = &b;
+                    val borrow Bar read = rt borrow b;
                     stdio.println(read.foo);
                   fi
-                  mutate(&mut b);
+                  mutate(rt mut borrow b);
                   return;
                 }
                 """)));
@@ -443,9 +443,9 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc bad(): &Bar {
+                        fnc bad(): borrow Bar {
                           let Bar b = new Bar();
-                          val &Bar view = rt borrow b;
+                          val borrow Bar view = rt borrow b;
                           return view;
                         }
                         """)));
@@ -461,8 +461,8 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc bad(Bar b): &Bar {
-                          return &b;
+                        fnc bad(Bar b): borrow Bar {
+                          return rt borrow b;
                         }
                         """)));
         assertTrue(error.getMessage().contains("returned borrows")
@@ -496,7 +496,7 @@ final class OwnershipAndClosureTest {
                         end
 
                         define class Holder as
-                          pub val &Bar value;
+                          pub val borrow Bar value;
                         end
                         """)));
         assertTrue(error.getMessage().contains("cannot store a borrowed reference"), error::getMessage);
@@ -516,7 +516,7 @@ final class OwnershipAndClosureTest {
 
                         async fnc bad(): int {
                           let Bar b = new Bar();
-                          val &Bar view = rt borrow b;
+                          val borrow Bar view = rt borrow b;
                           val result = await answer();
                           stdio.println(view.foo);
                           return result;
@@ -533,7 +533,7 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc mutate(&mut Bar b): void {
+                        fnc mutate(borrow mut Bar b): void {
                           b.foo = "changed";
                           return;
                         }
@@ -541,12 +541,12 @@ final class OwnershipAndClosureTest {
                         fnc bad(): void {
                           let Bar b = new Bar();
                           if true; do
-                            val &Bar first = rt borrow b;
-                            val &Bar second = first;
+                            val borrow Bar first = rt borrow b;
+                            val borrow Bar second = first;
                             stdio.println(second.foo);
                           fi
-                          val &Bar third = rt borrow b;
-                          mutate(&mut b);
+                          val borrow Bar third = rt borrow b;
+                          mutate(rt mut borrow b);
                           stdio.println(third.foo);
                           return;
                         }
@@ -595,13 +595,14 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
-    void ordinaryRecordFieldProjectionIsAReadNotAnImplicitPartialMove() {
+    void ordinaryStructFieldProjectionIsAReadNotAnImplicitPartialMove() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc seed(): string { return "a"; }
 
                 fnc ok(): void {
-                  val outer = struct{inner: {value: string}}{inner: struct{value: string}{value: seed()}};
-                  val alias = outer.inner;
+                  const Inner initial = infer<Inner> struct{value: seed()};
+                  val outer = infer struct{inner: initial};
+                  val Inner alias = outer.inner;
                   alias.value = "alias";
                   outer.inner.value = "owner";
                   return;

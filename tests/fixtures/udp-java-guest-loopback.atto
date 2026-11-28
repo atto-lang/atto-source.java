@@ -1,0 +1,19 @@
+// expect-exit: 42
+// Java/GraalVM-only v1 UDP end-to-end guest. This must be compiled and run
+// by the actual Atto compiler/Truffle runtime, not a translated JS source model.
+// Run with explicit NETWORK capability and a scoped numeric loopback permit.
+pub async routine main(): int {
+  val socket = await network.bind_udp("127.0.0.1", 0);
+  val port = socket.local_port();
+  val sent = await socket.send_to(port, [42, 0, 255]);
+  val packet = await socket.recv_from(16);
+  val bytes = packet.bytes();
+  val from_port = packet.source_port();
+  await socket.close();
+  if sent != 3 then return 1; fi
+  if from_port != port then return 2; fi
+  if bytes[0] != 42 then return 3; fi
+  if bytes[1] != 0 then return 4; fi
+  if bytes[2] != 255 then return 5; fi
+  return 42;
+}

@@ -1,0 +1,38 @@
+name: Oreslang HPC finance guest arithmetic (real Graal guest)
+
+on:
+  push:
+    branches: ['test/hpc-finance-ores-guest-arithmetic-20261031']
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/HpcFinanceArithmeticGuestTest.java'
+      - '.github/workflows/hpc-finance-real-guest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oreslang-hpc-guest:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact compiler source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up GraalVM 25 Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute Oreslang finance arithmetic inside Graal guest
+        run: mvn -B -ntp -Dtest=HpcFinanceArithmeticGuestTest test
+      - name: Emit compiler-source identity (not finance PR guest evidence)
+        if: success()
+        run: |
+          printf 'ORES_GUEST_SOURCE_SHA=%s\n' "$GITHUB_SHA"
+          git rev-parse 'HEAD^{tree}'
+          echo 'ORES_GUEST_SCOPE=INDEPENDENT_COMPILER_REPRO_ONLY'

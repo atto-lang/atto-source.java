@@ -1,0 +1,55 @@
+// Exact signed-i64 core math guest vectors, snapshot source in formal/typed-scalar.
+import module core from "std/core";
+
+pub routine main(): void {
+  stdio.stdout.write("CORE-MATH-CASE|min-int64-lowest|");
+  stdio.stdout.println(core.min_int(-9223372036854775808, 9223372036854775807));
+  stdio.stdout.write("CORE-MATH-CASE|min-int64-swapped|");
+  stdio.stdout.println(core.min_int(9223372036854775807, -9223372036854775808));
+  stdio.stdout.write("CORE-MATH-CASE|min-equality|");
+  stdio.stdout.println(core.min_int(7, 7));
+  stdio.stdout.write("CORE-MATH-CASE|min-large-precise|");
+  stdio.stdout.println(core.min_int(9007199254740993, 9007199254740992));
+  stdio.stdout.write("CORE-MATH-CASE|min-negative|");
+  stdio.stdout.println(core.min_int(-7, -9));
+  stdio.stdout.write("CORE-MATH-CASE|min-near-upper|");
+  stdio.stdout.println(core.min_int(9223372036854775807, 9223372036854775806));
+  stdio.stdout.write("CORE-MATH-CASE|max-int64-highest|");
+  stdio.stdout.println(core.max_int(-9223372036854775808, 9223372036854775807));
+  stdio.stdout.write("CORE-MATH-CASE|max-int64-swapped|");
+  stdio.stdout.println(core.max_int(9223372036854775807, -9223372036854775808));
+  stdio.stdout.write("CORE-MATH-CASE|max-equality|");
+  stdio.stdout.println(core.max_int(-7, -7));
+  stdio.stdout.write("CORE-MATH-CASE|max-large-precise|");
+  stdio.stdout.println(core.max_int(9007199254740993, 9007199254740992));
+  stdio.stdout.write("CORE-MATH-CASE|max-negative|");
+  stdio.stdout.println(core.max_int(-7, -9));
+  stdio.stdout.write("CORE-MATH-CASE|max-zero|");
+  stdio.stdout.println(core.max_int(0, -1));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-below|");
+  stdio.stdout.println(core.clamp_int(-9223372036854775808, -12, 13));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-above|");
+  stdio.stdout.println(core.clamp_int(9223372036854775807, -12, 13));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-inside|");
+  stdio.stdout.println(core.clamp_int(0, -12, 13));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-low-bound|");
+  stdio.stdout.println(core.clamp_int(-12, -12, 13));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-high-bound|");
+  stdio.stdout.println(core.clamp_int(13, -12, 13));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-equal|");
+  stdio.stdout.println(core.clamp_int(11, 11, 11));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-inverted-returns-lower|");
+  stdio.stdout.println(core.clamp_int(0, 9223372036854775807, -9223372036854775808));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-inverted-extreme|");
+  stdio.stdout.println(core.clamp_int(-9223372036854775808, 9223372036854775807, -9223372036854775808));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-all-extreme|");
+  stdio.stdout.println(core.clamp_int(9223372036854775807, -9223372036854775808, 9223372036854775807));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-large-inside|");
+  stdio.stdout.println(core.clamp_int(9007199254740993, 9007199254740992, 9007199254740994));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-all-zero|");
+  stdio.stdout.println(core.clamp_int(0, 0, 0));
+  stdio.stdout.write("CORE-MATH-CASE|clamp-inverted-near|");
+  stdio.stdout.println(core.clamp_int(100, 10, 9));
+  stdio.stdout.println("CORE-MATH-DONE");
+  return;
+}

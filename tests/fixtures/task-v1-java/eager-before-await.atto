@@ -1,0 +1,11 @@
+pub async fnc main(): void {
+  val Channel<int> ready = Channel.new<int>(1);
+  let Future<void> worker = task {
+    writech ready, 42;
+    return;
+  };
+  val int value = readch ready; // must finish before caller awaits
+  stdio.stdout.write(value);
+  await worker;
+  return;
+}

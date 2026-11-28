@@ -1,0 +1,64 @@
+name: Native Oreslang tensor span guest and bounds oracle
+on:
+  pull_request:
+    paths:
+      - 'stdlib/tensor.ores'
+      - 'examples/native-compute-tensor-span.ores'
+      - 'examples/native-tensor-owned-array.ores'
+      - 'src/test/java/dev/oreslang/TensorOwnedArrayAdmissionTest.java'
+      - 'formal/tensor/**'
+      - '.github/workflows/native-tensor-span.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  oracle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Bound vector oracle (host-only, not language parity)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          node --test formal/tensor/span-reference.test.mjs
+  guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Run real Oreslang compiled tensor span guest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          git hash-object stdlib/tensor.ores
+          mvn -B -ntp -DskipTests compile
+          set -o pipefail
+          mvn -B -ntp exec:java -Dexec.args="examples/native-compute-tensor-span.ores" | tee "${RUNNER_TEMP}/tensor-span-guest.out"
+          grep -Fx 'COMPUTE-TENSOR-SPAN-OK' "${RUNNER_TEMP}/tensor-span-guest.out"
+      - name: Compile and execute real memory-backed Oreslang tensor guest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          mvn -B -ntp exec:java -Dexec.args="examples/native-tensor-owned-array.ores" | tee "${RUNNER_TEMP}/tensor-owned-guest.out"
+          grep -Fx 'TENSOR-OWNED-ARRAY-GUEST-OK' "${RUNNER_TEMP}/tensor-owned-guest.out"
+      - name: Reject stale owner and unsafe array use at type-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=TensorOwnedArrayAdmissionTest test

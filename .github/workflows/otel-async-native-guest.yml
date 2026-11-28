@@ -1,0 +1,122 @@
+name: Native Oreslang asynchronous OTel guest JVM and Native Image
+on:
+  push:
+    branches: [integration/otel-async-stdio-main-20261031]
+    paths:
+      - 'verification/otel/async/**'
+      - '.github/workflows/otel-async-native-guest.yml'
+  pull_request:
+    paths:
+      - 'verification/otel/async/**'
+      - '.github/workflows/otel-async-native-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target/otel/async/rust-build
+jobs:
+  source-safety:
+    name: Bash source-only negative gate (NOT GUEST PROOF)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Exact source and real Linux guardrails
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          bash -n verification/otel/async/execute-async-otel-guest.sh
+          bash -n verification/otel/async/guardrails.sh
+          bash -n verification/otel/async/test-guardrails.sh
+          bash verification/otel/async/test-guardrails.sh
+          echo 'SOURCE_ONLY: NO NATIVE ORESLANG GUEST HAS RUN'
+
+  jvm-guest:
+    name: Real Java/GraalVM native asynchronous OTel guest
+    needs: source-safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: GraalVM 25.3 JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Rust 1.95 for original source-owned semantic checker
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Run Rust semantic negative tests
+        run: cargo +1.95.0 test --locked --manifest-path verification/otel/async/pinned/tools/telemetry-check/Cargo.toml
+      - name: Run real Java async stdio and actor retirement JUnit tests
+        run: mvn -B -ntp '-Dtest=AsyncStdioLogsTest,StdioLogAndSpreadTest,ActorEndCleanupTest' test
+      - name: Build source compiler and runtime classpath
+        run: mvn -B -ntp -DskipTests package dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
+      - name: Execute both original Oreslang guests on JVM and validate output
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash verification/otel/async/execute-async-otel-guest.sh jvm
+      - name: Upload only synthetic guest stdout and noncertifying receipts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: async-otel-real-jvm-candidate
+          path: |
+            target/otel/async/jvm/smoke/guest.stdout.jsonl
+            target/otel/async/jvm/smoke/receipt.txt
+            target/otel/async/jvm/span-finish-admission-retry/guest.stdout.jsonl
+            target/otel/async/jvm/span-finish-admission-retry/receipt.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  native-image-guest:
+    name: Real GraalVM Native Image ELF host and two Oreslang guests
+    needs: source-safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: GraalVM 25.3 JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Rust 1.95 for original semantic checker
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Execute source-owned Rust checker negative tests
+        run: cargo +1.95.0 test --locked --manifest-path verification/otel/async/pinned/tools/telemetry-check/Cargo.toml
+      - name: Build real GraalVM AOT host from source Maven profile
+        run: mvn -B -ntp -Pnative-aot -DskipTests package
+      - name: Verify native ELF and run both original Oreslang guests
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash verification/otel/async/execute-async-otel-guest.sh aot
+      - name: Upload synthetic outputs and native build-info only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: async-otel-real-native-host-candidate
+          path: |
+            target/otel/async/aot/build-info.json
+            target/otel/async/aot/native-image-version.txt
+            target/otel/async/aot/smoke/guest.stdout.jsonl
+            target/otel/async/aot/smoke/receipt.txt
+            target/otel/async/aot/span-finish-admission-retry/guest.stdout.jsonl
+            target/otel/async/aot/span-finish-admission-retry/receipt.txt
+          if-no-files-found: error
+          retention-days: 7

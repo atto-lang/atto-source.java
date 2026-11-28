@@ -26,7 +26,7 @@ final class SharedNativeDeferSourceParityTest {
                           return;
                         }
                         fnc invalid(borrow Counter c): void {
-                          mutate(rt borrow mut c);
+                          mutate(rt mut borrow c);
                           return;
                         }
                         """)));

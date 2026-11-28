@@ -1,0 +1,45 @@
+// Real Oreslang guest smoke, separate from any host model or verifier.
+// The exact-size predicate never grants device allocation authority.
+import class BufferLayout from '../stdlib/compute';
+import fnc valid_buffer_layout, valid_exact_buffer_layout from '../stdlib/compute';
+
+pub routine main(): void {
+  val BufferLayout valid = new BufferLayout(8, 3, 8, 24);
+  val BufferLayout wrong = new BufferLayout(8, 3, 8, 1);
+  val BufferLayout zero = new BufferLayout(8, 0, 8, 0);
+  val BufferLayout bad_zero = new BufferLayout(8, 0, 8, 1);
+  val BufferLayout overflow = new BufferLayout(9223372036854775807, 2, 8, 1);
+  val BufferLayout max_bytes = new BufferLayout(9223372036854775807, 1, 8, 9223372036854775807);
+  val BufferLayout negative = new BufferLayout(8, -1, 8, 1);
+  val BufferLayout bad_align = new BufferLayout(8, 3, 0, 24);
+
+  if !valid_exact_buffer_layout(rt borrow valid); do
+    rt fail("valid exact size rejected");
+  fi
+  if !valid_buffer_layout(rt borrow wrong); do
+    rt fail("legacy structural predicate changed unexpectedly");
+  fi
+  if valid_exact_buffer_layout(rt borrow wrong); do
+    rt fail("inconsistent physical size accepted");
+  fi
+  if !valid_exact_buffer_layout(rt borrow zero); do
+    rt fail("zero length / zero bytes rejected");
+  fi
+  if valid_exact_buffer_layout(rt borrow bad_zero); do
+    rt fail("zero length / nonzero bytes accepted");
+  fi
+  if valid_exact_buffer_layout(rt borrow overflow); do
+    rt fail("signed i64 multiplication overflow admitted");
+  fi
+  if !valid_exact_buffer_layout(rt borrow max_bytes); do
+    rt fail("exact i64 max boundary rejected");
+  fi
+  if valid_exact_buffer_layout(rt borrow negative); do
+    rt fail("negative length accepted");
+  fi
+  if valid_exact_buffer_layout(rt borrow bad_align); do
+    rt fail("nonpositive alignment accepted");
+  fi
+  stdio.stdout.println("COMPUTE-EXACT-LAYOUT-OK");
+  return;
+}

@@ -1,0 +1,137 @@
+name: Source-org isolated runner capability canary (no checkout)
+# MANUAL ONLY. Do not schedule self-hosted runners from PR-controlled
+# workflow definitions. Requires independently reviewed workflow on a
+# protected default branch and deliberate administrator dispatch.
+# Use a dedicated v2 runner label: historical queued PR-triggered jobs require
+# the retired oreslang-isolated-ephemeral label and cannot match this worker.
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  source-free-runner-canary:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on:
+      group: org/oreslang-isolated-canary-2172-v2
+      labels: oreslang-isolated-canary-2172-v2
+    timeout-minutes: 5
+    steps:
+      - name: Verify isolated source-free runner state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$RUNNER_OS" = "Linux"
+          test "$RUNNER_ARCH" = "X64"
+          test "$RUNNER_ENVIRONMENT" = "self-hosted"
+          case "$RUNNER_NAME" in
+            oreslang-isolated-canary-2172-v2-*) ;;
+            *)
+              echo "::error::unexpected runner identity: $RUNNER_NAME"
+              exit 1
+              ;;
+          esac
+          # Inspect actual runner-inherited environment (do not override it).
+          # Reject ALL inherited GIT_* variables. Git can use transient
+          # GIT_CONFIG_* injection, GIT_SSH_COMMAND, GIT_SSH, GIT_PROXY_COMMAND,
+          # GIT_SSL_NO_VERIFY, and other process-level overrides outside the
+          # global/system config files. Even empty values fail closed.
+          for git_var in "${!GIT_@}"; do
+            echo "::error::unexpected inherited Git environment variable: $git_var"
+            exit 1
+          done
+          for secret_var in GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GIT_ASKPASS \
+              SSH_ASKPASS SSH_AUTH_SOCK AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
+              AZURE_CLIENT_SECRET GOOGLE_APPLICATION_CREDENTIALS \
+              ORES_SOURCE_READ_TOKEN ORES_DEST_READ_TOKEN; do
+            if test -n "${!secret_var:-}"; then
+              echo "::error::unexpected credential environment variable: $secret_var"
+              exit 1
+            fi
+          done
+
+          # A persistent self-hosted workspace must not carry prior repository
+          # material into this no-checkout canary. Fail closed rather than
+          # attempting cleanup that could hide contamination.
+          test -n "${GITHUB_WORKSPACE:-}"
+          test -d "$GITHUB_WORKSPACE"
+          test -r "$GITHUB_WORKSPACE"
+          # Reject a workspace symlink even when it resolves to an empty
+          # directory. A clean-looking redirected workspace is not isolation.
+          test ! -L "$GITHUB_WORKSPACE"
+          # A failed find must fail the step, not be mistaken for an empty
+          # workspace due to a pipeline's exit status.
+          workspace_entry="$(find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
+          if test -n "$workspace_entry"; then
+            echo "::error::source-free runner workspace is not empty"
+            exit 1
+          fi
+          for credential_file in "$HOME/.git-credentials" "$HOME/.netrc" \
+              "$HOME/.config/git/credentials" \
+              "${XDG_CONFIG_HOME:-$HOME/.config}/git/credentials"; do
+            # -e alone ignores dangling symlinks; reject both existing
+            # credentials and symlink entries before admitting this runner.
+            if test -e "$credential_file" || test -L "$credential_file"; then
+              echo "::error::persistent credential file present: $credential_file"
+              exit 1
+            fi
+          done
+          command -v git
+          # This source-free disposable worker must start with NO global or
+          # system Git settings. An auth-key denylist misses core.askPass,
+          # core.sshCommand, http.proxy, http.cookieFile, and url.*.insteadOf.
+          # Reject even benign inherited config rather than guess what is safe.
+          # Exit 1 means no keys; exit 0 means configured; errors fail closed.
+          for config_scope in --global --system; do
+            git_config_status=0
+            git config "$config_scope" --get-regexp '.' >/dev/null 2>&1 || git_config_status=$?
+            if test "$git_config_status" -ne 1; then
+              echo "::error::unexpected or unreadable Git config scope: $config_scope"
+              exit 1
+            fi
+          done
+          echo "ASYNC_INTEROP_SOURCE_FREE_WORKSPACE_CLEAN=true"
+
+      - name: Verify source-free tooling prerequisites only
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The workflow intentionally has no checkout and no access to
+          # private-source files; source validation uses a separate job.
+          # Inspect actual runner-inherited environment (do not override it).
+          # Reject ALL inherited GIT_* variables. Git can use transient
+          # GIT_CONFIG_* injection, GIT_SSH_COMMAND, GIT_SSH, GIT_PROXY_COMMAND,
+          # GIT_SSL_NO_VERIFY, and other process-level overrides outside the
+          # global/system config files. Even empty values fail closed.
+          for git_var in "${!GIT_@}"; do
+            echo "::error::unexpected inherited Git environment variable: $git_var"
+            exit 1
+          done
+          for secret_var in GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GIT_ASKPASS \
+              SSH_ASKPASS SSH_AUTH_SOCK AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
+              AZURE_CLIENT_SECRET GOOGLE_APPLICATION_CREDENTIALS \
+              ORES_SOURCE_READ_TOKEN ORES_DEST_READ_TOKEN; do
+            if test -n "${!secret_var:-}"; then
+              echo "::error::unexpected credential environment variable: $secret_var"
+              exit 1
+            fi
+          done
+          command -v java
+          command -v javac
+          command -v native-image
+          command -v mvn
+          command -v python3
+          java -version
+          javac -version
+          javac -version 2>&1 | grep -E '^javac 25([ .]|$)'
+          native-image --version
+          mvn --version
+          python3 --version
+          java -XshowSettings:properties -version 2>&1 |
+            grep -E 'java.specification.version[[:space:]]*=[[:space:]]*25$'
+          native-image --version 2>&1 | grep -qi 'graalvm'
+          echo "ASYNC_INTEROP_SOURCE_FREE_RUNNER_EXECUTED=true"
+          echo "ASYNC_INTEROP_PRIVATE_SOURCE_CHECKOUT=false"
+          echo "ASYNC_INTEROP_JVM_TESTS_EXECUTED=false"
+          echo "ASYNC_INTEROP_ISOLATION_REQUIRES_ADMIN_ATTESTATION=true"

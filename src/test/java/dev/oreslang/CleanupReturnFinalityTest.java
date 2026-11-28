@@ -187,7 +187,7 @@ final class CleanupReturnFinalityTest {
                 }
                 pub fnc main(): int {
                   let mut Box audit = new Box();
-                  val int returned = make(rt borrow mut audit);
+                  val int returned = make(rt mut borrow audit);
                   return returned + audit.value;
                 }
                 """;
@@ -215,7 +215,7 @@ final class CleanupReturnFinalityTest {
                 pub fnc main(): int {
                   let mut Array<int> output = new Array<int>();
                   try {
-                    perform(rt borrow mut output);
+                    perform(rt mut borrow output);
                   } catch (err) {
                   } finally {
                   }
@@ -481,7 +481,7 @@ final class CleanupReturnFinalityTest {
                 }
                 fnc make(): Box {
                   val Box result = new Box();
-                  defer bump(rt borrow mut result);
+                  defer bump(rt mut borrow result);
                   return result;
                 }
                 pub fnc main(): int {

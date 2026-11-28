@@ -1,5 +1,7 @@
 # Oreslang overload selection: arity first, nominal enums second
 
+> **2026-10-17 variant amendment:** [ENUM_VARIANT_OVERLOAD_EXTENSION.md](ENUM_VARIANT_OVERLOAD_EXTENSION.md) specifies a future, closed static-subset extension for `Foo.A` type-position overloads. The older case-exclusion rules below describe the initial enum-*type* phase only and are superseded for the proposed variant phase. **Neither phase is generally executable on current Java/LLVM main.** Do not relax production source admission from this documentation alone.
+
 **Status: normative target design, NOT enabled in current Java or LLVM compilers.**
 Decision: 2026-10-13. Applies to module `fnc`, `routine`, instance methods, and
 `static fnc` (subject to their existing namespace and actor/effect rules).

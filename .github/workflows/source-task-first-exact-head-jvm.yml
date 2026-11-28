@@ -1,0 +1,57 @@
+name: Source Task first() snapshot exact-head JVM
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/SourceTaskHandles.java'
+      - 'src/test/java/dev/oreslang/runtime/SourceTaskFirstSnapshotTest.java'
+      - '.github/workflows/source-task-first-exact-head-jvm.yml'
+  push:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/SourceTaskHandles.java'
+      - 'src/test/java/dev/oreslang/runtime/SourceTaskFirstSnapshotTest.java'
+      - '.github/workflows/source-task-first-exact-head-jvm.yml'
+permissions:
+  contents: read
+jobs:
+  first-owned-cancellation-snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source commit and a clean source checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute all four source Task first() negative/positive regressions
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=SourceTaskFirstSnapshotTest test
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          report = Path('target/surefire-reports/TEST-dev.oreslang.runtime.SourceTaskFirstSnapshotTest.xml')
+          if not report.is_file():
+              raise SystemExit('NOT_EXECUTED: JUnit test report not produced')
+          root = ET.parse(report).getroot()
+          stats = {k: int(root.attrib.get(k, '-1')) for k in ('tests', 'failures', 'errors', 'skipped')}
+          if stats != {'tests': 4, 'failures': 0, 'errors': 0, 'skipped': 0}:
+              raise SystemExit(f'NOT_CERTIFIED: incomplete or failed JUnit regression suite: {stats}')
+          print('SOURCE_TASK_FIRST_EXACT_HEAD_JUNIT_OK:', stats)
+          PY

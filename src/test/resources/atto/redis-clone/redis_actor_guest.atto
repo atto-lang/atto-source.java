@@ -1,0 +1,81 @@
+// Executable Atto actor KV smoke using the currently supported actor
+// field model. NOT sealed handle_state, WAL, disk storage or a TCP server.
+// A production version must replace direct fields with sealed state loans.
+define actor KvShardSmoke as
+  let Map<string,int> values;
+
+  on_start(): void {
+    self.values = ~map<string,int>();
+    return;
+  }
+
+  receive(ActorMail<string> mail): void {
+    if mail.value == "set"; do
+      self.values.set("answer", 41);
+      self.send("set");
+      return;
+    fi
+    if mail.value == "get"; do
+      // Absent GET must never throw or resurrect a deleted key.
+      val found = self.values.get_optional("answer");
+      if found.is_none(); do
+        self.send("nil");
+      else
+        if found.unwrap() == 41; do
+          self.send("get");
+        else
+          self.send("bad");
+        fi
+      fi
+      return;
+    fi
+    if mail.value == "delete"; do
+      val bool removed = self.values.delete("answer");
+      if removed; do
+        self.send("delete");
+      else
+        self.send("bad");
+      fi
+      return;
+    fi
+    if mail.value == "stop"; do
+      self.end();
+      return;
+    fi
+    self.send("unknown");
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn KvShardSmoke();
+  await worker.get_ready();
+
+  worker.send("get");
+  val missing_before = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(missing_before.value);
+  stdio.stdout.write("|");
+
+  worker.send("set");
+  val inserted = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(inserted.value);
+  stdio.stdout.write("|");
+
+  worker.send("get");
+  val found = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(found.value);
+  stdio.stdout.write("|");
+
+  worker.send("delete");
+  val deleted = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(deleted.value);
+  stdio.stdout.write("|");
+
+  worker.send("get");
+  val missing_after = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(missing_after.value);
+
+  worker.send("stop");
+  await worker.get_done();
+  return;
+}

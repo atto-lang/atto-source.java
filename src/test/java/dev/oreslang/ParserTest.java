@@ -14,6 +14,52 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
+
+    @Test
+    void deferDoesNotSilentlyDiscardCallableValuesOrFactories() {
+        for (String expression : List.of("factory()", "callback")) {
+            String source = """
+                    fnc factory(): (() => void) {
+                        return || -> { return; };
+                    }
+                    pub fnc main(): int {
+                        const callback: (() => void) = factory();
+                        defer %s;
+                        return 42;
+                    }
+                    """.formatted(expression);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains("checked registration-time lowering"), failure::toString);
+        }
+    }
+
+    @Test
+    void deferStillAcceptsOrdinaryVoidCallAndNullaryLambda() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc cleanup(): void { return; }
+                pub fnc main(): int {
+                    defer cleanup();
+                    defer || -> { cleanup(); };
+                    return 42;
+                }
+                """)));
+    }
+
+    @Test
+    void deferRejectsDiscardedFallibleResult() {
+        String source = """
+                fnc cleanup(): Result<int,string> { return Ok(42); }
+                pub fnc main(): int {
+                    defer cleanup();
+                    return 40;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("defer must handle a fallible Result"), failure::toString);
+    }
+
     @Test
     void inlineTrapCannotHideExpressionBodiedLambdaMissingTerminator() {
         String invalid = """
@@ -464,7 +510,7 @@ final class ParserTest {
         String source = """
                 define module math
                   fnc z(): complex {
-                    return 3 + 4i;
+                    return 3i + 4i;
                   }
                 end
 
@@ -521,9 +567,7 @@ final class ParserTest {
 
         Parser.ParseResult parsed = Parser.parseWithWarnings(source);
         assertDoesNotThrow(() -> TypeChecker.check(parsed.program()));
-        assertEquals(2, parsed.warnings().size());
-        assertTrue(parsed.warnings().stream()
-                .allMatch(warning -> warning.message().contains("use 'then'")));
+        assertTrue(parsed.warnings().isEmpty(), () -> parsed.warnings().toString());
     }
 
     @Test
@@ -604,6 +648,70 @@ final class ParserTest {
     }
 
     @Test
+    void ifIsStatementOnlyAndValueSelectionUsesTernaryOrExplicitReturns() {
+        assertFalse(Ast.Expr.class.isAssignableFrom(Ast.IfStmt.class));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc choose(bool condition): int {
+                  const y = if condition then
+                    1;
+                  else
+                    2;
+                  fi;
+                  return y;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc choose_return(bool condition): int {
+                  return if condition then
+                    1;
+                  else
+                    2;
+                  fi;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc identity(int value): int { return value; }
+                fnc choose_argument(bool condition): int {
+                  return identity(if condition then
+                    1;
+                  else
+                    2;
+                  fi);
+                }
+                """));
+
+        IllegalArgumentException implicitBranchValues = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc choose(bool condition): int {
+                          if condition then
+                            1;
+                          else
+                            2;
+                          fi
+                        }
+                        """)));
+        assertTrue(implicitBranchValues.getMessage().contains("must explicitly return on every path"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc choose(bool condition): int {
+                  if condition then
+                    return 1;
+                  else
+                    return 2;
+                  fi
+                }
+
+                fnc choose_expression(bool condition): int {
+                  return condition ? 1 : 2;
+                }
+                """)));
+    }
+
+    @Test
     void legacyIfDoAndElseifRemainAcceptedForMigration() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define module app as
@@ -621,7 +729,7 @@ final class ParserTest {
     }
 
     @Test
-    void conditionalDoProducesDeprecationWarningsButThenDoesNot() {
+    void canonicalDoAndCompatibilityThenProduceNoDeprecationWarnings() {
         Parser.ParseResult legacy = Parser.parseWithWarnings("""
                 define module app as
                   fnc choose(bool first, bool second): int {
@@ -635,9 +743,7 @@ final class ParserTest {
                   }
                 end
                 """);
-        assertEquals(2, legacy.warnings().size());
-        assertTrue(legacy.warnings().stream()
-                .allMatch(warning -> warning.message().contains("use 'then'")));
+        assertTrue(legacy.warnings().isEmpty(), () -> legacy.warnings().toString());
 
         Parser.ParseResult canonical = Parser.parseWithWarnings("""
                 define module app as
@@ -929,8 +1035,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        return &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        return rt mut borrow self;
                       }
                     }
                     """));
@@ -942,8 +1048,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        val alias = &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        val alias = rt mut borrow self;
                         return alias;
                       }
                     }
@@ -982,7 +1088,7 @@ final class ParserTest {
 
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    fnc inspect(&Account account): int {
+                    fnc inspect(borrow Account account): int {
                       return 1;
                     }
 
@@ -990,7 +1096,7 @@ final class ParserTest {
                       let balance = 100;
 
                       pub fnc inspectSelf(): int {
-                        return inspect(&self);
+                        return inspect(rt borrow self);
                       }
                     }
                     """));
@@ -1221,6 +1327,128 @@ final class ParserTest {
         assertTrue(failure.getMessage().contains("expected 'as' after class header"));
     }
 
+
+    @Test
+    void acceleratorExecutionDomainsRemainFailClosedAfterG2RuntimeIr() {
+        for (String domain : List.of("gpu", "cpu", "quantum")) {
+            String source = """
+                    pub fnc main(): int {
+                        return %s {
+                            return 1;
+                        };
+                    }
+                    """.formatted(domain);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(source),
+                    domain);
+            assertTrue(
+                    failure.getMessage().contains("execution domain '" + domain + "'"),
+                    failure::toString);
+            assertTrue(
+                    failure.getMessage().contains("no implicit CPU fallback"),
+                    failure::toString);
+        }
+    }
+
+    @Test
+    void acceptsCanonicalRtMutBorrowSyntax() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = rt mut borrow value;
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rejectsPointerSigilsAndPointerIntrinsicsAtParseTime() {
+        List<String> invalid = List.of(
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &mut value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val invalid = *value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(int* value): void {
+                  return;
+                }
+                """,
+                """
+                pub fnc leak(borrow Account account): &Account {
+                  return account;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val pointer = rt ref value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt deref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt unref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(Pointer<int> pointer): void {
+                  return;
+                }
+                """,
+                """
+                pub fnc main(RawPointer<int> pointer): void {
+                  return;
+                }
+                """
+        );
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
+    void legacyMutableBorrowOrderMatchesCanonicalCheckedAst() {
+        String canonical = "pub fnc main(): void { val value = 1; val loan = rt mut borrow value; return; }";
+        String compatibility = canonical.replace("rt mut borrow", "rt borrow mut");
+        assertEquals(Parser.parse(canonical), Parser.parse(compatibility));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(compatibility)));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(canonical.replace("rt mut borrow", "rt mut borrow mut")));
+    }
+
+    @Test
+    void mixedNumericOperandsRemainRejectedWithoutExplicitConversion() {
+        String mixed = "pub fnc z(): complex { return 3 + 4i; }";
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(mixed)));
+        assertTrue(error.getMessage().contains("identical numeric operand types"), error::getMessage);
+    }
+
     private static List<List<String>> permutations(String... tokens) {
         List<List<String>> out = new ArrayList<>();
         permute(new ArrayList<>(List.of(tokens)), new ArrayList<>(), out);
@@ -1273,10 +1501,33 @@ final class ParserTest {
 
         assertEquals(4, statement.branches().size());
         assertFalse(statement.elseBody().isEmpty());
-        assertEquals(2, parsed.warnings().size());
-        assertTrue(parsed.warnings().stream()
-                .allMatch(warning -> warning.message().contains("use 'then'")));
+        assertTrue(parsed.warnings().isEmpty(), () -> parsed.warnings().toString());
     }
 
+
+
+    @Test
+    void canonicalRemainderSourceRejectsLegacyPercentWithoutTouchingComments() {
+        for (String expression : List.of(
+                "7 % 3", "-7 % -3", "(8 % 3) * 2",
+                "-9223372036854775808 % -1",
+                "Integer.bitXor(7 % 3, 5)")) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("pub fnc main(): int { return " + expression + "; }"));
+            assertTrue(rejected.getMessage().contains("noncanonical '%' source operator"),
+                    rejected::toString);
+        }
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): int {
+                  return 7 * 6;
+                }
+                """));
+        // Lexical comments may contain percent signs without creating an
+        // arithmetic operator or modifying the parsed executable AST.
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub fnc main(): int { return 42; } // removed % operator"));
+    }
 
 }

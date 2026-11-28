@@ -1,0 +1,7 @@
+pub fnc main(): int {
+  val answer = sync task<int> {
+    val max_value = 9223372036854775807;
+    return max_value + 1;
+  };
+  return answer;
+}
