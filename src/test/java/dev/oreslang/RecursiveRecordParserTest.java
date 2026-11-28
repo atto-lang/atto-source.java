@@ -21,25 +21,27 @@ final class RecursiveRecordParserTest {
         assertEquals(parse("(x = (1, 2), y = (3, 4))"), parse("(\"x\" = (1, 2), \"y\" = (3, 4))"));
     }
     @Test void callArgumentsAreNotAssignmentsOrCoalescedRecords() {
-        assertEquals(parse("foo((x = 42))"), parse("foo(\"x\" = 42)"));
+        assertEquals(parse("foo((x = 42))"), parse("foo({x: 42})"));
         assertEquals(parse("foo(x: 42)"), parse("foo(x = 42)"));
-        assertNotEquals(parse("foo(x = 42)"), parse("foo(\"x\" = 42)"));
-        assertEquals(parse("foo((x = 1), (y = 2))"), parse("foo(\"x\" = 1, \"y\" = 2)"));
-        assertNotEquals(parse("foo((x = 1, y = 2))"), parse("foo(\"x\" = 1, \"y\" = 2)"));
-        assertEquals(parse("foo((outer = (inner = 42)))"), parse("foo(\"outer\" = (\"inner\" = 42))"));
-        assertEquals(parse("foo((x = (1, 2)), 3)"), parse("foo(\"x\" = (1, 2), 3)"));
-        reject("foo(x = 1, \"y\" = 2)", "positional arguments cannot follow named arguments");
+        assertNotEquals(parse("foo(x = 42)"), parse("foo({x: 42})"));
+        assertEquals(parse("foo((x = 1), (y = 2))"), parse("foo({x: 1}, {y: 2})"));
+        assertNotEquals(parse("foo((x = 1, y = 2))"), parse("foo({x: 1}, {y: 2})"));
+        assertEquals(parse("foo((outer = (inner = 42)))"), parse("foo({outer: {inner: 42}})"));
+        assertEquals(parse("foo((x = (1, 2)), 3)"), parse("foo({x: (1, 2)}, 3)"));
+        reject("foo(x = 1, {y: 2})", "positional arguments cannot follow named arguments");
         reject("foo(x = y = 42)", "E_RECORD_FIELD");
+        reject("foo(x = 1, x: 2)", "duplicate named argument");
+        reject("foo(\"x\" = 42)", "assignment target");
     }
     @Test void quotedLabelsAreValidatedAndComparedAfterDecoding() {
         assertEquals(parse("(outer_value2 = 42)"), parse("(\"outer_value2\" = 42)"));
         assertEquals(parse("(x = 42)"), parse("(\"x\" /* comment */ = 42)"));
         for (String label : new String[] {"", "2x", "x-y", "x y", "x ", "x.y", "x/*c*/", "return", "x\\n"}) {
             reject("(\"" + label + "\" = 42)", "E_RECORD_LABEL");
-            reject("foo(\"" + label + "\" = 42)", "E_RECORD_LABEL");
+            reject("foo((\"" + label + "\" = 42))", "E_RECORD_LABEL");
         }
         reject("('x' = 42)", "E_RECORD_LABEL");
-        reject("foo('x' = 42)", "E_RECORD_LABEL");
+        reject("foo(('x' = 42))", "E_RECORD_LABEL");
         reject("(\"x\" = 1, x = 2)", "E_DUPLICATE");
         reject("(\"x\" = 1, :x)", "E_DUPLICATE");
         reject("(\"x\" = 1, \"\\u0078\" = 2)", "E_DUPLICATE");
