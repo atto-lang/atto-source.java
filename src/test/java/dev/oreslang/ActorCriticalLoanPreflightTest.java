@@ -92,6 +92,18 @@ final class ActorCriticalLoanPreflightTest {
                 Parser.parse(source.replace("with state.read", "with state.upgrade")));
     }
 
+    @Test void callbackCannotForgeLoanParameterType() {
+        var typed = assertThrows(IllegalArgumentException.class,
+                () -> ActorCriticalLoanPreflight.auditClass(parsed(
+                        actor("critical[write]", "s.count = 1;", "int")
+                                .replace("|s| ->", "|s: int| ->"))));
+        assertTrue(typed.getMessage().contains("untyped"), typed::getMessage);
+    }
+
+    @Test void callbackCannotShadowLoanParameter() {
+        rejected("critical[write]", "let s = 1; s.count = 2;", "cannot be shadowed");
+    }
+
     @Test void directSealedStateFieldAccessOutsideLoanIsRejected() {
         for (String member : new String[] {"count", "state"}) {
             String source = """
