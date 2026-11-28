@@ -285,7 +285,7 @@ public final class ActorNativeArena implements AutoCloseable {
                 // Reject unsupported or foreign payloads before reserving a
                 // new native chunk. Otherwise each rejected append can consume
                 // lifetime arena budget without changing the list length.
-                if (!supportsValue(value, null)) {
+                if (!canStorePersistentValue(value, null)) {
                     throw new IllegalArgumentException("native actor List element requires native value lowering");
                 }
                 int inChunk = currentSize % LIST_CHUNK_SLOTS;
@@ -472,6 +472,14 @@ public final class ActorNativeArena implements AutoCloseable {
             if (address < 0 || issued == null || issued.longValue() != address) {
                 throw new SecurityException("actor-native reference was not issued by this arena");
             }
+            Long prior = referenceOffsets.get(nativeValue);
+            if (prior != null && prior.longValue() != address) {
+                throw new SecurityException("actor-native value changed logical address");
+            }
+            NativeValue occupant = referencesByOffset.get(address);
+            if (occupant != null && occupant != nativeValue) {
+                throw new SecurityException("duplicate actor-relative native address");
+            }
             return true;
         }
         return false;
@@ -569,9 +577,26 @@ public final class ActorNativeArena implements AutoCloseable {
         private final long code;
         TaskPhase(long code) { this.code = code; }
 
-        private static TaskPhase fromCode(long code) {
-            for (TaskPhase phase : values()) if (phase.code == code) return phase;
-            throw new IllegalStateException("invalid native actor task-frame phase " + code);
+        static TaskPhase fromCode(long code) {
+            // Enum.values() clones an array on every invocation. Native task
+            // frames decode this on resume, suspension and transition; direct
+            // dispatch avoids allocating managed garbage in the hot path.
+            // Long-valued native metadata must be range-checked before an
+            // int switch: blind narrowing could alias 2^32+1 to RUNNING.
+            if (code < 0L || code > 5L) {
+                throw new IllegalStateException(
+                        "invalid native actor task-frame phase " + code);
+            }
+            return switch ((int) code) {
+                case 0 -> NEW;
+                case 1 -> RUNNING;
+                case 2 -> AWAITING;
+                case 3 -> COOPERATING;
+                case 4 -> DONE;
+                case 5 -> FAILED;
+                default -> throw new IllegalStateException(
+                        "invalid native actor task-frame phase " + code);
+            };
         }
     }
 
@@ -737,9 +762,11 @@ public final class ActorNativeArena implements AutoCloseable {
             NativeCarrierExecutor.ensureNativeLibraryLoaded();
             memory = allocateNative(bytes);
             if (memory == null) throw new OutOfMemoryError("native actor region allocation failed");
-            long baseOffset = reserveActorOffset(bytes, Long.BYTES);
+            long baseOffset = alignedActorOffset(bytes, Long.BYTES);
+            long nextOffset = Math.addExact(baseOffset, bytes);
             Region region = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
             regions.add(region);
+            nextActorOffset = nextOffset;
             committed += bytes;
             allocated += bytes;
             return region;
@@ -980,12 +1007,20 @@ public final class ActorNativeArena implements AutoCloseable {
             @Override public void close() {
                 synchronized (ActorNativeArena.this) {
                     if (released) return;
-                    // Physical actor finalization revokes all native storage;
-                    // outstanding Java facades must not resurrect it.
-                    if (!ActorNativeArena.this.closed) {
-                        checkAccess();
-                        readLeases--;
+                    // A read lease can be released by a foreign completion
+                    // thread after its owning actor is suspended or stopped.
+                    // No guest memory read/write occurs here: releasing the
+                    // already-issued lease is not a fresh owner admission.
+                    // Calling checkAccess() would strand the pin forever
+                    // when the callback ends on a different carrier, blocking
+                    // arena shutdown. Arena.close() rejects live leases, so
+                    // a valid lease can never race a physical native free.
+                    if (ActorNativeArena.this.closed || Region.this.memory == null
+                            || readLeases <= 0) {
+                        throw new IllegalStateException(
+                                "native read lease outlived its region");
                     }
+                    --readLeases;
                     released = true;
                 }
             }
@@ -1015,13 +1050,14 @@ public final class ActorNativeArena implements AutoCloseable {
         checkOwner.run();
     }
 
-    private long reserveActorOffset(int bytes, int alignment) {
+    private long alignedActorOffset(int bytes, int alignment) {
         if (bytes < 0 || alignment <= 0 || (alignment & (alignment - 1)) != 0) {
             throw new IllegalArgumentException("invalid actor-relative allocation");
         }
         long mask = alignment - 1L;
         long base = Math.addExact(nextActorOffset, mask) & ~mask;
-        nextActorOffset = Math.addExact(base, bytes);
+        // Validate the end address without publishing the cursor.
+        Math.addExact(base, bytes);
         return base;
     }
 
@@ -1035,21 +1071,40 @@ public final class ActorNativeArena implements AutoCloseable {
             int capacity = (int) Math.max(size, Math.min(SLAB_BYTES, remaining));
             Runnable release = budget.reserve(capacity);
             ByteBuffer slab = null;
+            // All three metadata lists have the same published prefix. Track
+            // its boundary so even an exceptional append can be undone.
+            int publishedSlabs = slabs.size();
             try {
                 // Grow both metadata arrays before owning native bytes, so an
                 // OOME cannot leave a freed slab published in only one list.
                 slabs.ensureCapacity(slabs.size() + 1);
                 slabBases.ensureCapacity(slabBases.size() + 1);
                 releases.ensureCapacity(releases.size() + 1);
-                long slabBase = reserveActorOffset(capacity, Long.BYTES);
+                long slabBase = alignedActorOffset(capacity, Long.BYTES);
+                long nextOffset = Math.addExact(slabBase, capacity);
+                // Box the slab base before publishing any metadata. A boxing
+                // allocation failure must not leave a freed slab in one list.
+                Long boxedSlabBase = Long.valueOf(slabBase);
                 NativeCarrierExecutor.ensureNativeLibraryLoaded();
                 slab = allocateNative(capacity);
                 if (slab == null) throw new OutOfMemoryError("native actor arena allocation failed");
                 slab.order(ByteOrder.LITTLE_ENDIAN);
                 slabs.add(slab);
-                slabBases.add(slabBase);
+                slabBases.add(boxedSlabBase);
                 releases.add(release);
+                nextActorOffset = nextOffset;
             } catch (RuntimeException | Error failure) {
+                // Undo partially appended metadata BEFORE freeing backing
+                // memory. Otherwise a later lookup can use a stale freed slab.
+                while (releases.size() > publishedSlabs) {
+                    releases.remove(releases.size() - 1);
+                }
+                while (slabBases.size() > publishedSlabs) {
+                    slabBases.remove(slabBases.size() - 1);
+                }
+                while (slabs.size() > publishedSlabs) {
+                    slabs.remove(slabs.size() - 1);
+                }
                 if (slab != null) releaseNative(slab);
                 release.run();
                 throw failure;
@@ -1446,3 +1501,4 @@ public final class ActorNativeArena implements AutoCloseable {
     private static native ByteBuffer allocateNative(int bytes);
     private static native void releaseNative(ByteBuffer memory);
 }
+
