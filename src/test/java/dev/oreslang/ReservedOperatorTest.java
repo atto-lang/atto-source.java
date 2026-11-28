@@ -6,7 +6,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** %, ^ and ^^ are reserved; integer and boolean math use named functions. */
+/** % and single ^ remain reserved; ^^ is boolean XOR, not integer XOR. */
 final class ReservedOperatorTest {
     private static void reserved(String source, String operator, String replacement) {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
@@ -16,10 +16,9 @@ final class ReservedOperatorTest {
     }
 
     @Test
-    void percentCaretAndDoubleCaretAreRejected() {
+    void percentAndSingleCaretAreRejected() {
         reserved("fnc f(int a, int b): int { return a % b; }", "%", "Integer.rem");
         reserved("fnc f(int a, int b): int { return a ^ b; }", "^", "Integer.bitXor");
-        reserved("fnc f(bool a, bool b): bool { return a ^^ b; }", "^^", "Xor(a, b)");
         reserved("fnc f(int a): int { return 1 + a % 2; }", "%", "Integer.mod");
     }
 }

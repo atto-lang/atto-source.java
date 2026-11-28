@@ -168,6 +168,11 @@ public final class ReturnCleanupChecker {
                 statements(block.body(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.TaskScopeStmt taskScope) {
                 statements(taskScope.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.UsingTelemetrySpanStmt span) {
+                expression(span.name(), scope, inDefer, state);
+                Scope scoped = new Scope(scope);
+                scoped.define(span.binding());
+                statements(span.body(), scoped, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     Scope branchScope = new Scope(scope);

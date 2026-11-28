@@ -1075,7 +1075,14 @@ public final class ActorNativeArena implements AutoCloseable {
         }
         long mask = alignment - 1L;
         long base = Math.addExact(nextActorOffset, mask) & ~mask;
-        nextActorOffset = Math.addExact(base, bytes);
+        long end = Math.addExact(base, bytes);
+        // Host Java pointers may be 64-bit, but guest arena offsets are a
+        // *per-actor unsigned 32-bit address space* on every CPU architecture.
+        // Check the aligned exclusive end before updating allocator state;
+        // a failed admission must not advance the monotonic cursor or wrap.
+        if (base >= (1L << 32) || end > (1L << 32))
+            throw new IllegalStateException("actor 32-bit offset address space exhausted");
+        nextActorOffset = end;
         return base;
     }
 

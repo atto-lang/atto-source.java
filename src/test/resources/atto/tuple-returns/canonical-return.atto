@@ -1,0 +1,17 @@
+// Canonical tuple return type and ~tuple(...) value construction.
+// Compiler-backed guest test: do not count fixture creation as execution evidence.
+pub fnc labels(): Tuple[string, string] {
+  return ~tuple("alpha", "beta");
+}
+
+fnc forward(Tuple[string, string] value): Tuple[string, string] {
+  return value;
+}
+
+pub routine main(): void {
+  val result: Tuple[string, string] = forward(labels());
+  stdio.stdout.write(result[0]);
+  stdio.stdout.write("|");
+  stdio.stdout.write(result[1]);
+  return;
+}

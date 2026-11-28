@@ -72,6 +72,11 @@ public final class TaskCaptureNames {
             visitBody(s.body(), locals, names);
         } else if (stmt instanceof Ast.TaskScopeStmt s) {
             visitBody(s.body(), locals, names);
+        } else if (stmt instanceof Ast.UsingTelemetrySpanStmt s) {
+            visitExpr(s.name(), locals, names);
+            Set<String> scoped = new HashSet<>(locals);
+            scoped.add(s.binding());
+            visitBody(s.body(), scoped, names);
         } else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch branch : s.branches()) {
                 visitConditionExpr(branch.condition(), locals, names);
