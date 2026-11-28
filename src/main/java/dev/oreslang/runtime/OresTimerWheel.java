@@ -17,7 +17,8 @@ import java.util.Arrays;
  * <p>Records live in parallel primitive arrays indexed by a 32-bit slot
  * number. A handle is {@code (generation << 32) | (index + 1)}; zero is never
  * a valid handle. A slot's generation advances when the record is freed, so a
- * stale handle can neither cancel nor observe a reused record.</p>
+ * stale handle can neither cancel nor observe a reused record. Exhausted
+ * generation slots retire permanently rather than wrap.</p>
  *
  * <p>The clock is supplied by the caller on every call (monotonic nanoseconds,
  * never negative), so tests can drive a virtual clock deterministically. A
@@ -99,11 +100,12 @@ public final class OresTimerWheel<T> {
     /**
      * Arm a timer for an absolute monotonic deadline. A deadline at or before
      * the last observed time is due at the next poll. Returns 0 when the wheel
-     * is at {@code maxCapacity}.
+     * has no reusable capacity or the reserved {@link #NO_DEADLINE} sentinel
+     * is supplied.
      */
     public long arm(long deadlineNanos, T value) {
         if (deadlineNanos < 0) throw new IllegalArgumentException("negative deadline");
-        if (freeHead == NIL && !grow()) return 0;
+        if (deadlineNanos == NO_DEADLINE || (freeHead == NIL && !grow())) return 0;
         int i = freeHead;
         freeHead = next[i];
         deadline[i] = deadlineNanos;
@@ -180,11 +182,15 @@ public final class OresTimerWheel<T> {
     private void release(int i) {
         attachment[i] = null;
         where[i] = FREE;
-        int g = generation[i] + 1;
-        generation[i] = g == 0 ? 1 : g;
+        size--;
+        if (generation[i] == -1) { // final unsigned 32-bit generation
+            generation[i] = 0;
+            next[i] = NIL;
+            return;
+        }
+        generation[i]++;
         next[i] = freeHead;
         freeHead = i;
-        size--;
     }
 
     private void linkFree(int from, int to) {
