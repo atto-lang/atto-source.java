@@ -47,7 +47,12 @@ final class ActorMailboxExecutionBoundaryTest {
                         try {
                             assertTrue(runtime.currentThreadOwnsActorExecutionLease(),
                                     "initialization must own actor execution carrier");
-                            return context.self()::id;
+                            var owner = context.self().id();
+                            long generation = context.self().generation();
+                            return new ActorRuntime.ActorOwnedGuestState() {
+                                @Override public ActorRuntime.ActorId ownerActorId() { return owner; }
+                                @Override public long ownerGeneration() { return generation; }
+                            };
                         }
                         finally { leave.run(); }
                     }
