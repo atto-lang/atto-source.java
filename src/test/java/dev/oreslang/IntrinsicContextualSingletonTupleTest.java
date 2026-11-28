@@ -6,8 +6,6 @@ import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class IntrinsicContextualSingletonTupleTest {
@@ -33,18 +31,15 @@ final class IntrinsicContextualSingletonTupleTest {
         assertFalse(initializer("const [int] t=(42)+1;") instanceof Ast.TupleExpr);
     }
     @Test void typedGuestConstructionPreservesScalarAndTupleDistinction() {
-        String source = program("const [int] t=(42); const x=(42); val int projected=t[0]; val int scalar=x; do if projected eq 42 then stdio.out.write(\"42\"); else stdio.out.write(\"bad-tuple\"); fi do if scalar eq 42 then stdio.out.write(\"42\"); else stdio.out.write(\"bad-scalar\"); fi");
+        // Strict stdout is intentionally check-only. Use a real integer guest
+        // result instead of weakening the runtime parking admission gate.
+        String source = "pub fnc main(): int { const [int] t=(42); const x=(2); val int projected=t[0]; val int scalar=x; return projected*10+scalar; }";
         Ast.Program checked = assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(source));
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        assertDoesNotThrow(() -> {
-            // Use the existing trusted, exact-source strict compiler-to-Truffle bridge.
-            try (OresLanguage.PrecheckedProgramScope lease = OresLanguage.openPrecheckedProgram("intrinsic-singleton.atto", source, checked);
-                 Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
-                context.eval(Source.newBuilder(OresLanguage.ID,source,"intrinsic-singleton.atto")
-                    .mimeType(OresLanguage.MIME_TYPE).build());
-            }
-        });
-        assertEquals("4242",out.toString(StandardCharsets.UTF_8));
+        try (OresLanguage.PrecheckedProgramScope lease = OresLanguage.openPrecheckedProgram("intrinsic-singleton.atto", source, checked);
+             Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertEquals(422L,context.eval(Source.newBuilder(OresLanguage.ID,source,"intrinsic-singleton.atto")
+                    .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong());
+        }
     }
     @Test void projectionWidthRequiresImmutableLiteralEvidenceNotErasedAnnotation() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(program(
