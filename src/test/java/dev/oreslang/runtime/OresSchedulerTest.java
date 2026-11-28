@@ -508,6 +508,195 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void nonblockingRuntimeCloseWaitsForPhysicalCarrierAndQuiescenceCallback() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch enteredGuest = new CountDownLatch(1);
+        CountDownLatch releaseGuest = new CountDownLatch(1);
+        CountDownLatch enteredRetirement = new CountDownLatch(1);
+        CountDownLatch releaseRetirement = new CountDownLatch(1);
+        CountDownLatch fullyQuiescent = new CountDownLatch(1);
+        AtomicInteger notifications = new AtomicInteger();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "runtime-nonblocking-retirement", 1, carrier);
+        try {
+            scheduler.start(resume -> {
+                enteredGuest.countDown();
+                assertTrue(releaseGuest.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(42);
+            }, () -> {
+                enteredRetirement.countDown();
+                try {
+                    assertTrue(releaseRetirement.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("retirement callback interrupted", interrupted);
+                }
+            });
+            assertTrue(enteredGuest.await(5, TimeUnit.SECONDS));
+            long start = System.nanoTime();
+            scheduler.requestClose(() -> {
+                notifications.incrementAndGet();
+                fullyQuiescent.countDown();
+            });
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) < 1000,
+                    "requestClose must never wait for a running guest carrier");
+            assertTrue(scheduler.isClosed());
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scheduler.start(resume -> OresScheduler.done(1)));
+            assertFalse(fullyQuiescent.await(75, TimeUnit.MILLISECONDS),
+                    "a terminal Future cannot close native memory during a running carrier");
+            releaseGuest.countDown();
+            assertTrue(enteredRetirement.await(5, TimeUnit.SECONDS));
+            assertFalse(fullyQuiescent.await(75, TimeUnit.MILLISECONDS),
+                    "the task's post-carrier callback must also finish before retirement");
+            releaseRetirement.countDown();
+            assertTrue(fullyQuiescent.await(5, TimeUnit.SECONDS));
+            assertEquals(1, notifications.get(), "physical retirement must notify exactly once");
+        } finally {
+            releaseGuest.countDown();
+            releaseRetirement.countDown();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void runtimeCloseRevokesAllAwaitersBeforeAnyBlockingRetirementCallback()
+            throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "runtime-ordered-revocation", 1, carrier);
+        OresFuture<Integer> firstProducer = new OresFuture<>();
+        OresFuture<Integer> secondProducer = new OresFuture<>();
+        AtomicBoolean blockOnce = new AtomicBoolean();
+        CountDownLatch retirementBlocked = new CountDownLatch(1);
+        CountDownLatch releaseRetirement = new CountDownLatch(1);
+        CountDownLatch allRetired = new CountDownLatch(1);
+        Runnable retirement = () -> {
+            if (blockOnce.compareAndSet(false, true)) {
+                retirementBlocked.countDown();
+                try {
+                    if (!releaseRetirement.await(8, TimeUnit.SECONDS)) {
+                        throw new AssertionError("retirement callback release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            }
+        };
+        try {
+            scheduler.start(resume -> OresScheduler.await(firstProducer), retirement);
+            scheduler.start(resume -> OresScheduler.await(secondProducer), retirement);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while ((firstProducer.pendingRuntimeWaiterCount() != 1
+                    || secondProducer.pendingRuntimeWaiterCount() != 1)
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, firstProducer.pendingRuntimeWaiterCount());
+            assertEquals(1, secondProducer.pendingRuntimeWaiterCount());
+            scheduler.requestClose(allRetired::countDown);
+            assertTrue(retirementBlocked.await(5, TimeUnit.SECONDS),
+                    "at least one retirement callback must be executing");
+            assertEquals(0, firstProducer.pendingRuntimeWaiterCount(),
+                    "all await registrations must be revoked before callbacks block");
+            assertEquals(0, secondProducer.pendingRuntimeWaiterCount(),
+                    "an unrelated pending task cannot retain an await registration");
+            assertFalse(allRetired.await(75, TimeUnit.MILLISECONDS));
+            releaseRetirement.countDown();
+            assertTrue(allRetired.await(5, TimeUnit.SECONDS));
+            assertFalse(firstProducer.isDone());
+            assertFalse(secondProducer.isDone());
+        } finally {
+            releaseRetirement.countDown();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void failedPostCarrierRetirementReportsFailureNotSafeFinalization() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch enteredGuest = new CountDownLatch(1);
+        CountDownLatch releaseGuest = new CountDownLatch(1);
+        CountDownLatch receiptDelivered = new CountDownLatch(1);
+        AtomicReference<Throwable> receipt = new AtomicReference<>();
+        AtomicInteger callbacks = new AtomicInteger();
+        IllegalStateException retirementError =
+                new IllegalStateException("deliberately failed actor quota retirement");
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "runtime-retirement-failure", 1, carrier);
+        try {
+            scheduler.start(resume -> {
+                enteredGuest.countDown();
+                assertTrue(releaseGuest.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            }, () -> {
+                callbacks.incrementAndGet();
+                throw retirementError;
+            });
+            assertTrue(enteredGuest.await(5, TimeUnit.SECONDS));
+            scheduler.requestCloseWithOutcome(failure -> {
+                receipt.set(failure);
+                receiptDelivered.countDown();
+            });
+            assertFalse(receiptDelivered.await(75, TimeUnit.MILLISECONDS),
+                    "no retirement result can precede a running guest's carrier exit");
+            releaseGuest.countDown();
+            assertTrue(receiptDelivered.await(5, TimeUnit.SECONDS),
+                    "a failed retirement callback still delivers an observable receipt");
+            assertSame(retirementError, receipt.get(),
+                    "native-heap finalization must not interpret failed cleanup as safe");
+            assertEquals(1, callbacks.get(),
+                    "physical retirement callback executes at most once");
+        } finally {
+            releaseGuest.countDown();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void runtimeCloseDoesNotWaitForBlockedTerminalFutureSubscriber() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch guestEntered = new CountDownLatch(1);
+        CountDownLatch releaseGuest = new CountDownLatch(1);
+        CountDownLatch subscriberEntered = new CountDownLatch(1);
+        CountDownLatch releaseSubscriber = new CountDownLatch(1);
+        CountDownLatch physicallyRetired = new CountDownLatch(1);
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "runtime-blocked-subscriber", 1, carrier);
+        try {
+            OresFuture<Integer> future = scheduler.start(resume -> {
+                guestEntered.countDown();
+                assertTrue(releaseGuest.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(13);
+            }, () -> { });
+            future.whenCompleteRuntime((value, failure) -> {
+                subscriberEntered.countDown();
+                try {
+                    assertTrue(releaseSubscriber.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(guestEntered.await(5, TimeUnit.SECONDS));
+            scheduler.requestClose(physicallyRetired::countDown);
+            assertTrue(subscriberEntered.await(5, TimeUnit.SECONDS));
+            assertFalse(physicallyRetired.await(75, TimeUnit.MILLISECONDS));
+            releaseGuest.countDown();
+            assertTrue(physicallyRetired.await(5, TimeUnit.SECONDS),
+                    "retirement must not depend on a blocked terminal subscriber");
+        } finally {
+            releaseGuest.countDown();
+            releaseSubscriber.countDown();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void closingSchedulerDetachesSuspendedWaiterWithoutCancellingSharedFuture() throws Exception {
         OresFuture<Integer> shared = new OresFuture<>();
         OresScheduler scheduler = new OresScheduler(1);

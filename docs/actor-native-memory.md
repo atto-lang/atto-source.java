@@ -343,3 +343,200 @@ tests.
 `ActorShardColumns.integrate` now lowers each complete AoS/SoA/AoSoA/SoAoS pass to one owner-authenticated `ActorNativeArena.Region` bulk operation. The region validates writability, finite scalar parameters, and the highest byte touched by every block **before** the first store, then keeps one arena critical section for the complete pass. This removes per-element actor-owner checks and monitor entry/exit from the dense loop while preserving the actor's single-flight execution authority and read-lease freeze semantics.
 
 The physical traversal remains layout-specific: AoS uses a record stride, SoA uses contiguous scalar columns, SoAoS uses the inner-group stride, and AoSoA uses contiguous lanes plus an explicit tail block. No raw `ByteBuffer` or native address escapes. This is a structural hot-path improvement, not a SIMD or cache-miss performance claim; optimized Graal/Native Image code generation and hardware counters still require exact-head execution evidence.
+
+## Message-scoped native scratch and idle quota return (stacked draft #1856)
+
+`ActorRuntime.currentMessageScratch()` now exposes a **runtime-host/compiler-only
+substrate** for actor-owned, primitive/POD message temporaries: checked, bounded
+native `ActorMessageScratch.Slice` handles allocated from the same actor's JNI
+`ActorNativeArena`. This does **not** imply automatic placement of ordinary
+guest-language `new` allocations, or an arbitrary source-level heap API.
+Compile-time escape and borrow analysis must first establish that a value dies
+with the logical mailbox message.
+
+- `beginMessage()` starts a monotonic scratch epoch at user-mail admission.
+  `finishMessage()` is called on logical receive completion; the carrier
+  yielding or `await` suspending does not complete that epoch. A source-await
+  continuation keeps the region active until its result settles.
+- Native scratch slices validate the current owning physical actor, active
+  message epoch and byte extent on every access. Stale views fail before deref
+  even if an old native block was freed and a future message reallocated it.
+- `Slice.borrowReadOnly()` returns a bounded native read lease that freezes
+  writes to its backing native block. Outstanding borrows **block
+  `finishMessage()`**. A missing drop causes fail-stop rather than a silent
+  use-after-reuse. Ownerless or foreign-thread release is refused.
+- Each allocation is zeroed using a **single native region critical section**;
+  used scratch spans are also erased on message completion. This is O(bytes
+  written) work, not constant-time scrubbing, and its managed/JNI overhead
+  has not been benchmarked on GraalVM or Native Image.
+- Capacity of normal small chunks is cached across messages. After each
+  completed message the allocator automatically releases newest native chunks
+  until retained scratch capacity is **at most 64 KiB**. A single oversized
+  region is fully released. The privileged `trimIdleTo(retainBytes)` API can
+  release all remaining idle native chunks and immediately refund their
+  quota; active or borrowed regions cannot be trimmed. Persistent class
+  state and dense AoS/SoA/AoSoA/SoAoS shards are unaffected.
+- The 64-KiB default is a bounded idle-cache policy, **not** an observed
+  optimal performance threshold. Tune only with actual hot-path benchmark
+  and actor quota/latency evidence.
+
+Negative and stress JUnit sources on draft #1856 exercise 100,000 mailbox
+turns, capacity reuse, stale view revocation, read-borrow pinning, denied
+cross-owner release, fail-stop on missing borrow drop, burst memory return,
+oversized block eviction, and persistent dense state across all four physical
+layouts. These tests are **not validated passing** until exact-head JDK/JNI
+compilation and GraalVM source test execution occurs. On head
+`1f46e40dd47cc51431a1eae0acc88e48caac3e9a`, the native-storage workflow
+reported failure without any executed steps or runner; that result establishes
+neither source-test pass nor source-test failure.
+
+**Remaining safety boundary:** borrowed scratch references must not escape to
+detached Tasks, FFI callbacks, child scopes, shared regions or mailbox payloads.
+Compiler-generated drop glue on normal/error/cancellation paths and physical
+quiescence of source Task descendants are still outstanding. Parent issue
+[#1566](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1566)
+blocks claims of general async-borrow safety. This implementation adds neither
+an actor-local tracing GC nor a new Graal isolate; the JDK 21 JNI allocation
+provider remains unchanged.
+
+## Nested lexical scratch scopes and physical finalization (draft #1856)
+
+Actor-message `ActorMessageScratch` has an additional **LIFO lexical scope**
+substrate for temporary memory reclaimed *before* the logical handler ends:
+`enterScope()` creates a checked `Scope`, and its `close()` scrubs and
+rewinds the native bump cursor to the entry mark. Outer-scope values remain
+valid. A scope token is revoked at close, so old `Slice` views cannot revive
+when a subsequent sibling scope allocates at the same physical offset. The
+message-root token is **reused across messages** rather than constructing a
+new managed token per turn; stale root slices still fail the issued-epoch
+check. Nested scopes still construct Java facade objects pending typed
+compiler/Native Image lowering; no strict no-JVM-GC claim follows.
+
+Scopes must close in reverse nesting order and may not close with any
+outstanding scratch read borrow (currently a conservative, whole-message
+borrow count). `finishMessage()` rejects any still-open nested scopes.
+Wrong-thread/wrong-actor closure fails without changing the allocation
+cursor or poisoning legitimate owner views. This API is *not* a public
+source-level lifetime escape hatch: the compiler must still prove that
+scratch allocations are not captured by detached Tasks, retained actor
+state, returned by reference, sent, or shared. `await` and carrier
+migration do not themselves close a logical message or lexical scope.
+
+**Parent #1822 reconciliation:** when physical actor finalization is
+attempted, the actor runtime checks the native arena's live region read
+leases *before* detaching the source scheduler or draining resources. If
+any remain, it records a terminal diagnostic and **does not mark the actor
+physically finalized**. `ActorNativeArena.close()` independently refuses
+to release borrowed regions. During other physical-release work,
+`finalizing` fences reentrant lifecycle callbacks and `finalized`
+is only published after native arena release and actor-budget cleanup.
+A cancellation or lost compiler drop that strands a lease can therefore
+still strand actor retirement; do **not** reinterpret this guard as
+complete cleanup. It is fail-closed safety, not a full liveness guarantee
+or a replacement for [source Task physical-quiescence #1566](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1566).
+
+New tests cover nested/sibling scope ABA, preservation of parent and
+persistent state, multi-block rewind, exception-safe closure, out-of-order
+scope denial, outstanding read-borrow pins, wrong physical-owner close,
+and the preflight's lease-detection lifecycle. These cases are *committed
+test source only*, not demonstrated passing on an exact-head Graal JVM
+or Native Image runtime. The source-org Actions runner still reports
+zero-step jobs. The initial compiler-owned deterministic `drop` path
+must be implemented and tested before using this allocator for
+ordinary source-level object graphs.
+
+## Runtime-owned source Task physical-quiescence barrier (stacked draft #1856)
+
+The actor-owned `OresScheduler.runtimeOwned(...)` facade now has a
+**nonblocking** `requestClose(whenFullyQuiescent)` lifecycle API. This
+is separate from user-owned `OresScheduler.close()`, which may shut
+down private executor threads. The actor owns an already-shared carrier
+executor and must never await its termination under `lifecycleLock`.
+
+- `requestClose` immediately seals scheduler admission under
+  `taskAdmissionLock` and captures its live task cohort. It then performs
+  task revocation on a separate host virtual notifier, outside all actor
+  lifecycle locks.
+- The first shutdown pass revokes the state/await registrations of **all**
+  admitted tasks before performing any potentially blocking physical
+  retirement callback or synchronous Future-subscriber notification.
+- The scheduler retains each `TaskRunner` in its live set until the
+  *post-carrier* `onQuiescent` callback and task-quota retirement have
+  actually returned. Its one-shot `whenFullyQuiescent` callback fires
+  only once after the revocation pass is complete and the live set is
+  empty. Terminal `OresFuture` notification alone is not a carrier
+  or memory-lifetime witness.
+- `ActorCell.finalizeStopLocked()` requests shutdown once, returns with
+  the actor still unfinalized, then retries when the scheduler's
+  fully-quiescent callback reenters the actor lifecycle lock. It does
+  **not** detach source scheduler state, close `ActorNativeArena`, refund
+  the memory slice or resolve `actor.done` before this barrier.
+- After the scheduler is quiescent, existing native read-lease checks
+  still independently forbid physical arena release while a real
+  native loan is live. Release errors must not be misreported as
+  successful actor finalization.
+
+New **unexecuted** regression source on this draft covers (a) an
+actively executing source Task held beyond actor stop, (b) a Task
+suspended on an unresolved Future, (c) a blocked post-carrier
+retirement callback, (d) blocking terminal Future subscribers not
+masquerading as physical guest execution, and (e) two suspended
+Tasks whose await registrations must *both* be revoked before any
+retirement callback can block.
+
+This implementation does **not** complete issue [#1566](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1566)
+for arbitrary independently scheduled `TaskScope` descendants,
+untrusted timed quota lineage or borrowed child captures. Physical
+descendant lineage and compiler-emitted drop glue still require their
+own runtime gates and executable cancellation/stop-race tests.
+A stranded native read lease remains a deliberate stop/fail-closed
+condition, not permission to force-free live memory. No hard-real-time,
+no-tracing-GC, Native Image or cross-backend parity claim follows.
+
+## Actor-owned structured TaskScope lifetime bridge (draft #1856)
+
+For trusted actor execution, `ActorRuntime.newActorTaskScope()` now creates
+an explicitly actor-affine host/compiler `TaskScope` with a lifetime pin
+in `ActorCell.activeSourceScopes`. The actor removes the pin only when
+`TaskScope.getDone()` reports complete. This distinct scope barrier
+includes the physical lifetime of TaskHandle descendants (rather than
+only their terminal Future results). An exceptional scope completion
+does **not** release the pin or authorize native actor heap reclamation.
+
+- Scope creation requires an actual executing owning actor; attempts
+  during stop/finalizing and attempts from an external host or different
+  actor to enqueue new Tasks into an existing actor-owned scope are
+  rejected. Admission authorization is checked under the scope's
+  atomic seal/child-reservation lock.
+- `terminateTree()` captures active scopes while holding
+  `lifecycleLock`, then **requests cancellation outside the lock**.
+  The scope is sealed immediately; a once-only virtual host notifier
+  delivers potentially blocking child cancellation callbacks. Repeated
+  actor-stop requests cannot create unlimited cancellation threads.
+- `ActorCell.finalizeStopLocked()` refuses native heap release while
+  any actor-owned structured scope is still live. Once all scopes join,
+  the actor additionally waits for its source scheduler's post-carrier
+  fully-quiescent receipt and enforces native arena read-loan guards.
+  A successful terminal `OresFuture` or cancellation request is not
+  sufficient on its own.
+- **UNTRUSTED actors are deliberately denied this scope bridge.**
+  Their `startActorTask` path already enforces a shared logical wall
+  and fuel quota. The ordinary `TaskScope.startTask` path does not yet
+  attach that quota to all nested children, so enabling it for untrusted
+  code would create an admission bypass. No such promotion is enabled.
+- Scheduler revocation or post-carrier quota-cleanup failures produce
+  an explicit unsuccessful retirement receipt. The actor leaves its
+  native heap pinned instead of treating the failed callback as proof
+  that memory is safe to release. Terminal Future subscriber failures
+  are not mistaken for physical guest execution.
+
+Regression **sources** added on this draft exercise actor stop while a
+structured child is physically executing or awaits an unresolved Future,
+host-side Task injection denial, a blocked child Future subscriber,
+scheduler post-carrier callback failure, and multiple pending child
+await registrations. These must be compiled and executed on the exact
+branch head before merging; source-org Actions have historically failed
+before runner steps executed. The new host/compiler bridge is not
+automatic source-language `TaskScope` lowering, does not approve
+cross-actor borrowed capture, and does not establish complete descendant
+lineage across arbitrary independent schedulers.

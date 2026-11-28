@@ -186,6 +186,11 @@ public final class OresScheduler implements AutoCloseable {
     /** Linearizes new task admission with scheduler shutdown. */
     private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** Under taskAdmissionLock: callback fires after all physical retire callbacks. */
+    private java.util.function.Consumer<Throwable> fullyQuiescentListener;
+    /** A failed revocation or retirement callback must never be reported safe. */
+    private final AtomicReference<Throwable> retirementFailure = new AtomicReference<>();
+    private boolean closeRevocationsComplete;
     private final AtomicLong watchdogOverruns = new AtomicLong();
 
     /**
@@ -450,9 +455,15 @@ public final class OresScheduler implements AutoCloseable {
      * Guest actor/tenant authority is not exposed by this staging API.
      */
     public TaskScope newTaskScope() {
+        return newTaskScope(() -> { });
+    }
+
+    /** Runtime-only actor-affine TaskScope admission check. */
+    TaskScope newTaskScope(Runnable checkAdmission) {
+        Objects.requireNonNull(checkAdmission, "checkAdmission");
         synchronized (taskAdmissionLock) {
             ensureOpen();
-            return new TaskScope(this);
+            return new TaskScope(this, checkAdmission);
         }
     }
 
@@ -617,6 +628,110 @@ public final class OresScheduler implements AutoCloseable {
             throw new RejectedExecutionException(
                     "OresScheduler " + name + " is closed");
         }
+    }
+
+    /**
+     * Nonblocking actor-runtime shutdown for schedulers using a shared executor.
+     * Seals new task admission immediately, revokes all registered tasks on a
+     * separate host notifier, and invokes the one-shot callback only after
+     * every runner's post-carrier onQuiescent callback has returned.
+     *
+     * <p>Never run guest cancellation/subscriber code while holding an actor's
+     * lifecycle lock. This is intentionally distinct from user-owned close(),
+     * whose executor may need a separate physical shutdown barrier.</p>
+     */
+    void requestClose(Runnable whenFullyQuiescent) {
+        Objects.requireNonNull(whenFullyQuiescent, "whenFullyQuiescent");
+        requestCloseWithOutcome(failure -> {
+            if (failure != null) {
+                throw new IllegalStateException(
+                        "source scheduler quiescence failed", failure);
+            }
+            whenFullyQuiescent.run();
+        });
+    }
+
+    /**
+     * A null result proves successful post-carrier retirement callbacks. A
+     * non-null failure means physical cleanup cannot be trusted by actor
+     * lifetime reclamation; callers must not free the native arena.
+     */
+    void requestCloseWithOutcome(java.util.function.Consumer<Throwable> onRetired) {
+        Objects.requireNonNull(onRetired, "onRetired");
+        final Set<TaskRunner<?>> admitted;
+        synchronized (taskAdmissionLock) {
+            if (ownedExecutor != null) {
+                throw new IllegalStateException(
+                        "requestClose requires a runtime-owned shared executor");
+            }
+            if (!closed.compareAndSet(false, true)) {
+                throw new IllegalStateException("runtime scheduler close requested twice");
+            }
+            fullyQuiescentListener = onRetired;
+            admitted = Set.copyOf(tasks);
+        }
+        // Cancellation publishes synchronous user Future subscribers. Do not
+        // run any of them from ActorCell.finalizeStopLocked/lifecycleLock.
+        Thread.ofVirtual().name("ores-source-quiescence-" + schedulerDomain)
+                .start(() -> {
+                    try {
+                        // Revoke all source execution authority before any
+                        // potentially blocking terminal Future notification.
+                        for (TaskRunner<?> runner : admitted) {
+                            try {
+                                runner.revokeFromSchedulerClose();
+                            } catch (RuntimeException | Error failure) {
+                                recordRetirementFailure(failure);
+                                // A faulty single Task must not leave the
+                                // remaining cohort's await edges unrevoked.
+                            }
+                        }
+                    } finally {
+                        synchronized (taskAdmissionLock) {
+                            closeRevocationsComplete = true;
+                        }
+                        signalFullyQuiescentIfReady();
+                    }
+                    // Source task revocation is complete for the whole
+                    // snapshot. Only now may callbacks that can block or
+                    // synchronously reenter host code be invoked.
+                    for (TaskRunner<?> runner : admitted) {
+                        try {
+                            runner.retireRevokedFromSchedulerClose();
+                        } catch (RuntimeException | Error failure) {
+                            recordRetirementFailure(failure);
+                        }
+                    }
+                    for (TaskRunner<?> runner : admitted) {
+                        try {
+                            runner.publishCancelledFromSchedulerClose();
+                        } catch (RuntimeException | Error ignored) {
+                            // Arbitrary terminal Future subscribers can
+                            // throw after the physical-retirement receipt
+                            // has already fired. Such observer failures
+                            // cannot retroactively invalidate a completed
+                            // post-carrier cleanup barrier.
+                            // Continue notifying the remaining cohort.
+                        }
+                    }
+                });
+    }
+
+    /** Preserve a failed physical-retirement receipt for the actor finalizer. */
+    private void recordRetirementFailure(Throwable failure) {
+        retirementFailure.compareAndSet(null, failure);
+    }
+
+    /** Exactly once, outside the scheduler admission lock. */
+    private void signalFullyQuiescentIfReady() {
+        java.util.function.Consumer<Throwable> callback = null;
+        synchronized (taskAdmissionLock) {
+            if (closeRevocationsComplete && tasks.isEmpty()) {
+                callback = fullyQuiescentListener;
+                fullyQuiescentListener = null;
+            }
+        }
+        if (callback != null) callback.accept(retirementFailure.get());
     }
 
     @Override
@@ -1146,13 +1261,28 @@ public final class OresScheduler implements AutoCloseable {
                 // Keep the task observable in the scheduler's live set while a
                 // cancelled/failed guest turn is still physically executing.
                 // A terminal Future is not a carrier-exit witness.
-                tasks.remove(this);
                 cancelWallDeadline();
                 try {
                     onQuiescent.run();
+                } catch (RuntimeException | Error failure) {
+                    recordRetirementFailure(failure);
+                    throw failure;
                 } finally {
-                    deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
+                    try {
+                        deadlineQuiescenceRetired.set(true);
+                        releaseDeadlineSlotIfRetired();
+                    } catch (RuntimeException | Error failure) {
+                        recordRetirementFailure(failure);
+                        throw failure;
+                    } finally {
+                        // A runner remains live until its physical-retirement
+                        // callback and quota refunds have finished. Removing
+                        // it before onQuiescent returns is not a memory barrier.
+                        synchronized (taskAdmissionLock) {
+                            tasks.remove(this);
+                        }
+                        signalFullyQuiescentIfReady();
+                    }
                 }
             }
         }
@@ -1185,9 +1315,23 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void revokeFromSchedulerClose() {
-            // Quiesce internal state even when another cancellation thread has
-            // settled the Future but is blocked notifying its waiters.
-            cancelFromFuture();
+            // First phase: revoke all admitted tasks without invoking
+            // potentially blocking onQuiescent or terminal Future callbacks.
+            // Physical carriers remain accounted until afterCarrierTurn().
+            detachActiveAwaitRegistration();
+            int observed;
+            do {
+                observed = phase.get();
+                if (observed == TERMINAL) break;
+            } while (!phase.compareAndSet(observed, TERMINAL));
+            pendingResume.set(null);
+        }
+
+        private void retireRevokedFromSchedulerClose() {
+            // Second phase: run physical retirement callbacks for tasks
+            // that are already quiescent. Executing tasks are retired by
+            // their real post-carrier callback, never by cancellation.
+            retireWhenQuiescent();
         }
 
         private void publishCancelledFromSchedulerClose() {

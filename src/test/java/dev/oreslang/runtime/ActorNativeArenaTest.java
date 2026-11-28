@@ -543,6 +543,35 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void nativeSpanClearChecksBoundsAndActiveReadBorrowsBeforeScrubbing() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = arena(8192, charged)) {
+            var region = arena.region(32);
+            region.writeLong(0, -1L);
+            region.writeLong(8, -1L);
+            region.writeLong(16, -1L);
+            var read = region.leaseReadOnly(8, 8);
+            assertThrows(IllegalStateException.class, () -> region.clearRange(0, 32),
+                    "scrub must never write through a live immutable borrow");
+            assertEquals(-1L, region.readLong(8), "failed scrub cannot corrupt data");
+            read.close();
+            assertThrows(IndexOutOfBoundsException.class, () -> region.clearRange(-1, 8));
+            assertThrows(IndexOutOfBoundsException.class, () -> region.clearRange(30, 4));
+            assertThrows(IndexOutOfBoundsException.class, () -> region.clearRange(0, -1));
+            region.clearRange(8, 8);
+            assertEquals(-1L, region.readLong(0));
+            assertEquals(0L, region.readLong(8));
+            assertEquals(-1L, region.readLong(16));
+            region.clearRange(0, 32);
+            assertEquals(0L, region.readLong(0));
+            assertEquals(0L, region.readLong(16));
+            region.close();
+            assertThrows(IllegalStateException.class, () -> region.clearRange(0, 8));
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
     void primitiveRegionsHaveExplicitReleaseBoundsAndBudget() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(128, charged)) {
@@ -650,13 +679,17 @@ final class ActorNativeArenaTest {
         region.writeLong(8, 100L);
         assertEquals(100L, region.readLong(8));
         var outstanding = region.leaseReadOnly(8, 8);
-        // A scheduler's erroneous assertion of physical quiescence may not
-        // free memory that still has an issued native borrow.
+        assertTrue(arena.hasOutstandingReadLeases(),
+                "host physical finalization preflight must see the active native lease");
+        // A purported quiescence barrier must not deallocate memory while
+        // an issued native read lease still retains its backing region.
         assertThrows(IllegalStateException.class, arena::close);
         assertFalse(arena.closed());
         assertEquals(100L, outstanding.readLong(0));
-        assertEquals(64, charged.get());
+        assertEquals(64L, charged.get());
         outstanding.close();
+        assertFalse(arena.hasOutstandingReadLeases(),
+                "preflight must clear after the real owner releases the final lease");
         arena.close();
         assertThrows(IllegalStateException.class, () -> outstanding.readLong(0));
         assertThrows(IllegalStateException.class, () -> outstanding.readByte(0));

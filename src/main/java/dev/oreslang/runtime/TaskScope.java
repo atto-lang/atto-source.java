@@ -16,20 +16,33 @@ import java.util.concurrent.RejectedExecutionException;
  */
 public final class TaskScope implements AutoCloseable {
     private final OresScheduler scheduler;
+    /** Admission authority for actor-affine scopes, checked on every spawn. */
+    private final Runnable checkAdmission;
     private final TaskCancellation cancellation = new TaskCancellation();
     private final Object admissionLock = new Object();
     private final OresFuture<Void> done = new OresFuture<>(() -> false, () -> { });
+    /** Stop/cancel retries must not spawn unbounded host notifier threads. */
+    private final java.util.concurrent.atomic.AtomicBoolean cancelNotifierStarted =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private boolean sealed;
     private int active;
 
     TaskScope(OresScheduler scheduler) {
+        this(scheduler, () -> { });
+    }
+
+    TaskScope(OresScheduler scheduler, Runnable checkAdmission) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
+        this.checkAdmission = Objects.requireNonNull(checkAdmission, "checkAdmission");
     }
 
     /** Atomically reserve a child slot or reject a sealed scope. */
     public <T> TaskHandle<T> startTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
         synchronized (admissionLock) {
+            // Check owner/stop authority at the same admission boundary as
+            // sealed and active, not before another thread can stop the actor.
+            checkAdmission.run();
             if (sealed) {
                 throw new RejectedExecutionException("TaskScope is sealed");
             }
@@ -106,6 +119,35 @@ public final class TaskScope implements AutoCloseable {
                 publish = active == 0;
             }
             if (publish) done.completeFromRuntime(null);
+        }
+    }
+
+    /**
+     * Runtime-only actor-stop path. Seal child admission synchronously, then
+     * request child cancellation on a host virtual notifier: cancellation
+     * hooks and Future subscribers are user callbacks and may block.
+     *
+     * <p>The parent actor MUST continue waiting on getDone(); launching the
+     * cancellation notifier is not a physical-retirement receipt.</p>
+     */
+    void requestCancelNonblocking(String reason) {
+        Objects.requireNonNull(reason, "reason");
+        if (reason.isBlank() || reason.length() > 256) {
+            throw new IllegalArgumentException(
+                    "reason must contain 1..256 nonblank characters");
+        }
+        synchronized (admissionLock) {
+            sealed = true;
+        }
+        if (!cancelNotifierStarted.compareAndSet(false, true)) return;
+        try {
+            Thread.ofVirtual().name("ores-actor-scope-cancel")
+                    .start(() -> cancel(reason));
+        } catch (RuntimeException | Error failure) {
+            // No notifier was admitted. A later explicit cancellation attempt
+            // may retry, but the parent must continue pinning native memory.
+            cancelNotifierStarted.set(false);
+            throw failure;
         }
     }
 

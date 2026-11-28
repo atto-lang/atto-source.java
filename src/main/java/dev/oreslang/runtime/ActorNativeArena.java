@@ -811,6 +811,26 @@ public final class ActorNativeArena implements AutoCloseable {
         public void writeByte(int offset, byte value) {
             synchronized (ActorNativeArena.this) { requireWritable().put(offset, value); }
         }
+
+        /**
+         * Erase an entire checked native span under one arena monitor. Scratch
+         * message finalization uses this rather than per-byte monitor calls.
+         * Read borrows must have retired before scrubbing can mutate memory.
+         */
+        void clearRange(int offset, int length) {
+            synchronized (ActorNativeArena.this) {
+                ByteBuffer target = requireWritable();
+                if (offset < 0 || length < 0 || offset > capacity
+                        || length > capacity - offset) {
+                    throw new IndexOutOfBoundsException("native clear outside region");
+                }
+                int end = offset + length;
+                for (int i = offset; i < end; i++) {
+                    target.put(i, (byte) 0);
+                }
+            }
+        }
+
         void assertWritable() {
             synchronized (ActorNativeArena.this) { requireWritable(); }
         }
@@ -922,9 +942,8 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (offset < 0 || length < 0 || offset > capacity || length > capacity - offset) {
                     throw new IndexOutOfBoundsException("read-only lease outside native region");
                 }
-                // Construct the lease before recording admission. Otherwise an
-                // allocation failure leaves a phantom outstanding reader and
-                // permanently prevents deterministic native reclamation.
+                // Construct the lease before publishing a reader: an OOME
+                // must not leave a phantom outstanding native borrow.
                 ReadOnlyLease lease = new ReadOnlyLease(offset, length);
                 readLeases = Math.addExact(readLeases, 1);
                 return lease;
@@ -1435,10 +1454,21 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     /**
+     * Host-only preflight; an actor must not publish physical finalization
+     * before all issued native read leases have retired. No actor guest access
+     * is granted and this cannot revoke a lease.
+     */
+    synchronized boolean hasOutstandingReadLeases() {
+        for (Region region : regions) {
+            if (region.readLeases != 0) return true;
+        }
+        return false;
+    }
+
+    /**
      * Called only after the runtime's actor/async physical quiescence barrier.
-     * Fail closed even if a buggy scheduler claims quiescence while an issued
-     * native read lease still exists. Do not partially retire any region;
-     * preserve the whole arena so its outstanding lease can release safely.
+     * Fail closed if any native read borrow remains: never free backing pages
+     * while a supposedly live immutable region lease could dereference them.
      */
     @Override public synchronized void close() {
         if (closed) return;
