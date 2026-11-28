@@ -8,6 +8,11 @@ on:
       - 'src/main/java/dev/oreslang/types/**'
       - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
       - 'src/test/java/dev/oreslang/CopyPolicyCompilerTest.java'
+      - 'src/test/java/dev/oreslang/GuestClassGraphLeaseTest.java'
+      - 'src/test/java/dev/oreslang/OwnershipAndClosureTest.java'
+      - 'src/test/java/dev/oreslang/ProjectedBorrowOwnershipTest.java'
+      - 'src/test/java/dev/oreslang/PointerlessFncOwnershipTest.java'
+      - 'src/test/java/dev/oreslang/ParserAnnotationRetentionGateTest.java'
       - '.github/workflows/copy-policy-exact-head.yml'
   workflow_dispatch:
 
@@ -47,7 +52,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=CopyPolicyCompilerTest,OwnershipAndClosureTest,ProjectedBorrowOwnershipTest,PointerlessFncOwnershipTest,ParserAnnotationRetentionGateTest test
+          mvn -B -ntp -Dtest=CopyPolicyCompilerTest,OwnershipAndClosureTest,ProjectedBorrowOwnershipTest,PointerlessFncOwnershipTest,ParserAnnotationRetentionGateTest,GuestClassGraphLeaseTest test
       - name: Report Surefire receipts
         if: always()
         shell: bash
