@@ -15137,7 +15137,7 @@ public final class TypeChecker {
             requireRuntimeValue(borrow.target(), where + " borrowed value", visited);
         } else if (actual instanceof SelfType receiver) {
             requireRuntimeValue(receiver.bound(), where + " self bound", visited);
-        } else if (actual instanceof Not excluded) {
+        } else if (actual instanceof Types.Not excluded) {
             requireRuntimeValue(excluded.excluded(), where + " exclusion type", visited);
         }
     }
