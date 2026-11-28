@@ -41,11 +41,11 @@ jobs:
       - name: Compile and run actual actor execution boundary tests
         run: >
           mvn -B -ntp -Dores.runtime.carriers=native
-          -Dtest=ActorDispatchIdentityTest,ActorMailboxExecutionBoundaryTest,ActorOffCarrierTurnExecutorTest,VersionedActorCellTest,ActorContinuationLedgerTest,ActorContinuationLedgerIntegrationTest
+          -Dtest=ActorDispatchIdentityTest,ActorMailboxExecutionBoundaryTest,ActorOffCarrierTurnExecutorTest,VersionedActorCellTest,ActorContinuationLedgerTest,ActorContinuationLedgerIntegrationTest,ActorSupervisorMailChannelBoundaryTest,ActorSupervisorControlV2Test
           -DfailIfNoTests=true test
 
   tla-plus-tlc:
-    name: TLC model check both finite specifications
+    name: TLC model check finite specifications
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -65,12 +65,12 @@ jobs:
             --output /tmp/ores-tla2tools.jar
           echo '936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  /tmp/ores-tla2tools.jar' \
             | sha256sum --check --status
-      - name: Parse and model check actor exclusivity and dispatch identity
+      - name: Parse and model check actor and durable-workflow specifications
         shell: bash
         working-directory: docs/formal
         run: |
           set -euo pipefail
-          for name in ReentrantActorExclusiveCarrier ActorDispatchIdentity; do
+          for name in ReentrantActorExclusiveCarrier ActorDispatchIdentity DurableWorkflowV1; do
             timeout 120s java -cp /tmp/ores-tla2tools.jar tlc2.TLC \
               -workers 1 -config "${name}.cfg" "${name}.tla"
           done

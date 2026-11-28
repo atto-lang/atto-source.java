@@ -1,0 +1,167 @@
+// Native telemetry: actor-local spans, explicit correlation, JSON Lines export.
+define module otel as
+  pub fnc quote(String value): String {
+    let String escaped = value.replace_literal("\\", "\\\\").replace_literal("\"", "\\\"");
+    escaped = escaped.replace_literal("\n", "\\n").replace_literal("\r", "\\r").replace_literal("\t", "\\t");
+    escaped = escaped.replace_literal("\u0000", "\\u0000"); // U+0000
+    escaped = escaped.replace_literal("\u0001", "\\u0001"); // U+0001
+    escaped = escaped.replace_literal("\u0002", "\\u0002"); // U+0002
+    escaped = escaped.replace_literal("\u0003", "\\u0003"); // U+0003
+    escaped = escaped.replace_literal("\u0004", "\\u0004"); // U+0004
+    escaped = escaped.replace_literal("\u0005", "\\u0005"); // U+0005
+    escaped = escaped.replace_literal("\u0006", "\\u0006"); // U+0006
+    escaped = escaped.replace_literal("\u0007", "\\u0007"); // U+0007
+    escaped = escaped.replace_literal("\u0008", "\\u0008"); // U+0008
+    escaped = escaped.replace_literal("\u000b", "\\u000b"); // U+000B
+    escaped = escaped.replace_literal("\u000c", "\\u000c"); // U+000C
+    escaped = escaped.replace_literal("\u000e", "\\u000e"); // U+000E
+    escaped = escaped.replace_literal("\u000f", "\\u000f"); // U+000F
+    escaped = escaped.replace_literal("\u0010", "\\u0010"); // U+0010
+    escaped = escaped.replace_literal("\u0011", "\\u0011"); // U+0011
+    escaped = escaped.replace_literal("\u0012", "\\u0012"); // U+0012
+    escaped = escaped.replace_literal("\u0013", "\\u0013"); // U+0013
+    escaped = escaped.replace_literal("\u0014", "\\u0014"); // U+0014
+    escaped = escaped.replace_literal("\u0015", "\\u0015"); // U+0015
+    escaped = escaped.replace_literal("\u0016", "\\u0016"); // U+0016
+    escaped = escaped.replace_literal("\u0017", "\\u0017"); // U+0017
+    escaped = escaped.replace_literal("\u0018", "\\u0018"); // U+0018
+    escaped = escaped.replace_literal("\u0019", "\\u0019"); // U+0019
+    escaped = escaped.replace_literal("\u001a", "\\u001a"); // U+001A
+    escaped = escaped.replace_literal("\u001b", "\\u001b"); // U+001B
+    escaped = escaped.replace_literal("\u001c", "\\u001c"); // U+001C
+    escaped = escaped.replace_literal("\u001d", "\\u001d"); // U+001D
+    escaped = escaped.replace_literal("\u001e", "\\u001e"); // U+001E
+    escaped = escaped.replace_literal("\u001f", "\\u001f"); // U+001F
+    return "\"" + escaped + "\"";
+  }
+
+  pub fnc integer(int value): String {
+    val digits = arr["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    if value == 0; then return "0"; fi
+    // Negative accumulation also handles the minimum signed 64-bit value.
+    val powers = arr[-1000000000000000000, -100000000000000000, -10000000000000000, -1000000000000000, -100000000000000, -10000000000000, -1000000000000, -100000000000, -10000000000, -1000000000, -100000000, -10000000, -1000000, -100000, -10000, -1000, -100, -10, -1];
+    let int remaining = value > 0 ? -value : value;
+    let String result = "";
+    for (const power of powers) {
+      let int digit = 0;
+      // Select a digit in at most four exact comparisons/subtractions. All
+      // multiples fit int64, including -10^18 * 8, and no float division is
+      // used. Keep encoding policy in Oreslang rather than a host formatter.
+      if remaining <= power; then
+        if remaining <= power * 8; then
+          remaining = remaining - power * 8;
+          digit = digit + 8;
+        fi
+        if remaining <= power * 4; then
+          remaining = remaining - power * 4;
+          digit = digit + 4;
+        fi
+        if remaining <= power * 2; then
+          remaining = remaining - power * 2;
+          digit = digit + 2;
+        fi
+        if remaining <= power; then
+          remaining = remaining - power;
+          digit = digit + 1;
+        fi
+      fi
+      if digit > 0 || result != ""; then result = result + digits.get(digit); fi
+    }
+    return value < 0 ? "-" + result : result;
+  }
+
+  // Severity filtering is an explicit, actor-local policy: there is no global
+  // mutable threshold and no implicit access to environment variables.
+  // Callers must check should_log() BEFORE constructing an expensive log body.
+  pub fnc severity_rank(String level): int {
+    if level == "TRACE"; then return 10; fi
+    if level == "DEBUG"; then return 20; fi
+    if level == "INFO"; then return 30; fi
+    if level == "WARN" || level == "WARNING"; then return 40; fi
+    if level == "ERROR"; then return 50; fi
+    if level == "FATAL"; then return 60; fi
+    return -1;
+  }
+
+  // Unknown severities and thresholds fail closed. ALL/OFF are threshold-only.
+  pub fnc should_log(String level, String minimum): bool {
+    if minimum == "OFF"; then return false; fi
+    val int rank = severity_rank(level);
+    if rank < 0; then return false; fi
+    if minimum == "ALL"; then return true; fi
+    val int threshold = severity_rank(minimum);
+    return threshold >= 0 && rank >= threshold;
+  }
+
+  pub fnc trace_id(): String { return "ores-trace-" + process.unique_id(); }
+  pub fnc now_ns(): int { return process.monotonic_ns(); }
+
+  // Serialize each record in one stdout call. Separate contexts or processes
+  // still require a shared synchronized sink for guaranteed line atomicity.
+  pub fnc log(String service, String trace, String span, String level, String message): void {
+    stdio.println("{\"schema\":\"oreslang-otel.v1\",\"signal\":\"log\",\"timestamp_unix_ms\":" + integer(process.unix_ms())
+      + ",\"service\":" + quote(service) + ",\"ores_trace_id\":" + quote(trace)
+      + ",\"span_id\":" + quote(span) + ",\"severity\":" + quote(level) + ",\"body\":" + quote(message) + "}");
+    return;
+  }
+
+  // Counter deltas and histogram observations are exported immediately. A collector
+  // can aggregate them without an unbounded in-process label/cardinality cache.
+  pub fnc metric(String service, String trace, String name, String kind, String unit, int value): void {
+    stdio.println("{\"schema\":\"oreslang-otel.v1\",\"signal\":\"metric\",\"timestamp_unix_ms\":" + integer(process.unix_ms())
+      + ",\"service\":" + quote(service) + ",\"ores_trace_id\":" + quote(trace) + ",\"name\":" + quote(name)
+      + ",\"kind\":" + quote(kind) + ",\"unit\":" + quote(unit) + ",\"value\":" + integer(value) + "}");
+    return;
+  }
+
+  pub define class Span as
+    val String service;
+    val String trace;
+    val String id;
+    val String parent;
+    val String name;
+    val int started;
+    let bool ended = false;
+    let int duration = 0;
+    pub constructor(String service, String trace, String id, String parent, String name, int started) {
+      self.service = service;
+      self.trace = trace;
+      self.id = id;
+      self.parent = parent;
+      self.name = name;
+      self.started = started;
+    }
+    pub trace_id(): String { return self.trace; }
+    pub span_id(): String { return self.id; }
+    pub elapsed_ns(): int {
+      if self.ended; then return self.duration; fi
+      val int elapsed = now_ns() - self.started;
+      return elapsed < 0 ? 0 : elapsed;
+    }
+    pub event(String level, String message): void {
+      if !self.ended; then log(self.service, self.trace, self.id, level, message); fi
+      return;
+    }
+    // Actor-local mutation makes completion idempotent; never share a live Span.
+    pub finish(mut self)(String outcome, int http_status): bool {
+      if self.ended; then return false; fi
+      self.duration = self.elapsed_ns();
+      self.ended = true;
+      val int duration = self.duration;
+      stdio.println("{\"schema\":\"oreslang-otel.v1\",\"signal\":\"span\",\"timestamp_unix_ms\":" + integer(process.unix_ms())
+        + ",\"service\":" + quote(self.service) + ",\"ores_trace_id\":" + quote(self.trace)
+        + ",\"span_id\":" + quote(self.id) + ",\"parent_span_id\":" + quote(self.parent)
+        + ",\"name\":" + quote(self.name) + ",\"duration_ns\":" + integer(duration)
+        + ",\"outcome\":" + quote(outcome) + ",\"http_status\":" + integer(http_status) + "}");
+      return true;
+    }
+  end
+
+  pub fnc start(String service, String trace, String parent, String name): Span {
+    return new Span(service, trace, process.unique_id(), parent, name, now_ns());
+  }
+  // Explicit start/id lets an owner reconstruct a span using immutable context.
+  pub fnc start_at(String service, String trace, String id, String parent, String name, int started): Span {
+    return new Span(service, trace, id, parent, name, started);
+  }
+end

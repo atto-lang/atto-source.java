@@ -1,0 +1,61 @@
+name: Graal JVM .atto guest allocation observation
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/RuntimeMemoryProbe.java'
+      - 'src/test/java/dev/oreslang/RuntimeMemoryProbeTest.java'
+      - 'src/test/java/dev/oreslang/AttoAllocationChurnEvidenceTest.java'
+      - 'src/test/resources/atto/memory/**'
+      - '.github/workflows/graal-atto-guest-memory-evidence.yml'
+      - 'pom.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-atto-jvm-memory-observation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact immutable PR source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify SHA and native guest fixture blobs
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+          git hash-object src/test/resources/atto/memory/owned-vector-churn.atto
+          git hash-object src/test/resources/atto/memory/scalar-loop-control.atto
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute real .atto compiler and guest host-allocation tests
+        run: |
+          mvn -B -ntp -Dtest=RuntimeMemoryProbeTest,AttoAllocationChurnEvidenceTest \
+            -DfailIfNoTests=true test
+      - name: Verify actual nonzero, non-skipped JUnit execution
+        run: |
+          set -euo pipefail
+          for name in RuntimeMemoryProbeTest AttoAllocationChurnEvidenceTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.${name}.xml"
+            test -s "$report"
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            grep -q 'errors="0"' "$report"
+            grep -q 'failures="0"' "$report"
+            grep -q 'skipped="0"' "$report"
+          done
+          echo 'REAL_ATTO_JVM_HOST_MEMORY_OBSERVATION_ONLY: no guest-native AOT, actor-drop or zero-GC certification'
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'

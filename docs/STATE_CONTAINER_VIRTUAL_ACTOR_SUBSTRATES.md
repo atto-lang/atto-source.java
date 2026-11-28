@@ -18,6 +18,38 @@ Future lowering must wrap actual state access with a verified lease and `finally
 
 This registry is **not** an ActorRuntime, distributed grain engine, persistent activation store, verified mailbox, scheduler or fault supervisor. Guest-level `VirtualActorRef` and virtual actor methods remain unimplemented.
 
+## VM-internal observational lookup (candidate, 2026-11-08)
+
+`VirtualActorActivationRegistry.inspectExistingForHost(identity)` and
+`inspectForHost(logical_ref)` are **package-private host-only snapshots**.
+They never reserve an identity, activate a guest, consume an activation epoch,
+admit mail, or return a live `Slot`/mailbox/heap reference. The immutable
+observation distinguishes INACTIVE, INITIALIZING, ACTIVE, and CLOSED at one
+instant; it includes the current local incarnation and accepted-count but is
+not a physical-termination receipt. Another thread may change the state
+immediately after return.
+
+The registry identity is a **local** `(domain, declaration, NFC(key))` string
+tuple and is NOT interchangeable with cross-backend ActorId v1's authenticated
+tenant/namespace/type/tagged-key encoding. No physical address is presently
+registered, and no address-to-activation management lookup is claimed.
+
+**Security boundary:** these VM-private methods do not authenticate a
+supervisor or tenant; a future authenticated `SupervisorDirectory` adapter
+MUST validate caller/tenant, direct-child ownership, supervisor incarnation
+and management-vs-inspection scopes **before** invoking them. Do not export
+them to guest reflection or wire codecs. Logical lookup, physical location
+and CONTROL authority must remain distinct. Negative inspection must not
+implicitly consume the bounded identity pool.
+
+New `VirtualActorLocalObservationTest` covers nonallocation under capacity,
+two-phase publication, immutable stale snapshots, foreign-registry refusal,
+and closed/inactive states. It is an **authored JUnit test, NOT_EXECUTED**
+until an exact-head step-bearing JDK 25/Maven receipt exists. This slice
+does not implement distributed fencing, durable IDs, child enumeration,
+virtual actor guest lowering, or supervisor CONTROL dispatch. See AttoLang
+spec PR #25 and conformance #227 for the target contract.
+
 ## Verification
 
 Candidate JUnit classes:

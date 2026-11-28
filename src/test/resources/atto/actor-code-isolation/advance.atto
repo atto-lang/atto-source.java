@@ -1,0 +1,4 @@
+// Shared executable code, not shared actor state.
+pub fnc advance(int current, int delta): int {
+  return current + delta;
+}

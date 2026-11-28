@@ -1,0 +1,8 @@
+import class DecodeAttempt from "./decode.atto";
+import fnc decode_attempt from "./decode.atto";
+
+pub fnc main(): void {
+  val DecodeAttempt parsed = decode_attempt(41);
+  stdio.stdout.write(parsed.status);
+  return;
+}

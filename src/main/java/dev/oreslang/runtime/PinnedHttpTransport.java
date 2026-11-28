@@ -53,6 +53,9 @@ final class PinnedHttpTransport implements AutoCloseable {
     private static final Pattern HEADER_NAME =
             Pattern.compile("[!#$%&'*+.^_`|~0-9A-Za-z-]+");
     private static final int MAX_HEADER_FIELDS = 100;
+    /** Limit each outbound request body independently of response budgets. */
+    static final int MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+    private static final byte[] NO_REQUEST_BODY = new byte[0];
     private static final int MAX_HEADER_BYTES = 32_768;
     private static final int MAX_LINE_BYTES = 8_192;
     private static final int MAX_INFORMATIONAL = 8;
@@ -80,6 +83,7 @@ final class PinnedHttpTransport implements AutoCloseable {
         CONNECTING,
         TLS_HANDSHAKE,
         WRITING_HEADERS,
+        WRITING_BODY,
         READING_HEADERS,
         STREAMING_BODY,
         RETIRING,
@@ -546,14 +550,46 @@ final class PinnedHttpTransport implements AutoCloseable {
             String method,
             List<Map.Entry<String, String>> requestHeaders)
             throws IOException {
+        return request(target, method, requestHeaders, NO_REQUEST_BODY);
+    }
+
+    /** Trusted physical I/O worker only. Guest bytes are copied and bounded
+     * during admission, before entering this transport method.
+     */
+    Response request(
+            URI target,
+            String method,
+            List<Map.Entry<String, String>> requestHeaders,
+            byte[] requestBody)
+            throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(requestHeaders, "requestHeaders");
-        if (!method.equals("GET") && !method.equals("HEAD")) {
+        Objects.requireNonNull(requestBody, "requestBody");
+        if (!method.equals("GET") && !method.equals("HEAD")
+                && !method.equals("POST")) {
             throw new IllegalArgumentException(
-                    "pinned HTTP v1 supports only GET and HEAD");
+                    "pinned HTTP supports GET, HEAD and bounded POST only");
+        }
+        if (requestBody.length > MAX_REQUEST_BODY_BYTES
+                || (!method.equals("POST") && requestBody.length != 0)) {
+            throw new IllegalArgumentException(
+                    "invalid or oversized outbound request body");
         }
         validateRequestHeaders(requestHeaders);
+        if (method.equals("POST")) {
+            // Account for the transport-owned Content-Length header,
+            // which callers may never supply or override themselves.
+            long bytes = "Content-Length: ".length()
+                    + Integer.toString(requestBody.length).length() + 2L;
+            for (Map.Entry<String, String> field : requestHeaders) {
+                bytes += (long) field.getKey().length() + field.getValue().length() + 4L;
+            }
+            if (requestHeaders.size() >= MAX_HEADER_FIELDS || bytes > MAX_HEADER_BYTES) {
+                throw new IllegalArgumentException(
+                        "POST framing exceeds outbound header budgets");
+            }
+        }
         if (closed.get()) {
             throw new RejectedExecutionException(
                     "pinned HTTP transport is closed");
@@ -592,8 +628,18 @@ final class PinnedHttpTransport implements AutoCloseable {
                     output,
                     resolved,
                     method,
-                    requestHeaders);
+                    requestHeaders,
+                    requestBody.length);
             output.flush();
+            if (method.equals("POST") && requestBody.length != 0) {
+                phase.set(PhysicalPhase.WRITING_BODY);
+                connection.setWriteTimeout(policy.limits().bodyIdleTimeout());
+                // Underlying SelectorTransportConnection.output() writes
+                // through an NIO selector with a bounded phase/overall
+                // deadline. This worker is not an actor scheduler carrier.
+                output.write(requestBody);
+                output.flush();
+            }
 
             phase.set(PhysicalPhase.READING_HEADERS);
             connection.setReadTimeout(
@@ -723,7 +769,8 @@ final class PinnedHttpTransport implements AutoCloseable {
             OutputStream output,
             OutboundEgressPolicy.ResolvedTarget target,
             String method,
-            List<Map.Entry<String, String>> headers)
+            List<Map.Entry<String, String>> headers,
+            int bodyLength)
             throws IOException {
         String path = target.uri().getRawPath();
         if (path == null || path.isEmpty()) path = "/";
@@ -734,6 +781,9 @@ final class PinnedHttpTransport implements AutoCloseable {
         writeAscii(output, method + " " + requestTarget + " HTTP/1.1\r\n");
         writeAscii(output, "Host: " + target.authority() + "\r\n");
         writeAscii(output, "Connection: close\r\n");
+        if (method.equals("POST")) {
+            writeAscii(output, "Content-Length: " + bodyLength + "\r\n");
+        }
         for (Map.Entry<String, String> field : headers) {
             writeLatin1(
                     output,

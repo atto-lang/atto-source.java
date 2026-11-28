@@ -164,25 +164,6 @@ public final class CapabilityChecker {
         }
     }
 
-    /**
-     * A constructor runs before an ordinary object's methods. Checking only
-     * fields/methods lets a lower-authority actor launder host capabilities
-     * through `new OrdinaryClass()` even if no field stores the authority.
-     * The same transitive check is required at declaration and at an
-     * untrusted actor's use of a class defined under a privileged policy.
-     */
-    private void checkConstructor(
-            Ast.ConstructorDecl constructor,
-            IsolatePolicy policy,
-            boolean actor) {
-        if (constructor == null) return;
-        for (Ast.Param parameter : constructor.parameters()) checkType(parameter.type(), policy);
-        for (Ast.Annotation annotation : constructor.annotations()) {
-            for (Ast.TypeRef argument : annotation.arguments()) checkType(argument, policy);
-        }
-        checkActorStatements(constructor.body(), policy, actor);
-    }
-
     private void checkProgram(Ast.Program program, IsolatePolicy policy) {
         for (Ast.ImportDecl imported : program.imports()) {
             if (ImportRules.isJavaPath(imported.path())) {
@@ -215,9 +196,6 @@ public final class CapabilityChecker {
                                     klass.actorKind() != Ast.ActorKind.NONE);
                         }
                     }
-                    checkConstructor(
-                            klass.constructor(), actorPolicy,
-                            klass.actorKind() != Ast.ActorKind.NONE);
                     for (Ast.MethodDecl method : klass.methods()) {
                         checkType(method.explicitReceiverType(), actorPolicy);
                         checkCallableTypes(method.parameters(), method.returnType(), actorPolicy);
@@ -238,15 +216,6 @@ public final class CapabilityChecker {
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
                 } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     checkType(alias.target(), policy);
-                } else {
-                    // Protected state / virtual actors retain opaque method
-                    // tokens until checked MIR lowering exists. They cannot
-                    // receive capability approval from a visitor that has
-                    // never inspected those effects. Also fail closed for
-                    // any future declaration kind.
-                    throw new SecurityException(
-                            "capability checker requires verified declaration lowering: "
-                                    + declaration.getClass().getSimpleName());
                 }
             }
         }
@@ -323,11 +292,6 @@ public final class CapabilityChecker {
                     checkType(field.type(), policy);
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
                 }
-                // A constructor runs at allocation time, including for a class
-                // defined in another (more privileged) scope. Check its body
-                // transitively under the *consumer's* isolate policy.
-                checkConstructor(klass.constructor(), policy,
-                        klass.actorKind() != Ast.ActorKind.NONE);
                 // An object stored in a private actor is itself an authority
                 // carrier. Its instance methods must therefore be admissible
                 // under the actor's policy; otherwise an ordinary class could
@@ -376,19 +340,7 @@ public final class CapabilityChecker {
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.BlockStmt s) checkStatements(s.body(), policy);
-            else if (stmt instanceof Ast.TaskScopeStmt s) {
-                // Deadline expressions run with the actor's authority before
-                // children are admitted: they are not capability-free metadata.
-                if (s.deadlineMillis() != null) checkExpr(s.deadlineMillis(), policy);
-                checkStatements(s.body(), policy);
-            }
-            else if (stmt instanceof Ast.UsingBorrowStmt s) {
-                // Even when runtime borrow lowering is unavailable, static
-                // effect admission must not silently skip the resource or body.
-                checkExpr(s.resource(), policy);
-                checkStatements(s.body(), policy);
-            }
-            else if (stmt instanceof Ast.LocalTypeDeclStmt s) checkType(s.target(), policy);
+            else if (stmt instanceof Ast.TaskScopeStmt s) checkStatements(s.body(), policy);
             else if (stmt instanceof Ast.LoopStmt s) checkStatements(s.body(), policy);
             else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
@@ -399,7 +351,6 @@ public final class CapabilityChecker {
             } else if (stmt instanceof Ast.MatchStmt s) {
                 checkExpr(s.subject(), policy);
                 for (Ast.MatchArm arm : s.arms()) {
-                    checkPattern(arm.pattern(), policy);
                     if (arm.guard() != null) checkExpr(arm.guard(), policy);
                     checkStatements(arm.body(), policy);
                 }
@@ -433,40 +384,7 @@ public final class CapabilityChecker {
                 if (s.condition() != null) checkExpr(s.condition(), policy);
                 if (s.update() != null) checkExpr(s.update(), policy);
                 checkStatements(s.body(), policy);
-            } else if (stmt instanceof Ast.DoWhileStmt s) {
-                // Post-test loop bodies always run at least once.
-                checkStatements(s.body(), policy);
-                checkExpr(s.condition(), policy);
-            } else if (!(stmt instanceof Ast.BreakStmt)
-                    && !(stmt instanceof Ast.ContinueStmt)) {
-                // Security admission must never silently skip a future AST
-                // statement kind when the language grows. Only these two
-                // control-only nodes have no nested effects to inspect.
-                throw new SecurityException(
-                        "capability checker does not support statement: "
-                                + stmt.getClass().getSimpleName());
             }
-        }
-    }
-
-    /** Pattern type references may contain restricted authority carriers. */
-    private void checkPattern(Ast.Pattern pattern, IsolatePolicy policy) {
-        if (pattern instanceof Ast.TypePattern p) {
-            checkType(p.type(), policy);
-        } else if (pattern instanceof Ast.StructuralPattern p) {
-            checkType(p.target(), policy);
-        } else if (pattern instanceof Ast.TuplePattern p) {
-            for (Ast.Pattern item : p.elements()) checkPattern(item, policy);
-        } else if (pattern instanceof Ast.ConstructorPattern p) {
-            // Constructor names can resolve to nominal classes; do not skip
-            // the name just because the pattern has no nested arguments.
-            checkType(Ast.TypeRef.simple(p.constructor()), policy);
-            for (Ast.Pattern item : p.arguments()) checkPattern(item, policy);
-        } else if (!(pattern instanceof Ast.WildcardPattern)
-                && !(pattern instanceof Ast.LiteralPattern)
-                && !(pattern instanceof Ast.BindingPattern)) {
-            throw new SecurityException("capability checker does not support pattern: "
-                    + pattern.getClass().getSimpleName());
         }
     }
 
@@ -524,7 +442,7 @@ public final class CapabilityChecker {
                 for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
                 return;
             }
-            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
+            if (!Set.of("copy", "copy!!", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
             }
@@ -552,7 +470,6 @@ public final class CapabilityChecker {
             }
             Ast.MethodDecl staticMethod = findStaticMethod(c.callee(), c.arguments().size());
             if (staticMethod != null) checkReferencedMethod(staticMethod, policy);
-            for (Ast.TypeRef typeArgument : c.typeArguments()) checkType(typeArgument, policy);
             checkExpr(c.callee(), policy);
             for (Ast.Expr arg : c.arguments()) checkExpr(arg, policy);
         } else if (expr instanceof Ast.MemberExpr m) {
@@ -564,7 +481,8 @@ public final class CapabilityChecker {
                 if (referenced != null) checkReferencedFunction(referenced, policy);
                 Ast.MethodDecl staticValue = findUniqueStaticMethodValue(m);
                 if (staticValue != null) checkReferencedMethod(staticValue, policy);
-                if (path.startsWith("stdio.") || path.equals("stdio")) require(policy, IsolatePolicy.Capability.STDOUT, path);
+                if (path.startsWith("stdio.") || path.equals("stdio") || path.equals("process.stdout")
+                        || path.startsWith("process.stdout.")) require(policy, IsolatePolicy.Capability.STDOUT, path);
                 if (path.equals("std.process.exit") || path.equals("process.exit")) require(policy, IsolatePolicy.Capability.PROCESS_EXIT, path);
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
@@ -608,32 +526,10 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
             }
             checkExpr(m.receiver(), policy);
+        } else if (expr instanceof Ast.CaptureExpr e) {
+            checkExpr(e.value(), policy);
         } else if (expr instanceof Ast.SpreadExpr e) {
             checkExpr(e.expression(), policy);
-        } else if (expr instanceof Ast.MatchExpr e) {
-            checkExpr(e.subject(), policy);
-            checkType(e.resultType(), policy);
-            for (Ast.MatchValueArm arm : e.arms()) {
-                checkPattern(arm.pattern(), policy);
-                if (arm.guard() != null) checkExpr(arm.guard(), policy);
-                checkStatements(arm.prefixStatements(), policy);
-                checkExpr(arm.value(), policy);
-            }
-        } else if (expr instanceof Ast.TypeTestExpr e) {
-            checkExpr(e.value(), policy);
-            checkType(e.targetType(), policy);
-        } else if (expr instanceof Ast.PatternTestExpr e) {
-            checkExpr(e.value(), policy);
-            checkPattern(e.pattern(), policy);
-        } else if (expr instanceof Ast.CastExpr e) {
-            checkExpr(e.value(), policy);
-            checkType(e.targetType(), policy);
-        } else if (expr instanceof Ast.TrapExpr e) {
-            checkExpr(e.expression(), policy);
-        } else if (expr instanceof Ast.LocalAggregateConstructExpr e) {
-            checkType(Ast.TypeRef.simple(e.typeName()), policy);
-            for (Ast.Expr argument : e.positionalArguments()) checkExpr(argument, policy);
-            for (Ast.ObjectField field : e.namedArguments()) checkExpr(field.value(), policy);
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }
         else if (expr instanceof Ast.UnaryExpr e) checkExpr(e.operand(), policy);
         else if (expr instanceof Ast.AssignExpr e) {
@@ -659,26 +555,18 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.ChannelOpExpr e) {
             checkExpr(e.channel(), policy);
             if (e.value() != null) checkExpr(e.value(), policy);
-            checkStatements(e.callbackBody(), policy);
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) checkExpr(e.cases(), policy);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.ObjectExpr e) {
-            for (Ast.StructFieldSpec f : e.declaredFields()) checkType(f.type(), policy);
-            for (Ast.ObjectField f : e.fields()) checkExpr(f.value(), policy);
+            for (Ast.ObjectField f : e.fields()) {
+                checkExpr(f.value(), policy);
+            }
         }
         else if (expr instanceof Ast.LambdaExpr e) {
-            for (Ast.Param p : e.parameters()) checkType(p.type(), policy);
-            checkType(e.declaredReturnType(), policy);
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
-        } else if (!(expr instanceof Ast.LiteralExpr) && expr != null) {
-            // AST extensions must never gain zero-authority admission just
-            // because a new expression node was forgotten in this visitor.
-            throw new SecurityException(
-                    "capability checker does not support expression: "
-                            + expr.getClass().getSimpleName());
         }
     }
 

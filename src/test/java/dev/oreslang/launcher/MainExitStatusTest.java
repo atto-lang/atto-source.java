@@ -13,6 +13,16 @@ import static org.junit.jupiter.api.Assertions.*;
 final class MainExitStatusTest {
     @TempDir Path temp;
 
+    @Test void canonicalAttoAndLegacyOresSourcesCheckAndRun() throws Exception {
+        String text = "pub routine main(): void { return; }";
+        for (String suffix : new String[] {".atto", ".ores"}) {
+            Path path = temp.resolve("canonical" + suffix);
+            Files.writeString(path, text);
+            assertEquals(0, OresMain.exitStatusForArgs(new String[] {"--check", path.toString()}));
+            assertEquals(0, OresMain.exitStatusForArgs(new String[] {path.toString()}));
+        }
+    }
+
     private int exit(String source) throws Exception {
         Path path = temp.resolve("main.ores");
         Files.writeString(path, source);

@@ -48,8 +48,8 @@ final class RoutineAndLoopTest {
     }
 
     @Test
-    void routinesAndFncsCanParticipateInRecursion() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+    void routinesCannotRecurseButFncsCan() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 routine spin(bool shouldStop): void {
                   if shouldStop; do
                     return;

@@ -36,9 +36,17 @@ public final class OresKeyedMap<K, V> {
     public static final int MAX_TEXT_KEY_BYTES = SymbolPropertyKeyCodec.MAX_TEXT_KEY_BYTES;
     public static final long MAX_KEY_SET_WIRE_BYTES =
             SymbolPropertyKeyCodec.MAX_KEY_SET_WIRE_BYTES;
+    /**
+     * Bytes-keyed maps are data stores (e.g. a broker key space), not symbol
+     * property objects, so they get their own, still bounded, quotas.
+     */
+    public static final int MAX_BYTES_ENTRIES = 1 << 24;
+    public static final long MAX_BYTES_KEY_SET_BYTES = 1L << 32;
 
     public enum KeyDomain {
-        STRING, SYMBOL, STRING_OR_SYMBOL
+        STRING, SYMBOL, STRING_OR_SYMBOL,
+        /** Immutable owned byte strings compared by content (Bytes v1). */
+        BYTES
     }
 
     /**
@@ -46,7 +54,9 @@ public final class OresKeyedMap<K, V> {
      * protects dynamic/foreign callers. ANY is explicitly dynamic only.
      */
     public enum ValueDomain {
-        ANY, INT, STRING, SYMBOL, BOOL
+        ANY, INT, STRING, SYMBOL, BOOL,
+        /** Immutable owned Bytes; reads return an independent copy. */
+        BYTES, JSON
     }
 
     /**
@@ -90,6 +100,17 @@ public final class OresKeyedMap<K, V> {
 
     private static final EntryValidator NO_ENTRY_VALIDATOR = (key, value) -> { };
 
+    // JSON graph lock precedes every JSON Map monitor on mutation.
+    private static final Object JSON_GRAPH_ADMISSION_LOCK = new Object();
+    static <T> T withJsonGraphLock(java.util.function.Supplier<T> action) {
+        synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+            return action.get();
+        }
+    }
+    // Host batch callbacks run outside graph/Map locks; prevent a callback
+    // from mutating its own destination on the calling thread.
+    private final ThreadLocal<Boolean> jsonSnapshotActive = new ThreadLocal<>();
+
     private final ValueDomain valueDomain;
     private final KeyDomain domain;
     private final EntryValidator entryValidator;
@@ -97,6 +118,8 @@ public final class OresKeyedMap<K, V> {
     private LinkedHashMap<K, V> entries = new LinkedHashMap<>();
     // Tracked while holding this map's monitor; never expose a mutable view.
     private long storedKeyWireBytes;
+    // One-way publication; writes can never unfreeze this JSON map.
+    private volatile boolean frozenJson;
     // Java monitors are reentrant. A key-aware validator must never be able
     // to mutate this same map while an outer mutation is still validating.
     private boolean entryValidationActive;
@@ -112,6 +135,10 @@ public final class OresKeyedMap<K, V> {
         this.domain = Objects.requireNonNull(domain, "key domain");
         this.valueDomain = Objects.requireNonNull(valueDomain, "value domain");
         this.entryValidator = Objects.requireNonNull(entryValidator, "entry validator");
+        if (valueDomain == ValueDomain.JSON
+                && (domain != KeyDomain.STRING || entryValidator != NO_ENTRY_VALIDATOR)) {
+            throw new IllegalArgumentException("JSON Map requires String keys and canonical validation");
+        }
     }
 
     /** Host-only constructor defaults to explicit dynamic values. */
@@ -173,6 +200,28 @@ public final class OresKeyedMap<K, V> {
                 Objects.requireNonNull(validator, "entry validator"));
     }
 
+    public static <V> OresKeyedMap<OresBytes, V> bytesKeys(ValueDomain values) {
+        return new OresKeyedMap<>(KeyDomain.BYTES, values, NO_ENTRY_VALIDATOR);
+    }
+
+    private int maxEntries() {
+        return domain == KeyDomain.BYTES ? MAX_BYTES_ENTRIES : MAX_ENTRIES;
+    }
+
+    private long maxKeySetBytes() {
+        return domain == KeyDomain.BYTES ? MAX_BYTES_KEY_SET_BYTES : MAX_KEY_SET_WIRE_BYTES;
+    }
+
+    /** Bytes values are immutable but move-only: never alias the stored handle. */
+    private static <V> V detachRead(V value) {
+        if (value instanceof OresBytes bytes) {
+            @SuppressWarnings("unchecked")
+            V copy = (V) OresBytes.copyOf(bytes.toArrayCopy());
+            return copy;
+        }
+        return value;
+    }
+
     public KeyDomain keyDomain() {
         return domain;
     }
@@ -232,6 +281,7 @@ public final class OresKeyedMap<K, V> {
             case STRING -> key instanceof String;
             case SYMBOL -> key instanceof OresSymbol;
             case STRING_OR_SYMBOL -> key instanceof String || key instanceof OresSymbol;
+            case BYTES -> key instanceof OresBytes;
         };
         if (!valid) {
             throw new IllegalArgumentException("key is incompatible with Map key domain " + domain);
@@ -246,7 +296,7 @@ public final class OresKeyedMap<K, V> {
 
     public synchronized V get(Object key) {
         checkKey(key);
-        return entries.get(key);
+        return detachRead(entries.get(key));
     }
 
     /**
@@ -258,7 +308,7 @@ public final class OresKeyedMap<K, V> {
     public synchronized Lookup<V> lookup(Object key) {
         checkKey(key);
         V value = entries.get(key);
-        return value == null ? Lookup.missing() : Lookup.present(value);
+        return value == null ? Lookup.missing() : Lookup.present(detachRead(value));
     }
 
     /**
@@ -271,7 +321,7 @@ public final class OresKeyedMap<K, V> {
         if (!entries.containsKey(key)) {
             throw new IllegalArgumentException("unknown typed Map key");
         }
-        return entries.get(key);
+        return detachRead(entries.get(key));
     }
 
     private void checkValueDomain(Object value) {
@@ -284,6 +334,8 @@ public final class OresKeyedMap<K, V> {
             case STRING -> value instanceof String;
             case SYMBOL -> value instanceof OresSymbol;
             case BOOL -> value instanceof Boolean;
+            case BYTES -> value instanceof OresBytes;
+            case JSON -> value instanceof OresJsonValue;
         };
         if (!valid) {
             throw new IllegalArgumentException(
@@ -292,6 +344,10 @@ public final class OresKeyedMap<K, V> {
     }
 
     private void runEntryValidator(Object key, Object value) {
+        if (valueDomain == ValueDomain.JSON) {
+            OresJsonValue.validateForMapInsertion(this, (OresJsonValue) value);
+            return;
+        }
         if (entryValidationActive) {
             throw new IllegalStateException(
                     "typed Map entry validator cannot recursively validate the same map");
@@ -304,31 +360,58 @@ public final class OresKeyedMap<K, V> {
         }
     }
 
+    boolean frozenJson() { return frozenJson; }
+
+    /** Runtime-only: publish a map after every descendant has been sealed. */
+    synchronized void freezeJson() {
+        if (!Thread.holdsLock(JSON_GRAPH_ADMISSION_LOCK)) {
+            throw new IllegalStateException("JSON freeze requires graph stability guard");
+        }
+        if (valueDomain != ValueDomain.JSON) throw new IllegalStateException("not a JSON map");
+        rejectReentrantMutation();
+        for (V value : entries.values()) {
+            if (!(value instanceof OresJsonValue json) || !OresJsonValue.provenImmutable(json)) {
+                throw new IllegalStateException("JSON freeze requires immutable descendants");
+            }
+        }
+        frozenJson = true;
+    }
+
     private void rejectReentrantMutation() {
-        if (entryValidationActive || bulkMutationActive) {
+        if (frozenJson) throw new IllegalStateException("immutable JSON map");
+        if (entryValidationActive || bulkMutationActive
+                || (valueDomain == ValueDomain.JSON && Boolean.TRUE.equals(jsonSnapshotActive.get()))) {
             throw new IllegalStateException(
                     "typed Map entry validator or batch input cannot mutate the map being validated");
         }
     }
 
     private static int wireKeyBytes(Object key) {
+        if (key instanceof OresBytes bytes) return bytes.size();
         // The canonical tagged-key codec defines the identical logical
         // String/PROCESS/STABLE footprint used by bulk serialization. Use its
         // strict size preflight rather than allocating a throwaway wire frame.
         return SymbolPropertyKeyCodec.encodedWireLength(key);
     }
 
-    public synchronized V put(K key, V value) {
+    public V put(K key, V value) {
+        if (valueDomain == ValueDomain.JSON) {
+            return withJsonGraphLock(() -> putUnderMonitor(key, value));
+        }
+        return putUnderMonitor(key, value);
+    }
+
+    private synchronized V putUnderMonitor(K key, V value) {
         rejectReentrantMutation();
         checkKey(key);
         checkValueDomain(value);
         long addedBytes = 0L;
         if (!entries.containsKey(key)) {
-            if (entries.size() >= MAX_ENTRIES) {
+            if (entries.size() >= maxEntries()) {
                 throw new IllegalArgumentException("typed Map exceeds maximum key count");
             }
             addedBytes = wireKeyBytes(key);
-            if (addedBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+            if (addedBytes > maxKeySetBytes() - storedKeyWireBytes) {
                 throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
             }
         }
@@ -346,7 +429,49 @@ public final class OresKeyedMap<K, V> {
      * copied to immutable pairs before validation so mutable source Map.Entry
      * objects cannot change after the validation pass.
      */
-    public synchronized void putAll(Map<? extends K, ? extends V> values) {
+    public void putAll(Map<? extends K, ? extends V> values) {
+        if (valueDomain != ValueDomain.JSON) {
+            putAllUnderMonitor(values);
+            return;
+        }
+        if (Boolean.TRUE.equals(jsonSnapshotActive.get())) {
+            throw new IllegalStateException("JSON Map batch input cannot recursively mutate destination");
+        }
+        // Never invoke arbitrary host Map callbacks under graph/Map locks.
+        // Only validated String keys and closed JSON values enter the snapshot.
+        LinkedHashMap<K, V> snapshot = new LinkedHashMap<>();
+        jsonSnapshotActive.set(true);
+        try {
+            Objects.requireNonNull(values, "map entries");
+            int reported = values.size();
+            if (reported < 0 || reported > maxEntries()) {
+                throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
+            }
+            for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
+                if (snapshot.size() >= maxEntries()) {
+                    throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
+                }
+                K key = entry.getKey();
+                V value = entry.getValue();
+                checkKey(key);
+                checkValueDomain(value);
+                if (snapshot.putIfAbsent(key, value) != null) {
+                    throw new IllegalArgumentException("duplicate logical key in Map batch");
+                }
+            }
+            if (snapshot.size() != reported) {
+                throw new IllegalArgumentException("host Map size changed during batch snapshot");
+            }
+        } finally {
+            jsonSnapshotActive.remove();
+        }
+        withJsonGraphLock(() -> {
+            putAllUnderMonitor(snapshot);
+            return null;
+        });
+    }
+
+    private synchronized void putAllUnderMonitor(Map<? extends K, ? extends V> values) {
         rejectReentrantMutation();
         Objects.requireNonNull(values, "map entries");
         bulkMutationActive = true;
@@ -355,7 +480,7 @@ public final class OresKeyedMap<K, V> {
         // before using it as an allocation hint, then enforce it again while
         // consuming entries (custom Maps may lie about their size).
         int reportedSize = values.size();
-        if (reportedSize < 0 || reportedSize > MAX_ENTRIES) {
+        if (reportedSize < 0 || reportedSize > maxEntries()) {
             throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
         }
         List<Map.Entry<K, V>> prepared = new ArrayList<>(reportedSize);
@@ -364,7 +489,7 @@ public final class OresKeyedMap<K, V> {
         // while iterating; such an input must not trigger validator side
         // effects for a batch that is rejected before semantic admission.
         for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
-            if (prepared.size() >= MAX_ENTRIES) {
+            if (prepared.size() >= maxEntries()) {
                 throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
             }
             Map.Entry<? extends K, ? extends V> source =
@@ -401,12 +526,12 @@ public final class OresKeyedMap<K, V> {
             K key = entry.getKey();
             if (!entries.containsKey(key) && additions.add(key)) {
                 additionalKeyWireBytes += wireKeyBytes(key);
-                if (additionalKeyWireBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+                if (additionalKeyWireBytes > maxKeySetBytes() - storedKeyWireBytes) {
                     throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
                 }
             }
         }
-        if (additions.size() > MAX_ENTRIES - entries.size()) {
+        if (additions.size() > maxEntries() - entries.size()) {
             throw new IllegalArgumentException("typed Map exceeds maximum key count");
         }
 
@@ -436,7 +561,14 @@ public final class OresKeyedMap<K, V> {
      * Atomically remove and transfer a value while preserving key absence as
      * an explicit outer state.  No public has/get/remove sequence is needed.
      */
-    public synchronized Lookup<V> take(Object key) {
+    public Lookup<V> take(Object key) {
+        if (valueDomain == ValueDomain.JSON) {
+            return withJsonGraphLock(() -> takeUnderMonitor(key));
+        }
+        return takeUnderMonitor(key);
+    }
+
+    private synchronized Lookup<V> takeUnderMonitor(Object key) {
         rejectReentrantMutation();
         checkKey(key);
         V existing = entries.get(key);
@@ -453,11 +585,22 @@ public final class OresKeyedMap<K, V> {
     }
 
     /** Host compatibility API; guest consuming lowering should prefer take(). */
-    public synchronized V remove(Object key) {
+    public V remove(Object key) {
         return take(key).value();
     }
 
-    public synchronized void clear() {
+    public void clear() {
+        if (valueDomain == ValueDomain.JSON) {
+            withJsonGraphLock(() -> {
+                clearUnderMonitor();
+                return null;
+            });
+        } else {
+            clearUnderMonitor();
+        }
+    }
+
+    private synchronized void clearUnderMonitor() {
         rejectReentrantMutation();
         entries.clear();
         storedKeyWireBytes = 0L;
