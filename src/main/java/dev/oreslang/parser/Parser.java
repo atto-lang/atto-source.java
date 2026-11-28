@@ -5283,7 +5283,15 @@ public final class Parser {
                 throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple (...) literal");
             }
         } else {
-            initializer = parseExpression();
+            // Only an immediate, concrete Record binding supplies the empty
+            // product context in this parser slice. Never rewrite a tuple value.
+            if (canonicalAttoSource && type != null && type.name().equals("Record")
+                    && type.arguments().isEmpty() && !type.inferArguments()
+                    && ((check(LPAREN) && checkNext(RPAREN)) || (check(LBRACE) && checkNext(RBRACE)))
+                    && current + 2 < tokens.size() && tokens.get(current + 2).type() == SEMICOLON) {
+                advance(); advance();
+                initializer = new Ast.ObjectExpr(List.of(), Ast.ObjectKind.RECORD, List.of());
+            } else initializer = parseExpression();
         }
         if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
             throw error(previous(), "'const fnc' requires a lambda initializer");
@@ -8385,7 +8393,9 @@ public final class Parser {
                     // field name or a call-argument tuple expansion.
                     fields.add(Ast.ObjectField.spreading(parseExpression()));
                 } else {
-                    String name = consumeStaticObjectKeyName("expected struct field name");
+                    String name = canonicalAttoSource && (plainRecord || inferredRecord)
+                            ? consume(IDENT, "E_RECORD_LABEL: brace Record requires identifier key").lexeme()
+                            : consumeStaticObjectKeyName("expected struct field name");
                     consume(COLON, "expected ':' after struct field name");
                     fields.add(Ast.ObjectField.named(name, parseExpression()));
                 }
@@ -8558,8 +8568,10 @@ public final class Parser {
     // Candidate recursive-product-v1: token-local Record dispatch. Do not use
     // expression assignment or expected types to classify a field.
     private boolean startsParenthesizedRecordItem() {
-        return ((check(IDENT) || check(STRING)) && checkNext(EQUAL))
-                || (check(IDENT) && checkNext(COLON))
+        // Recognize obsolete explicit spellings too, so they fail in the
+        // Record parser instead of falling back to assignment/grouping.
+        return ((check(IDENT) || check(STRING)) && (checkNext(EQUAL) || checkNext(COLON)))
+                || (check(STRING) && checkNext(COLON_ASSIGN))
                 || (check(COLON) && checkNext(IDENT));
     }
 
@@ -8575,7 +8587,8 @@ public final class Parser {
             if (depth == 0 && start) {
                 Token.Type next = i + 1 < tokens.size() ? tokens.get(i + 1).type() : EOF;
                 if ((t == IDENT && (next == EQUAL || next == COLON))
-                        || (t == STRING && next == EQUAL) || (t == COLON && next == IDENT))
+                        || (t == STRING && (next == EQUAL || next == COLON || next == COLON_ASSIGN))
+                        || (t == COLON && next == IDENT))
                     return true;
                 start = false;
             }
@@ -8627,10 +8640,13 @@ public final class Parser {
                 name = label.lexeme();
                 value = new Ast.NameExpr(name);
             } else {
+                if (label.type() != STRING || label.stringQuote() != '"')
+                    throw error(label, "E_RECORD_LABEL: parenthesized Record requires double-quoted key");
+                name = label.lexeme();
+                if (name.isEmpty() || name.codePoints().anyMatch(Character::isISOControl))
+                    throw error(label, "E_RECORD_LABEL: empty or control-character key outside this profile");
                 advance();
-                name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
-                if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
-                else if (!match(EQUAL, COLON, COLON_ASSIGN)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
+                consume(COLON, "expected ':' after quoted Record field name");
                 value = parseRecordFieldValue();
             }
             if (!names.add(name))
@@ -8666,12 +8682,13 @@ public final class Parser {
                     if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
                     fields.add(Ast.ObjectField.named(name, new Ast.NameExpr(name)));
                 } else {
-                    if (!check(IDENT) && !check(STRING))
+                    if (check(STRING))
+                        throw error(label, "E_RECORD_LABEL: brace Record requires identifier key");
+                    if (!check(IDENT))
                         throw error(label, "E_LITERAL_KIND: expected named Record field or spread");
                     advance();
-                    name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
-                    if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
-                    else if (match(COLON_ASSIGN)) pairEntry = true;
+                    name = label.lexeme();
+                    if (match(COLON_ASSIGN)) pairEntry = true;
                     else if (!match(EQUAL, COLON)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
                     if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
                     fields.add(Ast.ObjectField.named(name, parseRecordFieldValue()));
