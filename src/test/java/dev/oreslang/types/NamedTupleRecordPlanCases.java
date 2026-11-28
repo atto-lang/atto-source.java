@@ -68,8 +68,8 @@ public final class NamedTupleRecordPlanCases {
             reject(() -> bind(List.of(new Slot<String>(null, "int")), policy, VALID), "E_RECORD_KEY");
             reject(() -> bind(List.of(new Slot<>("bad-key", "int")), policy, VALID), "E_RECORD_KEY");
             reject(() -> bind(List.of(new Slot<>("a", "int"), new Slot<>("a", "string"),
-                    new Slot<>("", "int")), policy, VALID), "E_RECORD_KEY".replace("KEY",
-                    policy == Duplicates.REJECT ? "DUPLICATE" : "KEY"));
+                    new Slot<>("", "int")), policy, VALID),
+                    policy == Duplicates.REJECT ? "E_RECORD_DUPLICATE" : "E_RECORD_KEY");
             cases += 3;
         }
         var boundary = new ArrayList<Slot<String>>();
