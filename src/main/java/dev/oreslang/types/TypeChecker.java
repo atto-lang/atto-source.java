@@ -3469,7 +3469,25 @@ public final class TypeChecker {
                 }
                 env.defineInferredType(name, actual);
             }
-            Type declared = declaredAhead == null
+            // A bare, unshadowed Record local is a shape-inferred record
+            // annotation, not an erased dynamic map or a nominal class.
+            // Keep the initializer's closed field types and readonly capability.
+            // Do not extend this rule to aliases, generic parameters, structs,
+            // interfaces, callable signatures, or explicit structural types.
+            boolean inferBareRecordShape = binding.declaredType() != null
+                    && binding.declaredType().name().equals("Record")
+                    && binding.declaredType().arguments().isEmpty()
+                    && declaredAhead instanceof Named namedRecord
+                    && namedRecord.name().equals("Record")
+                    && namedRecord.arguments().isEmpty()
+                    && actual instanceof Record recordShape
+                    && recordShape.kind() == AggregateKind.RECORD
+                    && !generics.contains("Record")
+                    && !importedNames.contains("Record")
+                    && findClass("Record") == null
+                    && findInterface("Record") == null
+                    && findTypeAlias("Record") == null;
+            Type declared = declaredAhead == null || inferBareRecordShape
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());

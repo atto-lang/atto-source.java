@@ -33,6 +33,16 @@ final class InlinePairRecordFactoryCurrentTest {
                 "Record.of(five := 5, three = \"box\")"
         }) assertThrows(IllegalArgumentException.class, () -> parse(expression), expression);
     }
+    @Test void bareRecordLocalPreservesClosedShapeAndRejectsScalarOrMissingField() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(
+                main("let Record r = Record.of(five := 5, three := \"box\"); return r.five;")));
+        for (String body : new String[] {
+                "let Record r = 42; return 0;",
+                "let Record r = Record.of(five := 5); return r.missing;",
+                "let Record r = Record.of(five := \"box\"); return r.five;"
+        }) assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheckStrictAtto(main(body)), body);
+    }
     @Test void actualCheckedGuestReadsHeterogeneousRecord() throws Exception {
         String source = main("let Record r = Record.of(five := 5, three := \"box\"); "
                 + "return if r.three eq \"box\" then r.five + 37 else 99 fi;");
