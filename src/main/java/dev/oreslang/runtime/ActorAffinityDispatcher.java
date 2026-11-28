@@ -124,7 +124,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         for (ExecutorService lane : lanes) {
             if (lane instanceof NativeCarrierExecutor nativeLane)
                 count += nativeLane.getStartedCarrierCount();
-            else if (lane instanceof ThreadPoolExecutor pool)
+            else if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool)
                 count += pool.getPoolSize();
         }
         return count;
