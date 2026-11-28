@@ -8,6 +8,16 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class StateContainerAccessGateTest {
     @Test
+    void concurrentShutdownCancellationAndMutation() throws Exception {
+        StateContainerConcurrencyProbe.run();
+    }
+
+    @Test
+    void differentialAdmissionAndOverflowCleanup() {
+        StateContainerDifferentialProbe.run();
+    }
+
+    @Test
     void compatibleReadersAndWriterAreExclusiveWithoutParking() {
         StateContainerAccessGate gate = new StateContainerAccessGate(2);
         var r1 = gate.tryRead();

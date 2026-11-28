@@ -126,6 +126,52 @@ final class ProtectedScalarMirV1Test {
         assertRejected("define grain ShoppingCart as end");
     }
 
+    @Test void exclusiveAliasesUseIdenticalCheckedPlanAndRuntime() {
+        var baseline = OresCompiler.compileProtectedScalarI64(COUNTER);
+        for (String name : java.util.List.of("state_w", "handle_state_w")) {
+            String source = COUNTER.replace("handle_state(critical-write ", name + "(")
+                    .replace("s.count;", "return s.count;");
+            var checked = OresCompiler.compileProtectedScalarI64(source);
+            assertEquals(baseline, checked);
+            try (var state = checked.new_state_container()) {
+                assertEquals(42L, checked.invoke(state, 42));
+                state.trySet(Long.MAX_VALUE);
+                assertThrows(ArithmeticException.class, () -> checked.invoke(state, 1));
+                assertEquals(Long.MAX_VALUE, state.tryRead().orElseThrow());
+            }
+        }
+        assertEquals(baseline, OresCompiler.compileProtectedScalarI64(
+                COUNTER.replace("critical-write", "critical")));
+    }
+
+    @Test void shortReadAndSpoofedWriteCannotEnterExclusiveMir() {
+        for (String name : java.util.List.of("state_ro", "handle_state_ro", "\"state_w\"",
+                "state_w(critical-write")) {
+            assertRejected(COUNTER.replace("handle_state(critical-write ", name + "("));
+        }
+        for (String name : java.util.List.of("state_w", "state_ro", "handle_state_w", "handle_state_ro")) {
+            assertRejected(COUNTER.replace("increment(", name + "("));
+            assertRejected(COUNTER.replace("int amount", "int " + name).replace("+ amount", "+ " + name));
+            assertRejected(COUNTER.replace("|s|", "|" + name + "|").replace("s.count", name + ".count"));
+        }
+    }
+
+    @Test void exactSelfQualificationNormalizesWithoutGrantingForeignAuthority() {
+        var baseline = ProtectedScalarMirV1.lower(COUNTER);
+        for (String intrinsic : java.util.List.of("handle_state(critical-write ", "state_w(", "handle_state_w(")) {
+            String source = COUNTER.replace("handle_state(critical-write ", "self." + intrinsic);
+            assertEquals(baseline, ProtectedScalarMirV1.lower(source));
+        }
+        var virtual = ProtectedScalarMirV1.lower(CART);
+        assertEquals(virtual, ProtectedScalarMirV1.lower(CART.replace("handle_state(", "self.handle_state(")));
+        for (String qualifier : java.util.List.of("other.", "\"self\".", "#self.")) {
+            assertRejected(COUNTER.replace("handle_state(", qualifier + "handle_state("));
+        }
+        for (String field : java.util.List.of("state_w", "state_ro", "_")) {
+            assertRejected(COUNTER.replace("int count:", "int " + field + ":").replace("s.count", "s." + field));
+        }
+    }
+
     private static void assertRejected(String source) {
         assertThrows(IllegalArgumentException.class, () -> ProtectedScalarMirV1.lower(source));
     }

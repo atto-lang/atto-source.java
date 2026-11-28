@@ -252,6 +252,36 @@ final class ActorContinuationLedgerTest {
     }
 
     @Test
+    void mixedCreditsRetireAcrossOneMillionReceiptsWithoutReplaying() {
+        var ledger = new ActorContinuationLedger(64);
+        var calls = new AtomicInteger();
+        var drops = new AtomicInteger();
+        for (int round = 0; round < 15_625; round++) {
+            var batch = new ActorContinuationLedger.Admission[64];
+            for (int i = 0; i < batch.length; i++) {
+                batch[i] = ledger.admit(ActorContinuationLedger.Lane.ORDINARY,
+                        calls::incrementAndGet, drops::incrementAndGet);
+            }
+            assertEquals(64, ledger.snapshot().queued());
+            assertThrows(IllegalStateException.class,
+                    () -> ledger.admit(ActorContinuationLedger.Lane.ORDINARY, () -> {}));
+            for (int i = 0; i < batch.length; i++) {
+                var receipt = batch[i];
+                if ((i & 1) == 0) receipt.run();
+                else receipt.close();
+                receipt.close();
+                assertEquals(63 - i, ledger.snapshot().queued());
+                assertEquals(0, ledger.snapshot().running());
+            }
+            assertThrows(IllegalStateException.class, batch[0]::run);
+            assertThrows(IllegalStateException.class, batch[1]::run);
+        }
+        assertEquals(500_000, calls.get());
+        assertEquals(1_000_000, drops.get());
+        assertEquals(1_000_000L, ledger.snapshot().lastSequence());
+    }
+
+    @Test
     void codeLeaseReleaseKeepsAdmissionCreditUntilPhysicalExit() throws Exception {
         for (int mode = 0; mode < 3; mode++) {
             var ledger = new ActorContinuationLedger(1);
@@ -346,5 +376,6 @@ final class ActorContinuationLedgerTest {
     void sixtyFourIndependentOwnersSettleWithoutCrossOwnerCreditRefund() throws Exception {
         SettlementProbe.main(new String[0]);
     }
+
 
 }

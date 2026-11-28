@@ -44,6 +44,7 @@ final class ImportGraph {
                 .get(imported.path());
         if (resolved != null) {
             String normalizedResolved = normalizeUnitId(resolved);
+            ImportRules.requireGuestSafePath(normalizedResolved);
             rejectSelfImport(normalizedUnitId, imported.path(), normalizedResolved);
             if (!available.contains(normalizedResolved)) {
                 throw new IllegalArgumentException(
@@ -59,6 +60,7 @@ final class ImportGraph {
                 ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
                 : Path.of(raw).normalize();
         String candidate = normalizeUnitId(candidatePath.toString());
+        ImportRules.requireGuestSafePath(candidate);
         if (!available.contains(candidate) && !candidate.endsWith(".atto")
                 && !candidate.endsWith(".ores") && !candidate.endsWith(".java")) {
             if (available.contains(candidate + ".atto")) candidate += ".atto";

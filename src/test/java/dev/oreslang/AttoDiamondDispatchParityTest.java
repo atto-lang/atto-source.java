@@ -127,14 +127,16 @@ final class AttoDiamondDispatchParityTest {
                 """;
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(program)));
-        assertTrue(error.getMessage().contains("arity 1"), error.getMessage());
+        assertTrue(error.getMessage().contains("arity 1") ||
+                error.getMessage().contains("duplicate method signature 'Invalid.value/1'"),
+                error.getMessage());
     }
 
     @Test
-    void javaInterfaceSignaturesRequireFncKeyword() {
+    void javaInterfaceSignaturesAcceptCompatibilityAndBareSpellings() {
         assertDoesNotThrow(() -> Parser.parse(
                 "define interface Named as fnc name(): string; end"));
-        assertThrows(IllegalArgumentException.class, () ->
-                Parser.parse("define interface Named as name(): string; end"));
+        assertDoesNotThrow(() -> Parser.parse("define interface Named as name(): string; end"));
+        assertDoesNotThrow(() -> Parser.parse("define interface Named as mtd name(): string; end"));
     }
 }

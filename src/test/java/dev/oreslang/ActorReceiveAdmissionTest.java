@@ -83,6 +83,31 @@ final class ActorReceiveAdmissionTest {
     }
 
     @Test
+    void stopFenceRetainsLiveReceivesUntilPhysicalCompletion() {
+        try (var gate = ActorReceiveAdmission.concurrent(55, 2)) {
+            var a = gate.tryEnter(55);
+            var b = gate.tryEnter(55);
+            assertNotNull(a);
+            assertNotNull(b);
+            gate.fence();
+            gate.fence();
+            assertFalse(gate.isClosed());
+            assertEquals(2, gate.activeReceives());
+            assertFalse(a.isRetired());
+            assertThrows(IllegalStateException.class, () -> gate.tryEnter(55));
+            a.close();
+            a.close();
+            assertEquals(1, gate.activeReceives());
+            assertThrows(IllegalStateException.class, () -> gate.tryEnter(55));
+            b.close();
+            assertEquals(0, gate.activeReceives());
+            gate.close();
+            assertTrue(gate.isClosed());
+            assertThrows(IllegalStateException.class, () -> gate.tryEnter(55));
+        }
+    }
+
+    @Test
     void racingReceiversNeverExceedCapacity() throws Exception {
         int workerCount = 16;
         int capacity = 4;
