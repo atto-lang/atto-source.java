@@ -491,7 +491,7 @@ public final class LinkedProgramRunner {
     private static Map<String, Ast.Program> parsePrograms(Map<String, String> sources) {
         LinkedHashMap<String, Ast.Program> programs = new LinkedHashMap<>();
         for (Map.Entry<String, String> source : sources.entrySet()) {
-            programs.put(source.getKey(), Parser.parse(source.getValue()));
+            programs.put(source.getKey(), Parser.parseSourceUnit(source.getKey(), source.getValue()));
         }
         return programs;
     }
@@ -529,7 +529,7 @@ public final class LinkedProgramRunner {
 
         final Ast.Program program;
         try {
-            program = Parser.parse(mixed.oresSource());
+            program = Parser.parseSourceUnit(id, mixed.oresSource());
         } catch (IllegalArgumentException malformedSource) {
             throw new SourceUnitDiagnosticException(id, "", "", malformedSource);
         }

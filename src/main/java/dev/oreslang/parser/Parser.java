@@ -126,6 +126,7 @@ public final class Parser {
     private final AttoCallableVersion attoCallableVersion;
     /** Canonical AttoLang source rules, never guessed from a legacy filename. */
     private final boolean canonicalAttoSource;
+    private final boolean extensibleDeclarationSource;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private static final java.util.Set<String> BUILTIN_OF_TYPES =
             java.util.Set.of("Map", "Array", "Tuple", "Record");
@@ -139,6 +140,101 @@ public final class Parser {
     // Global conservatism is deliberate until typed-HIR symbol ownership is
     // available: preserving ordinary CallExpr beats inventing guest authority.
     private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
+    // Phase 1a: private file-root class aliases, registered before ordinary declarations.
+    // No runtime descriptor, textual rewrite, new AST kind, or imported authority.
+    private record LocalDeclarationKind(boolean actor, List<Ast.TypeRef> requirements) {}
+    private final java.util.Map<String, LocalDeclarationKind> localClassKeywords = new java.util.LinkedHashMap<>();
+    // A speculative forward header is not authoritative until the ordinary
+    // root parser consumes that exact token position. No AST escapes before
+    // every provisional descriptor is confirmed.
+    private final java.util.Map<String, Integer> forwardKindOrigins = new java.util.HashMap<>();
+    private boolean keywordSourceSetProfile;
+    private final java.util.Set<String> publicKindNames = new java.util.LinkedHashSet<>();
+    private static final java.util.Set<String> RESERVED_CUSTOM_KINDS = java.util.Set.of(
+            "abstract",
+            "activity",
+            "actor",
+            "alias",
+            "annotation",
+            "ashr",
+            "capability",
+            "case",
+            "class",
+            "component",
+            "constructor",
+            "container",
+            "contract",
+            "critical",
+            "declare",
+            "derive",
+            "dimension",
+            "duplex",
+            "enum",
+            "event",
+            "export",
+            "extension",
+            "final",
+            "first",
+            "fnc",
+            "forward",
+            "function",
+            "grain",
+            "import",
+            "infer",
+            "int",
+            "interface",
+            "internal",
+            "isolated",
+            "kernel",
+            "keyword",
+            "macro",
+            "mailman",
+            "maybe",
+            "method",
+            "model",
+            "module",
+            "mtd",
+            "namespace",
+            "panics",
+            "pipe",
+            "private",
+            "protected",
+            "protocol",
+            "proxy",
+            "pub",
+            "raises",
+            "readable",
+            "receives",
+            "record",
+            "requires",
+            "routine",
+            "rpipe",
+            "scheduler",
+            "sends",
+            "service",
+            "shared",
+            "singleton",
+            "state",
+            "static",
+            "std",
+            "struct",
+            "supervisor",
+            "suspend",
+            "task",
+            "throws",
+            "trait",
+            "transform",
+            "tuple",
+            "type",
+            "unit",
+            "untrusted",
+            "use",
+            "virtual",
+            "when",
+            "with",
+            "workflow",
+            "writable");
+    private static final int MAX_LOCAL_KEYWORDS = 128;
     private int current;
     // Exact token index of the standalone subject's closing single bar.
     private int delimitedSubjectEnd = -1;
@@ -190,6 +286,12 @@ public final class Parser {
 
     private Parser(List<Token> tokens, AttoCallableVersion version, boolean canonicalAttoSource,
                    boolean singletonCheckOnly) {
+        this(tokens, version, canonicalAttoSource, singletonCheckOnly, canonicalAttoSource);
+    }
+
+    private Parser(List<Token> tokens, AttoCallableVersion version, boolean canonicalAttoSource,
+                   boolean singletonCheckOnly, boolean extensibleDeclarationSource) {
+        this.extensibleDeclarationSource = extensibleDeclarationSource;
         this.singletonCheckOnly = singletonCheckOnly;
         this.attoCallableVersion = version;
         this.canonicalAttoSource = canonicalAttoSource;
@@ -288,6 +390,14 @@ public final class Parser {
         return new Parser(ContextualIntLowering.lower(new Lexer(source).scan())).parseProgram();
     }
 
+    /** Linked source admission: enable contextual descriptors only for canonical
+     * source-unit identities. Do not silently switch unrelated legacy-compatible
+     * grammar/equality/ownership rules to the strict profile. */
+    public static Ast.Program parseSourceUnit(String unitId, String source) {
+        boolean atto = unitId.toLowerCase(java.util.Locale.ROOT).endsWith(".atto");
+        return new Parser(new Lexer(source).scan(), null, false, false, atto).parseProgram();
+    }
+
     /** Explicit draft v1/v2 source grammar. This is a real parser entrypoint,
      * not a completed package-edition/Truffle guest integration. Unsupported
      * compound/effectful comma body shapes fail before AST emission. */
@@ -362,6 +472,10 @@ public final class Parser {
      * which would otherwise be reparsed outside the selected source profile.
      */
     public static Ast.Program parseStrictAtto(String source) {
+        return new Parser(strictAttoTokens(source), null, true, false).parseProgram();
+    }
+
+    private static List<Token> strictAttoTokens(String source) {
         List<Token> scanned = new Lexer(source).scan();
         for (Token token : scanned) {
             // Java currently has no source-level typed Error identity or
@@ -384,7 +498,109 @@ public final class Parser {
                         + ": template interpolation requires profile-preserving typed lowering");
             }
         }
-        return new Parser(scanned, null, true, false).parseProgram();
+        return scanned;
+    }
+
+    // Restricted compiler-only linked syntax slice. Inputs are immutable
+    // caller-supplied sibling .atto units; no filesystem/host/package lookup.
+    // Binding identity includes the exact provider source digest and schema.
+    // Not yet wired into IncrementalCompiler or the executable linker.
+    public record KeywordBinding(String consumer, String name, String provider,
+            String providerSha256, String schema) {}
+    public record KeywordSourceSet(java.util.Map<String, Ast.Program> programs,
+            java.util.List<KeywordBinding> bindings,
+            java.util.Map<String, String> sourceSha256) {}
+    private record KeywordSelection(String name, String path) {}
+
+    public static KeywordSourceSet parseKeywordSourceSet(java.util.Map<String, String> input) {
+        var sources = new java.util.TreeMap<>(java.util.Map.copyOf(input));
+        if (sources.isEmpty() || sources.size() > 128)
+            throw new IllegalArgumentException("KIND_SOURCE_SET_BUDGET: expected 1..128 units");
+        var parsers = new java.util.TreeMap<String, Parser>();
+        var selections = new java.util.TreeMap<String, List<KeywordSelection>>();
+        var programs = new java.util.TreeMap<String, Ast.Program>();
+        var digests = new java.util.TreeMap<String, String>();
+        var bindings = new ArrayList<KeywordBinding>();
+        long bytes = 0;
+        for (var unit : sources.entrySet()) {
+            if (!unit.getKey().matches("[A-Za-z0-9_-]{1,128}\\.atto"))
+                throw new IllegalArgumentException("KIND_SOURCE_ID_UNSUPPORTED: sibling .atto source IDs only");
+            if (!java.nio.charset.StandardCharsets.UTF_8.newEncoder().canEncode(unit.getValue())
+                    || unit.getValue().indexOf(0) >= 0)
+                throw new IllegalArgumentException("KIND_SOURCE_ENCODING: invalid source scalar sequence");
+            byte[] source = unit.getValue().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            bytes += source.length;
+            if (bytes > 4 * 1024 * 1024)
+                throw new IllegalArgumentException("KIND_SOURCE_SET_BUDGET: source byte limit");
+            try {
+                digests.put(unit.getKey(), java.util.HexFormat.of().formatHex(
+                        java.security.MessageDigest.getInstance("SHA-256").digest(source)));
+            } catch (java.security.NoSuchAlgorithmException impossible) {
+                throw new IllegalStateException(impossible);
+            }
+            Parser parser = new Parser(strictAttoTokens(unit.getValue()), null, true, false);
+            parser.keywordSourceSetProfile = true;
+            parsers.put(unit.getKey(), parser);
+            selections.put(unit.getKey(), parser.readKeywordSelections());
+        }
+        // Authenticate providers through the ordinary root parser first.
+        // This slice deliberately disallows transitive descriptor imports.
+        for (var entry : parsers.entrySet()) {
+            if (selections.get(entry.getKey()).isEmpty())
+                programs.put(entry.getKey(), entry.getValue().parseKeywordSourceUnit());
+        }
+        for (var entry : parsers.entrySet()) {
+            var imports = selections.get(entry.getKey());
+            if (imports.isEmpty()) continue;
+            Parser consumer = entry.getValue();
+            for (KeywordSelection selection : imports) {
+                String providerId = selection.path().substring(2);
+                Parser provider = parsers.get(providerId);
+                if (provider == null || !programs.containsKey(providerId)
+                        || !selections.get(providerId).isEmpty())
+                    throw new IllegalArgumentException("KIND_PROVIDER_UNVERIFIED: " + providerId);
+                if (!provider.publicKindNames.contains(selection.name()))
+                    throw new IllegalArgumentException("KIND_EXPORT_UNAVAILABLE: " + selection.name());
+                LocalDeclarationKind descriptor = provider.localClassKeywords.get(selection.name());
+                if (descriptor.actor() || !descriptor.requirements().isEmpty())
+                    throw new IllegalArgumentException("KIND_IMPORTED_CONTRACT_UNSUPPORTED");
+                if (consumer.localClassKeywords.putIfAbsent(selection.name(), descriptor) != null)
+                    throw new IllegalArgumentException("KIND_IMPORT_AMBIGUOUS: " + selection.name());
+                bindings.add(new KeywordBinding(entry.getKey(), selection.name(), providerId,
+                        digests.get(providerId), "atto-keyword-source-set-v1"));
+            }
+            programs.put(entry.getKey(), consumer.parseKeywordSourceUnit());
+            if (!consumer.publicKindNames.isEmpty())
+                throw new IllegalArgumentException("KIND_REEXPORT_UNSUPPORTED");
+        }
+        return new KeywordSourceSet(java.util.Map.copyOf(programs),
+                List.copyOf(bindings), java.util.Map.copyOf(digests));
+    }
+
+    private List<KeywordSelection> readKeywordSelections() {
+        List<KeywordSelection> result = new ArrayList<>();
+        while (check(IMPORT) && checkNext(IDENT) && tokens.get(current + 1).lexeme().equals("keyword")) {
+            advance(); advance();
+            String name = consume(IDENT, "expected keyword import name").lexeme();
+            consume(FROM, "expected 'from' in keyword import");
+            String path = consume(STRING, "expected quoted sibling source path").lexeme();
+            if (!path.matches("\\./[A-Za-z0-9_-]{1,128}\\.atto"))
+                throw error(previous(), "KIND_IMPORT_PATH_UNSUPPORTED: explicit sibling .atto only");
+            consume(SEMICOLON, "keyword import must end with ';'");
+            if (result.size() >= MAX_LOCAL_KEYWORDS)
+                throw error(previous(), "KIND_IMPORT_BUDGET: too many keyword imports");
+            result.add(new KeywordSelection(name, path));
+        }
+        return List.copyOf(result);
+    }
+
+    private Ast.Program parseKeywordSourceUnit() {
+        Ast.Program result = parseProgram();
+        if (result.namespace() != null || !result.imports().isEmpty()
+                || !result.exports().isEmpty()
+                || result.modules().stream().anyMatch(m -> !m.name().equals(ROOT_MODULE)))
+            throw error(peek(), "KIND_SOURCE_SET_SCOPE_UNSUPPORTED: unwrapped sibling roots only");
+        return result;
     }
 
 
@@ -620,6 +836,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (extensibleDeclarationSource && isContextualIdentifier("keyword") && checkNext(IDENT)) {
+                    parseLocalClassKeyword(modifiers, annotations);
+                    continue;
+                }
                 if (isContextualIdentifier("singleton")) {
                     Token keyword = advance();
                     if (!singletonCheckOnly) throw unsupportedSingleton(keyword);
@@ -692,6 +912,40 @@ public final class Parser {
                     rootDeclarations.add(parseDirectStructAttachment(modifiers.visibility));
                     continue;
                 }
+                // Only the contextual declaration head is changed. Ordinary class
+                // parsing/semantic validation/codegen still owns every member.
+                if (extensibleDeclarationSource && check(IDENT) && checkNext(IDENT)
+                        && (localClassKeywords.containsKey(peek().lexeme())
+                            || discoverForwardLocalKind())) {
+                    Token kind = advance();
+                    // The existing whole-file intrinsic-shadow scanner does not
+                    // yet recognize custom generic headers. Keep this slice
+                    // plain and reject compiler factory names rather than mint
+                    // trusted collection construction by misscanning a class.
+                    if (COLLECTION_OF_TYPES.contains(peek().lexeme()) || !checkNext(AS)) {
+                        throw error(kind, "KIND_HEADER_UNSUPPORTED: phase 1a requires a plain non-intrinsic class name followed by 'as'");
+                    }
+                    LocalDeclarationKind descriptor = localClassKeywords.get(kind.lexeme());
+                    if (descriptor.actor()) {
+                        validateOnlyVisibilityModifiers(modifiers, "custom actor declarations");
+                        rejectCallableStructuralAnnotation(annotations, "actor class declarations");
+                        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
+                        Ast.Decl actor = parseActorClass(Ast.ActorKind.SHARED, modifiers.visibility,
+                                ActorPrefix.DEFAULT, descriptor.requirements());
+                        if (!(actor instanceof Ast.ClassDecl))
+                            throw error(kind, "KIND_ACTOR_BODY_REQUIRED: custom actor requires a complete body");
+                        rootDeclarations.add(actor);
+                    } else {
+                        modifiers = mergeModifiers(modifiers, parseModifiers());
+                        rejectCallableStructuralAnnotation(annotations, "class declarations");
+                        validateCopyPolicyClassAnnotations(annotations);
+                        validateClassModifiers(modifiers);
+                        rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract,
+                                modifiers.visibility != Ast.Visibility.PUBLIC, annotations,
+                                descriptor.requirements()));
+                    }
+                    continue;
+                }
                 // Compatibility: both `pub define fnc` and `define pub fnc`
                 // denote the same file-root callable, with identical modifiers.
                 if (check(FNC) || check(ROUTINE) || looksLikeReturnFirstCallableHead()) {
@@ -710,6 +964,10 @@ public final class Parser {
             rootDeclarations.add(declaration);
         }
 
+        if (!forwardKindOrigins.isEmpty()) {
+            throw error(peek(), "KIND_FORWARD_NOT_ROOT: provisional declaration kind was not confirmed by the file-root parser");
+        }
+        validateLocalKeywordRequirements(imports, modules, rootDeclarations);
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
         for (int i = 0; i < tokens.size(); i++) {
             Token t = tokens.get(i);
@@ -725,6 +983,109 @@ public final class Parser {
         return StaticProxySynthesis.expand(
                 new Ast.Program(namespace, imports, modules, exports),
                 staticProxyTargets, staticProxyInterceptors);
+    }
+
+    // Only attempt forward discovery for an otherwise unknown plain custom
+    // head, never for a normal expression or callable. Reuse the existing
+    // descriptor parser; candidate text is never rewritten or executed.
+    private boolean discoverForwardLocalKind() {
+        if (current + 2 >= tokens.size() || tokens.get(current + 2).type() != AS)
+            return false;
+        String name = peek().lexeme();
+        int saved = current;
+        for (int i = current + 3; i + 3 < tokens.size(); i++) {
+            if (tokens.get(i).type() != DEFINE
+                    || tokens.get(i + 1).type() != IDENT
+                    || !tokens.get(i + 1).lexeme().equals("keyword")
+                    || tokens.get(i + 2).type() != IDENT
+                    || !tokens.get(i + 2).lexeme().equals(name)
+                    || tokens.get(i + 3).type() != AS)
+                continue;
+            try {
+                current = i + 1;
+                parseLocalClassKeyword(parseModifiers(), List.of());
+                forwardKindOrigins.put(name, i + 1);
+                return true;
+            } finally {
+                current = saved;
+            }
+        }
+        return false;
+    }
+
+    private void parseLocalClassKeyword(Modifiers modifiers, List<Ast.Annotation> annotations) {
+        int origin = current;
+        Token at = advance(); // contextual keyword
+        validateOnlyVisibilityModifiers(modifiers, "keyword descriptors");
+        boolean publicDescriptor = modifiers.visibilitySeen && modifiers.visibility == Ast.Visibility.PUBLIC;
+        if ((modifiers.visibilitySeen && !(keywordSourceSetProfile && publicDescriptor))
+                || !annotations.isEmpty()) {
+            throw error(at, "KIND_VISIBILITY_UNSUPPORTED: public descriptors require linked source-set profile");
+        }
+        Token name = consume(IDENT, "expected contextual declaration kind name");
+        if (RESERVED_CUSTOM_KINDS.contains(name.lexeme()) || COLLECTION_OF_TYPES.contains(name.lexeme())
+                || java.util.Set.of("serial", "http", "tcp", "websocket", "ws", "_").contains(name.lexeme())) {
+            throw error(name, "KIND_RESERVED: built-in or contextual declaration name");
+        }
+        LocalDeclarationKind provisional = null;
+        if (localClassKeywords.containsKey(name.lexeme())) {
+            Integer expectedOrigin = forwardKindOrigins.get(name.lexeme());
+            if (expectedOrigin == null || expectedOrigin != origin)
+                throw error(name, "KIND_DUPLICATE: duplicate declaration kind");
+            provisional = localClassKeywords.remove(name.lexeme());
+            forwardKindOrigins.remove(name.lexeme());
+        }
+        if (localClassKeywords.size() >= MAX_LOCAL_KEYWORDS) {
+            throw error(name, "KIND_BUDGET: too many file-local descriptors");
+        }
+        consume(AS, "expected 'as' before keyword base kind");
+        boolean actor = match(ACTOR);
+        if (!actor && !match(CLASS)) {
+            throw error(peek(), "KIND_BASE_UNSUPPORTED: supports ordinary class or actor only");
+        }
+        List<Ast.TypeRef> requirements = new ArrayList<>();
+        while (matchContextualIdentifier("requires")) {
+            Token contract = consume(IDENT, "KIND_CONTRACT_UNSUPPORTED: expected a simple file-root interface name");
+            Ast.TypeRef required = Ast.TypeRef.simple(contract.lexeme());
+            if (requirements.contains(required))
+                throw error(contract, "KIND_CONTRACT_DUPLICATE: repeated requirement");
+            if (requirements.size() >= 32)
+                throw error(contract, "KIND_CONTRACT_BUDGET: too many requirements");
+            consume(SEMICOLON, "keyword requirements must end with ';'");
+            requirements.add(required);
+        }
+        consume(END, "expected 'end' after descriptor");
+        if (publicDescriptor) {
+            if (actor || !requirements.isEmpty())
+                throw error(name, "KIND_PUBLIC_CONTRACT_UNSUPPORTED: imported actor or contract needs verified symbol identity");
+            publicKindNames.add(name.lexeme());
+        }
+        LocalDeclarationKind resolved = new LocalDeclarationKind(actor, List.copyOf(requirements));
+        if (provisional != null && !provisional.equals(resolved))
+            throw error(name, "KIND_FORWARD_MISMATCH: descriptor changed during root confirmation");
+        localClassKeywords.put(name.lexeme(), resolved);
+    }
+
+    // v1b deliberately binds only unambiguous, non-generic interfaces in the
+    // same file root. No imported or module contract authority is manufactured.
+    private void validateLocalKeywordRequirements(List<Ast.ImportDecl> imports,
+            List<Ast.ModuleDecl> modules, List<Ast.Decl> declarations) {
+        for (var entry : localClassKeywords.entrySet()) {
+            for (Ast.TypeRef requirement : entry.getValue().requirements()) {
+                if (!imports.isEmpty() || !modules.isEmpty()) {
+                    throw error(peek(), "KIND_CONTRACT_SCOPE_UNSUPPORTED: local requirements do not yet support imports or modules");
+                }
+                List<Ast.Decl> matches = declarations.stream()
+                        .filter(d -> requirement.name().equals(definedName(d)))
+                        .toList();
+                if (matches.size() != 1 || !(matches.getFirst() instanceof Ast.InterfaceDecl iface)
+                        || iface.declarationKind() != Ast.InterfaceKind.INTERFACE
+                        || !iface.genericParameters().isEmpty()) {
+                    throw error(peek(), "KIND_CONTRACT_MISMATCH: expected unique local non-generic interface "
+                            + requirement.name() + " for " + entry.getKey());
+                }
+            }
+        }
     }
 
     /** `export pub Foo;` and `export pub[pkg] class Bar;` are file-level declarations. */
@@ -1614,6 +1975,12 @@ public final class Parser {
             boolean isAbstract,
             boolean filePrivateScope,
             List<Ast.Annotation> classAnnotations) {
+        return parseClass(visibility, isAbstract, filePrivateScope, classAnnotations, List.of());
+    }
+
+    private Ast.ClassDecl parseClass(Ast.Visibility visibility, boolean isAbstract,
+            boolean filePrivateScope, List<Ast.Annotation> classAnnotations,
+            List<Ast.TypeRef> requiredInterfaces) {
         String name = consumeTypeDeclarationName("expected class name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -1627,6 +1994,13 @@ public final class Parser {
             }
             interfaces = parseTypeRefList();
             consume(AS, "expected 'as' after class implements clause");
+        }
+        if (!requiredInterfaces.isEmpty()) {
+            List<Ast.TypeRef> combined = new ArrayList<>(interfaces);
+            for (Ast.TypeRef required : requiredInterfaces) {
+                if (!combined.contains(required)) combined.add(required);
+            }
+            interfaces = List.copyOf(combined);
         }
         boolean braceStyle = match(LBRACE);
         Token.Type classTerminator = braceStyle ? RBRACE : END;
@@ -2260,6 +2634,11 @@ public final class Parser {
 
     private Ast.Decl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
+        return parseActorClass(actorKind, visibility, prefix, List.of());
+    }
+
+    private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility,
+            ActorPrefix prefix, List<Ast.TypeRef> requiredInterfaces) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
         // 'receives' and 'sends' are contextual actor-header keywords. Do
@@ -2288,6 +2667,14 @@ public final class Parser {
                     + "' may extend at most one actor superclass");
         }
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        if (!requiredInterfaces.isEmpty()) {
+            List<Ast.TypeRef> combined = new ArrayList<>(interfaces);
+            for (Ast.TypeRef required : requiredInterfaces) {
+                if (!combined.contains(required)) combined.add(required);
+            }
+            interfaces = List.copyOf(combined);
+        }
 
         // A nominal, semicolon-terminated actor may name contract obligations
         // without defining an implicit runtime actor, empty class or alias.

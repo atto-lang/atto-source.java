@@ -160,7 +160,7 @@ public final class IncrementalCompiler {
                 try {
                     rawProgram = layout.withEffectiveNamespace(id, strictAtto
                             ? Parser.parseStrictAtto(entry.getValue())
-                            : Parser.parse(entry.getValue()));
+                            : Parser.parseSourceUnit(id, entry.getValue()));
                     expandedProgram = AnnotationExpander.expand(rawProgram);
                 } catch (IllegalArgumentException invalid) {
                     throw new SourceUnitDiagnosticException(id, "", "", invalid);
