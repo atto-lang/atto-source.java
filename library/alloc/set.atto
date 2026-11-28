@@ -236,6 +236,55 @@ define pub class IntHashSet as
     return self.count + other.len() - 2 * shared;
   }
 
+  // A caller may choose a result capacity within the existing bounded
+  // allocation profile. Reject impossible cardinality before creating
+  // any result storage. Inputs are borrowed, never modified.
+  pub symmetric_difference_with_capacity(borrow IntHashSet other, int capacity): IntHashSet {
+    // Reject nonsensical bounds before even scanning the operands.
+    if capacity < 1 || capacity > 65536; do
+      rt fail("alloc/set: symmetric difference capacity exceeded");
+    fi
+    let int required = self.symmetric_difference_size(rt borrow other);
+    return self.materialize_xor(rt borrow other, capacity, required);
+  }
+
+  // Private helper accepts only the cardinality computed by the checked
+  // public entry points. Do not repeat the potentially costly intersection.
+  materialize_xor(borrow IntHashSet other, int capacity, int required): IntHashSet {
+    if capacity < 1 || capacity > 65536 || required < 0 || required > capacity; do
+      rt fail("alloc/set: symmetric difference capacity exceeded");
+    fi
+    let mut IntHashSet result = new IntHashSet(capacity);
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) eq 1; do
+        let int key = self.keys.get(i);
+        if !other.contains(key); do
+          if !result.insert(key); do rt fail("alloc/set: inconsistent fresh hash set"); fi
+        fi
+      fi
+    done
+    for (let int i = 0; i < other.capacity(); i = i + 1) do
+      if other.states.get(i) eq 1; do
+        let int key = other.keys.get(i);
+        if !self.contains(key); do
+          if !result.insert(key); do rt fail("alloc/set: inconsistent fresh hash set"); fi
+        fi
+      fi
+    done
+    if result.len() neq required; do rt fail("alloc/set: inconsistent hash set cardinality"); fi
+    return result;
+  }
+
+  // Retain at least the greater input capacity when possible, but never
+  // shrink the requested capacity below the actual XOR cardinality.
+  pub symmetric_difference(borrow IntHashSet other): IntHashSet {
+    let mut int capacity = self.limit;
+    if other.capacity() > capacity; do capacity = other.capacity(); fi
+    let int required = self.symmetric_difference_size(rt borrow other);
+    if required > capacity; do capacity = required; fi
+    return self.materialize_xor(rt borrow other, capacity, required);
+  }
+
   // Full probe first: a tombstone can precede a duplicate key.
   pub insert(mut self)(int key): bool {
     if self.count >= self.limit; do return false; fi

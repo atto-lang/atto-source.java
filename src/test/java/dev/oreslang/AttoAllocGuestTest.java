@@ -93,7 +93,8 @@ final class AttoAllocGuestTest {
         for (String name : new String[]{
                 "allocator-transactions-positive.atto",
                 "set-hash-operations-positive.atto",
-                "set-dense-xor-positive.atto"}) {
+                "set-dense-xor-positive.atto",
+                "set-hash-xor-positive.atto"}) {
             Path guest = Path.of("tests", "fixtures", "alloc-java-guest", name);
             assertTrue(Files.isRegularFile(guest), "missing Atto fixture " + name);
             assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()), name);
@@ -114,6 +115,20 @@ final class AttoAllocGuestTest {
                         ExecutionProfile.serverJit(), new ByteArrayOutputStream(), new ByteArrayOutputStream()));
         assertTrue(failure.getMessage().contains("alloc/set: symmetric difference domain mismatch"),
                 failure::getMessage);
+    }
+
+    @Test
+    void hashSymmetricDifferenceRejectsInvalidResultCapacityAtRuntime() throws Exception {
+        for (String name : new String[] {"set-hash-xor-capacity-negative.atto",
+                "set-hash-xor-zero-capacity-negative.atto", "set-hash-xor-limit-negative.atto"}) {
+            Path guest = Path.of("tests", "fixtures", "alloc-java-guest", name);
+            assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()), name);
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> LinkedProgramRunner.runWithExitStatus(guest, IsolatePolicy.developer(),
+                            ExecutionProfile.serverJit(), new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+            assertTrue(failure.getMessage().contains("alloc/set: symmetric difference capacity exceeded"),
+                    failure::getMessage);
+        }
     }
 
     @Test
@@ -155,6 +170,7 @@ final class AttoAllocGuestTest {
         for (String name : new String[]{
                 "arc-shared-owner-negative.atto",
                 "set-generic-hash-negative.atto",
+                "set-hash-xor-private-helper-negative.atto",
                 "allocator-physical-handle-negative.atto",
                 "alloc-internal-scope-negative.atto",
                 "alloc-internal-loan-negative.atto",

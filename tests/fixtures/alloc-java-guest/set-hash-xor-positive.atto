@@ -1,0 +1,35 @@
+// Real signed hash set XOR: collisions, tombstones, exact capacity and independence.
+import class IntHashSet from "atto.alloc/set";
+pub fnc main(): int {
+  let mut IntHashSet a = new IntHashSet(4);
+  let mut IntHashSet b = new IntHashSet(7);
+  a.insert(-1); a.insert(3); a.insert(7); a.remove(3);
+  b.insert(7); b.insert(0); b.insert(-9); b.insert(5); b.remove(5);
+  let mut IntHashSet result = a.symmetric_difference(rt borrow b);
+  if result.len() neq 3 || !result.contains(-1) || !result.contains(0) ||
+     !result.contains(-9) || result.contains(7) || result.contains(3) ||
+     result.contains(5) || result.tombstones() neq 0; do return 1; fi
+  let mut IntHashSet reversed = b.symmetric_difference_with_capacity(rt borrow a, 3);
+  if reversed.capacity() neq 3 || !reversed.same_members(rt borrow result); do return 2; fi
+  if a.len() neq 2 || b.len() neq 3 || a.tombstones() neq 1 ||
+     b.tombstones() neq 1; do return 3; fi
+  result.remove(-1); result.insert(2);
+  if !a.contains(-1) || a.contains(2) || b.contains(2); do return 4; fi
+  b.remove(0);
+  if !result.contains(0) || result.len() neq 3; do return 5; fi
+  let mut IntHashSet same = a.symmetric_difference(rt borrow a);
+  if !same.is_empty(); do return 6; fi
+  let mut IntHashSet empty = new IntHashSet(1);
+  let mut IntHashSet copy = a.symmetric_difference(rt borrow empty);
+  if !copy.same_members(rt borrow a); do return 7; fi
+  copy.clear();
+  if a.is_empty(); do return 8; fi
+  let mut IntHashSet left = new IntHashSet(2);
+  let mut IntHashSet right = new IntHashSet(2);
+  left.insert(-2); left.insert(-1); right.insert(0); right.insert(1);
+  let mut IntHashSet larger = left.symmetric_difference(rt borrow right);
+  if larger.len() neq 4 || larger.capacity() neq 4 ||
+     !larger.contains(-2) || !larger.contains(-1) ||
+     !larger.contains(0) || !larger.contains(1); do return 9; fi
+  return 42;
+}
