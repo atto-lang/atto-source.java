@@ -33,7 +33,7 @@ final class AttoAsyncUdpGuestTest {
             }
             """;
 
-    @Test void compiledAttoGuestReceivesOwnUdpDatagram() throws java.io.IOException {
+    @Test void compiledAttoGuestReceivesOwnUdpDatagram() throws Exception {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(LOOPBACK));
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)

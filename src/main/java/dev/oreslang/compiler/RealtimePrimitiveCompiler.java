@@ -38,6 +38,8 @@ public final class RealtimePrimitiveCompiler {
     private static final int MAX_AST_NESTING = 64;
     private int visitedStatements;
     private int currentNesting;
+    private int matchExpressionSlots;
+    private static final int MAX_MATCH_EXPRESSION_SLOTS = 64;
 
     private RealtimePrimitiveCompiler() { }
 
@@ -200,6 +202,9 @@ public final class RealtimePrimitiveCompiler {
     private Cost statement(Ast.Stmt stmt, Set<String> locals) {
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() == null) throw invalid("only non-void returns are admitted");
+            if (ret.value() instanceof Ast.MatchExpr matched && matched.arms().size() > 2) {
+                return added(1, multiArmMatchCost(matched, locals));
+            }
             return added(1, expression(ret.value(), locals));
         }
         if (stmt instanceof Ast.BindingStmt bind) {
@@ -267,6 +272,10 @@ public final class RealtimePrimitiveCompiler {
             }
             return added(1, expression(unary.operand(), locals));
         }
+        if (expr instanceof Ast.MatchExpr matched) {
+            if (matched.arms().size() > 2) return added(1, multiArmMatchCost(matched, locals));
+            return expression(lowerPrimitiveMatch(matched), locals);
+        }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             // Both alternatives must independently satisfy closed-world
             // admission, including an unselected branch. Only one executes.
@@ -293,6 +302,100 @@ public final class RealtimePrimitiveCompiler {
             return new Cost(plus(steps, callee.steps()), Math.max(depth, 1 + callee.depth()));
         }
         throw invalid("reference/heap/suspend/unknown expression: " + expr.getClass().getSimpleName());
+    }
+
+    /**
+     * Closed two-arm scalar match lowering. The first arm tests one literal;
+     * the second must be an unguarded wildcard or its boolean complement.
+     * The subject occurs exactly once in the resulting conditional, even if
+     * it is a direct call. The checked frontend remains responsible for
+     * type compatibility, overlap, exhaustiveness and result ownership.
+     */
+    private static Ast.ConditionalExpr lowerPrimitiveMatch(Ast.MatchExpr matched) {
+        if (matched.arms().size() != 2) {
+            throw invalid("primitive value match requires exactly two arms");
+        }
+        Ast.MatchValueArm first = matched.arms().get(0);
+        Ast.MatchValueArm last = matched.arms().get(1);
+        if (first.guard() != null || last.guard() != null
+                || !first.prefixStatements().isEmpty() || !last.prefixStatements().isEmpty()) {
+            throw invalid("primitive value match does not admit guards or block prefixes");
+        }
+        if (!(first.pattern() instanceof Ast.LiteralPattern literal)) {
+            throw invalid("primitive value match requires a literal first arm");
+        }
+        Object value = literal.value();
+        boolean scalar = value instanceof Boolean || value instanceof Byte
+                || value instanceof Short || value instanceof Integer
+                || (value instanceof Long n && n >= Integer.MIN_VALUE && n <= Integer.MAX_VALUE);
+        if (!scalar) throw invalid("primitive value match requires a bool/i32 literal");
+        boolean complement = value instanceof Boolean b
+                && last.pattern() instanceof Ast.LiteralPattern other
+                && other.value() instanceof Boolean c && b != c;
+        if (!(last.pattern() instanceof Ast.WildcardPattern) && !complement) {
+            throw invalid("primitive value match requires an exhaustive wildcard or bool complement");
+        }
+        if (matched.resultType() != null && !primitive(matched.resultType())) {
+            throw invalid("primitive value match requires a primitive result type");
+        }
+        Ast.Expr condition = new Ast.BinaryExpr(
+                "eq", matched.subject(), new Ast.LiteralExpr(value));
+        return new Ast.ConditionalExpr(condition, first.value(), last.value());
+    }
+
+    /**
+     * Return-position multi-arm i32 matching uses a single primitive local
+     * and forward comparisons. No new dispatch object or helper call exists
+     * at runtime. Guard/prefix/binding patterns remain outside this profile.
+     */
+    private static void validateMultiArmMatch(Ast.MatchExpr matched) {
+        int count = matched.arms().size();
+        if (count < 3 || count > 64) {
+            throw invalid("multi-arm primitive match requires 3..64 arms");
+        }
+        if (matched.resultType() != null && !primitive(matched.resultType())) {
+            throw invalid("primitive value match requires a primitive result type");
+        }
+        Set<Long> seen = new HashSet<>();
+        for (int i = 0; i < count; i++) {
+            Ast.MatchValueArm arm = matched.arms().get(i);
+            if (arm.guard() != null || !arm.prefixStatements().isEmpty()) {
+                throw invalid("primitive value match does not admit guards or block prefixes");
+            }
+            if (i == count - 1) {
+                if (!(arm.pattern() instanceof Ast.WildcardPattern)) {
+                    throw invalid("multi-arm primitive match requires a final wildcard");
+                }
+                continue;
+            }
+            if (!(arm.pattern() instanceof Ast.LiteralPattern literal)) {
+                throw invalid("multi-arm primitive match requires i32 literals");
+            }
+            Object value = literal.value();
+            if (!(value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long)) {
+                throw invalid("multi-arm primitive match requires i32 literals");
+            }
+            long n = ((Number) value).longValue();
+            if (n < Integer.MIN_VALUE || n > Integer.MAX_VALUE || !seen.add(n)) {
+                throw invalid("out-of-range or duplicate multi-arm i32 pattern");
+            }
+        }
+    }
+
+    private Cost multiArmMatchCost(Ast.MatchExpr matched, Set<String> locals) {
+        validateMultiArmMatch(matched);
+        Cost subject = expression(matched.subject(), locals);
+        long tests = plus(2, subject.steps()); // dispatch + single scalar store
+        long worstArm = 0;
+        int depth = subject.depth();
+        for (int i = 0; i < matched.arms().size(); i++) {
+            if (i + 1 < matched.arms().size()) tests = plus(tests, 3); // read + literal + compare
+            Cost arm = expression(matched.arms().get(i).value(), locals);
+            worstArm = Math.max(worstArm, arm.steps());
+            depth = Math.max(depth, arm.depth());
+        }
+        return new Cost(plus(tests, worstArm), depth);
     }
 
     private static Cost combined(long own, Cost first, Cost second) {
@@ -350,16 +453,29 @@ public final class RealtimePrimitiveCompiler {
                 out.append(javaType(p.type())).append(" ").append(p.name());
             }
             out.append(") {\n");
-            emitStatements(out, fn.body(), "    ");
+            // Declare only primitive scratch slots, not their initializers,
+            // before statements. Their assignments remain at the original
+            // expression position (including short-circuit branches).
+            matchExpressionSlots = 0;
+            StringBuilder body = new StringBuilder();
+            emitStatements(body, fn.body(), "    ");
+            for (int i = 0; i < matchExpressionSlots; i++) {
+                out.append("    int $matchExpr").append(i).append(";\n");
+            }
+            out.append(body);
             out.append("  }\n");
         }
         return out.append("}\n").toString();
     }
 
-    private static void emitStatements(StringBuilder out, List<Ast.Stmt> body, String indent) {
+    private void emitStatements(StringBuilder out, List<Ast.Stmt> body, String indent) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt ret) {
-                out.append(indent).append("return ").append(emitExpr(ret.value())).append(";\n");
+                if (ret.value() instanceof Ast.MatchExpr matched && matched.arms().size() > 2) {
+                    emitMultiArmMatchReturn(out, matched, indent);
+                } else {
+                    out.append(indent).append("return ").append(emitExpr(ret.value())).append(";\n");
+                }
             } else if (stmt instanceof Ast.BindingStmt bind) {
                 out.append(indent).append(javaType(bind.declaredType())).append(" ")
                         .append(bind.name()).append(" = ").append(emitExpr(bind.initializer()))
@@ -384,7 +500,52 @@ public final class RealtimePrimitiveCompiler {
         }
     }
 
-    private static String emitExpr(Ast.Expr expr) {
+    private void emitMultiArmMatchReturn(StringBuilder out, Ast.MatchExpr matched, String indent) {
+        validateMultiArmMatch(matched);
+        // Compiler scratch names use a dollar prefix that is forbidden in guest identifiers.
+        // The explicit block limits the temporary's lexical scope.
+        String subject = "$matchSubject";
+        out.append(indent).append("{\n");
+        String inner = indent + "  ";
+        out.append(inner).append("final int ").append(subject).append(" = ")
+                .append(emitExpr(matched.subject())).append(";\n");
+        for (int i = 0; i < matched.arms().size(); i++) {
+            Ast.MatchValueArm arm = matched.arms().get(i);
+            if (i + 1 == matched.arms().size()) {
+                out.append(inner).append("else {\n");
+            } else {
+                Ast.LiteralPattern literal = (Ast.LiteralPattern) arm.pattern();
+                out.append(inner).append(i == 0 ? "if (" : "else if (")
+                        .append(subject).append(" == ").append(literal.value()).append(") {\n");
+            }
+            out.append(inner).append("  return ").append(emitExpr(arm.value())).append(";\n");
+            out.append(inner).append("}\n");
+        }
+        out.append(indent).append("}\n");
+    }
+
+    private String emitMultiArmMatchExpression(Ast.MatchExpr matched) {
+        validateMultiArmMatch(matched);
+        if (matchExpressionSlots >= MAX_MATCH_EXPRESSION_SLOTS) {
+            throw invalid("too many primitive match expression scratch slots");
+        }
+        // Compiler scratch names cannot collide with admitted guest identifiers.
+        String slot = "$matchExpr" + matchExpressionSlots++;
+        StringBuilder expr = new StringBuilder("(");
+        for (int i = 0; i + 1 < matched.arms().size(); i++) {
+            Ast.MatchValueArm arm = matched.arms().get(i);
+            Ast.LiteralPattern literal = (Ast.LiteralPattern) arm.pattern();
+            String subject = i == 0
+                    ? "(" + slot + " = " + emitExpr(matched.subject()) + ")"
+                    : slot;
+            expr.append("(").append(subject).append(" == ").append(literal.value())
+                    .append(") ? ").append(emitExpr(arm.value())).append(" : ");
+        }
+        expr.append(emitExpr(matched.arms().getLast().value())).append(")");
+        return expr.toString();
+    }
+
+    private String emitExpr(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr lit) return String.valueOf(lit.value());
         if (expr instanceof Ast.NameExpr name) return name.name();
         if (expr instanceof Ast.BinaryExpr b) {
@@ -399,6 +560,10 @@ public final class RealtimePrimitiveCompiler {
             return "(" + emitExpr(b.left()) + " " + operator + " " + emitExpr(b.right()) + ")";
         }
         if (expr instanceof Ast.UnaryExpr u) return "(" + u.operator() + emitExpr(u.operand()) + ")";
+        if (expr instanceof Ast.MatchExpr matched) {
+            if (matched.arms().size() > 2) return emitMultiArmMatchExpression(matched);
+            return emitExpr(lowerPrimitiveMatch(matched));
+        }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             // Primitive Java conditional bytecode uses forward branches and
             // evaluates only the selected arm. No boxing or fallback evaluator.
