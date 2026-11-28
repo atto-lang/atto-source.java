@@ -3564,10 +3564,31 @@ public final class TypeChecker {
                     && declared instanceof Record row && row.readOnly()
                     && row.kind() == AggregateKind.RECORD
                     ? strictRecordFieldWidths(binding.initializer(), env) : Map.of();
+            // Exact source-width proof for immutable, explicitly typed
+            // finite tuple literals. The erased runtime INT/FLOAT type is
+            // not evidence, and mutable/rebound or aliased values do not
+            // acquire a proof from their annotation alone.
+            Map<Integer, String> tupleWidths = new HashMap<>();
+            if (strictAttoEquality && binding.kind() != Ast.BindingKind.LET
+                    && !binding.mutableReferent()
+                    && binding.declaredType() != null && binding.declaredType().isTupleType()
+                    && binding.initializer() instanceof Ast.TupleExpr literalTuple
+                    && declared instanceof Tuple tupleShape && tupleShape.kind() == TupleKind.TUPLE) {
+                List<Ast.TypeRef> slots = positionalTypeArguments(binding.declaredType());
+                if (slots.size() == literalTuple.elements().size()) {
+                    for (int i = 0; i < slots.size(); i++) {
+                        String width = strictNumericName(slots.get(i));
+                        if (width != null && width.equals(strictNumericSource(literalTuple.elements().get(i), env))) {
+                            tupleWidths.put(i, width);
+                        }
+                    }
+                }
+            }
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
             if (exactAggregate) env.lookup(binding.name()).setExactAggregate(true);
             env.lookup(binding.name()).strictRecordWidths = Map.copyOf(recordWidths);
+            env.lookup(binding.name()).strictTupleWidths = Map.copyOf(tupleWidths);
             if (strictAttoEquality) {
                 Ast.TypeRef sourceType = binding.declaredType();
                 if (sourceType == null) {
@@ -12120,6 +12141,13 @@ public final class TypeChecker {
             return null;
         }
         if (expr instanceof Ast.IndexExpr index) {
+            if (index.receiver() instanceof Ast.NameExpr name
+                    && index.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Long n && n >= 0 && n <= Integer.MAX_VALUE) {
+                Env.Binding binding = env.lookup(name.name());
+                String width = binding == null ? null : binding.strictTupleWidths.get(n.intValue());
+                if (width != null) return Ast.TypeRef.simple(width);
+            }
             Ast.TypeRef receiver = strictSourceRef(index.receiver(), env);
             if (receiver == null) return null;
             if (Set.of("Array", "List", "Vector", "Slice", "FixedArray", "FixedList")
@@ -15415,6 +15443,7 @@ public final class TypeChecker {
             private final Set<String> uninitializedFields;
             private boolean exactAggregate;
             private Map<String, String> strictRecordWidths = Map.of();
+            private Map<Integer, String> strictTupleWidths = Map.of();
 
             private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields) {
                 this.type = type;
