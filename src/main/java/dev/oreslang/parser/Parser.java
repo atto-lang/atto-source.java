@@ -5754,6 +5754,25 @@ public final class Parser {
         return parseBindingStatement(List.of());
     }
 
+    // Only the intrinsic finite tuple witness (e.g. [int]) is resolved at
+    // parse time. A user-declared Tuple alias/class must not gain intrinsic
+    // authority. Broader named/generic/return/call contexts need typed HIR.
+    // Preserve a real construction AST for every downstream checker/emitter.
+    private Ast.Expr parseDirectIntrinsicTupleInitializer(Ast.TypeRef type) {
+        int start = current;
+        Ast.Expr expression = parseExpression();
+        if (canonicalAttoSource && type != null && type.isTupleType()
+                && type.arguments().size() == 1 && !type.inferArguments()
+                && expression instanceof Ast.LiteralExpr
+                && current == start + 3
+                && tokens.get(start).type() == LPAREN
+                && tokens.get(start + 2).type() == RPAREN
+                && check(SEMICOLON)) {
+            return new Ast.TupleExpr(List.of(expression));
+        }
+        return expression;
+    }
+
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
         Ast.BindingKind kind = parseBindingKind();
         rejectConstTypeDeclaration(kind);
@@ -5833,7 +5852,7 @@ public final class Parser {
                 throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple (...) literal");
             }
         } else {
-            initializer = parseExpression();
+            initializer = parseDirectIntrinsicTupleInitializer(type);
         }
         if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
             throw error(previous(), "'const fnc' requires a lambda initializer");
