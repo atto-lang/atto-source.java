@@ -255,6 +255,7 @@ final class StaticProxyHookEffectClosure {
         }
         if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.TaskExpr
                 || expr instanceof Ast.ChannelOpExpr || expr instanceof Ast.DynamicSelectExpr
+                || expr instanceof Ast.SelectExpr
                 || expr instanceof Ast.LambdaExpr || expr instanceof Ast.RuntimeCallExpr) {
             throw fail("interceptor hook has unproven suspension/async control flow: "
                     + expr.getClass().getSimpleName());

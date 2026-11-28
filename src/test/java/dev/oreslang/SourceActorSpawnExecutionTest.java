@@ -300,6 +300,80 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void actorLifecycleAwaitObserversAreReusableAndDirectAwaitMeansReady() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> message): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+
+                  await worker;
+                  await worker;
+
+                  val ready = worker.get_ready();
+                  await ready;
+                  await ready;
+
+                  worker.send("finish");
+
+                  val done_observer = worker.get_done();
+                  await done_observer;
+                  await done_observer;
+
+                  stdio.stdout.write("lifecycle-observers-reusable");
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "lifecycle-observers-reusable",
+                run(program, "source-actor-lifecycle-repeated-await.ores"),
+                "ActorRef/ready/done lifecycle observation must be non-consuming");
+    }
+
+    @Test
+    void actorLifecycleReadyPersistsAfterPhysicalDone() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val firstReady = worker.get_ready();
+                  val secondReady = worker.get_ready();
+                  await firstReady;
+                  await worker;
+                  worker.send("finish");
+                  val firstDone = worker.get_done();
+                  val secondDone = worker.get_done();
+                  await secondDone;
+                  await firstDone;
+                  await firstDone;
+                  await secondReady;
+                  await firstReady;
+                  await worker;
+                  await worker.get_done();
+                  stdio.stdout.write("ready-after-done-reusable");
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "ready-after-done-reusable",
+                run(program, "source-actor-ready-after-done-reusable.ores"),
+                "physical DONE must not consume or invalidate settled READY/DONE observers");
+    }
+
+    @Test
     void actorLifecycleMethodsReturnAwaitableFuturesAndRejectPropertyAccess() throws Exception {
         String valid = """
                 define actor Worker as

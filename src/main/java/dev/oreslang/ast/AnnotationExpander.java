@@ -104,6 +104,7 @@ public final class AnnotationExpander {
     }
 
     private static Ast.ModuleDecl expandModule(Ast.ModuleDecl module) {
+        ScalarJsonDeriver.rejectOutsideField(module.annotations());
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
         if (hasCopyPolicy(module.annotations())) {
             throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on module " + module.name());
@@ -112,6 +113,10 @@ public final class AnnotationExpander {
             if (declaration instanceof Ast.ClassDecl klass) {
                 declarations.add(expandClass(klass));
             } else {
+                if (declaration instanceof Ast.FieldDecl field)
+                    ScalarJsonDeriver.rejectOutsideField(field.annotations());
+                if (declaration instanceof Ast.FunctionDecl function)
+                    ScalarJsonDeriver.rejectOutsideField(function.annotations());
                 if (declaration instanceof Ast.FieldDecl field && hasCopyPolicy(field.annotations())) {
                     throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on module binding " + field.name());
                 }
@@ -131,12 +136,16 @@ public final class AnnotationExpander {
     }
 
     private static Ast.ClassDecl expandClass(Ast.ClassDecl klass) {
+        ScalarJsonDeriver.rejectOutsideField(klass.annotations());
+        if (klass.constructor() != null)
+            ScalarJsonDeriver.rejectOutsideField(klass.constructor().annotations());
         if (klass.constructor() != null && hasCopyPolicy(klass.constructor().annotations())) {
             throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on constructor " + klass.name());
         }
         List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
         Map<String, Ast.MethodDecl> signatures = new HashMap<>();
         for (Ast.MethodDecl method : methods) {
+            ScalarJsonDeriver.rejectOutsideField(method.annotations());
             if (hasCopyPolicy(method.annotations())) {
                 throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on method '" + klass.name() + "." + method.name() + "'");
             }
@@ -177,6 +186,14 @@ public final class AnnotationExpander {
             String suffix = accessorSuffix(field.name());
             addGeneratedAccessor(klass, methods, signatures, getter(field, jsonKey, "get" + suffix));
             addGeneratedAccessor(klass, methods, signatures, setter(field, jsonKey, "set" + suffix));
+        }
+
+        Ast.MethodDecl serializer = ScalarJsonDeriver.derive(klass);
+        if (serializer != null) {
+            Ast.MethodDecl existing = signatures.get(signature(serializer.name(), serializer.arity()));
+            if (existing == null) methods.add(serializer);
+            else if (!existing.equals(serializer))
+                throw new IllegalArgumentException("E_TO_JSON: generated to_json/0 collides with existing method");
         }
 
         return new Ast.ClassDecl(

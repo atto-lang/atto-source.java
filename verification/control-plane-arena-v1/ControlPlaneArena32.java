@@ -67,8 +67,19 @@ final class ControlPlaneArena32 implements AutoCloseable {
         set(slot,4,1);set(slot,8,0);
         return witness((generation<<SLOT_BITS)|(slot+1));
     }
-    synchronized void drop(long handle) {
-        int slot=validate(handle);long base=(long)slot*RECORD_BYTES;
+    synchronized void drop(long handle) { releaseSlot(validate(handle)); }
+    synchronized boolean tryDrop(long handle) {
+        if(closed||(handle>>>32)!=issuer)return false;
+        int word=(int)handle,low=word&SLOT_MASK,generation=word>>>SLOT_BITS;
+        if(low==0||low>capacity||generation==0)return false;
+        int slot=low-1;
+        if(get(slot,4)==0||get(slot,0)!=generation)return false;
+        releaseSlot(slot);
+        return true;
+    }
+    // Caller holds the arena monitor and has validated the live incarnation.
+    private void releaseSlot(int slot) {
+        long base=(long)slot*RECORD_BYTES;
         // Avoid per-release slice/facade allocation; zero all physical record bytes.
         for(int i=0;i<RECORD_BYTES;i+=8)records.set(I64,base+i,0);
         set(slot,4,0);int generation=get(slot,0);

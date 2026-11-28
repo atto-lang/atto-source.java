@@ -13,6 +13,15 @@ final class ControlPlaneArenaProbe {
         }
     }
     static void denial(ControlPlaneArena32 arena,int count){for(int i=0;i<count;i++)check(arena.tryAllocate()==0);}
+    static void tryDropCycle(ControlPlaneArena32 a,long old,long foreign,int count){
+        for(int i=0;i<count;i++){
+            long h=a.tryAllocate();
+            check(h!=0&&a.readI64(h,0)==0&&a.readRef32(h)==0);
+            a.writeI64(h,0,i);
+            check(!a.tryDrop(old)&&!a.tryDrop(foreign)&&!a.tryDrop(0)&&a.readI64(h,0)==i);
+            check(a.tryDrop(h)&&!a.tryDrop(h));
+        }
+    }
     public static void main(String[] args){
         check(ControlPlaneArena32.ABI.equals("control_generation12_slot20_v1")&&ControlPlaneArena32.RECORD_BYTES==32);
         try(var a=new ControlPlaneArena32(2);var b=new ControlPlaneArena32(2)){
@@ -77,6 +86,19 @@ final class ControlPlaneArenaProbe {
             System.out.println("JAVA_CONTROL_HOST reuse=16384 quota_denials=16384 managed_reuse_delta="+(after-before)+" managed_denial_delta="+(deniedAfter-deniedBefore));
             check(after==before&&deniedAfter==deniedBefore);
             full.drop(held);
+        }
+        try(var a=new ControlPlaneArena32(272);var b=new ControlPlaneArena32(1)){
+            long foreign=b.tryAllocate(),old=a.tryAllocate();
+            check(a.tryDrop(old));
+            tryDropCycle(a,old,foreign,65536);
+            long before=bean.getThreadAllocatedBytes(thread);
+            tryDropCycle(a,old,foreign,1_000_000);
+            long after=bean.getThreadAllocatedBytes(thread);
+            check(before>=0&&after==before);
+            check(b.readI64(foreign,0)==0);
+            a.close();
+            check(!a.tryDrop(old));
+            System.out.println("JAVA_CONTROL_TRY_DROP_PASS cycles=1000000 denied=4000000 managed_byte_delta=0");
         }
         System.out.println("PASS Java FFM host control arena; no compiled Atto guest or Native Image proof");
     }

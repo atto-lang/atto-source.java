@@ -1160,7 +1160,23 @@ public final class Ast {
         }
     }
     public record ExprStmt(Expr expression) implements Stmt { }
-    public record DeferStmt(Expr expression) implements Stmt { }
+    public record DeferStmt(Expr expression) implements Stmt {
+        /**
+         * Bounded explicit registration factory: (|T x| -> || -> {...})(v).
+         * This is a source shape, not an authorization: the type and ownership
+         * passes must validate it before either execution path admits it.
+         */
+        public CallExpr boundFactory() {
+            if (expression instanceof CallExpr call
+                    && call.origin() == CallOrigin.DIRECT
+                    && call.callee() instanceof LambdaExpr outer
+                    && outer.expressionBody() instanceof LambdaExpr
+                    && !call.typeArgumentsPresent()) {
+                return call;
+            }
+            return null;
+        }
+    }
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
@@ -1545,9 +1561,49 @@ public final class Ast {
         }
     }
 
+
+    /**
+     * Value-producing static select (atto-spec ch. 6):
+     * {@code select { when readch a: val x -> x + 1, ... }} suspends until one
+     * arm commits and evaluates to that arm's value ({@code T});
+     * {@code nb select { ... }} registers the arms and returns a
+     * {@code Future<T>} immediately; {@code try select { ... }} probes once
+     * and yields {@code Option<T>}. The procedural statement form
+     * {@code do select { ... }} produces no value. {@code armValues} is
+     * parallel to {@code select.arms()}; arm bodies are empty.
+     */
+    public record SelectExpr(SelectStmt select, List<Expr> armValues) implements Expr {
+        public SelectExpr {
+            java.util.Objects.requireNonNull(select, "select");
+            armValues = List.copyOf(armValues);
+            if (armValues.size() != select.arms().size()) {
+                throw new IllegalArgumentException("select expression requires one value per arm");
+            }
+            if (select.explicitDo()) {
+                throw new IllegalArgumentException("'do select' is a statement and produces no value");
+            }
+        }
+
+        /**
+         * The same select with each arm body {@code [value;]}: the procedural
+         * shape that ownership and capture analyses already understand.
+         */
+        public SelectStmt asStatement() {
+            List<SelectArm> arms = new java.util.ArrayList<>(select.arms().size());
+            for (int i = 0; i < select.arms().size(); i++) {
+                SelectArm arm = select.arms().get(i);
+                arms.add(new SelectArm(arm.operation(), arm.channel(), arm.value(),
+                        arm.bindingKind(), arm.bindingName(),
+                        List.of(new ExprStmt(armValues.get(i))),
+                        arm.mutableReferent(), arm.bindingType()));
+            }
+            return new SelectStmt(select.mode(), select.policy(), arms, false);
+        }
+    }
+
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, WithExpr, ClosedRecurExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr, NamedArgExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr, SelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
             TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
 
@@ -2264,10 +2320,12 @@ public final class Ast {
     public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
                            boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
                            String zeroCountSourceName, String dynamicCountName,
-                           List<CountedZeroWitness> zeroCountWitnesses) implements Expr {
+                           List<CountedZeroWitness> zeroCountWitnesses, TypeRef payloadType) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
+            if (payloadType != null && (typedDefaultSelectI64 || typedCountedSelectI64 || legacyNb || domain != ExecutionDomain.CPU))
+                throw new IllegalArgumentException("explicit task payload cannot be combined with synthetic select or legacy task");
             if ((typedDefaultSelectI64 || typedCountedSelectI64) && domain != ExecutionDomain.CPU)
                 throw new IllegalArgumentException("typed select requires CPU task authority");
             if (typedDefaultSelectI64 && typedCountedSelectI64)
@@ -2282,6 +2340,13 @@ public final class Ast {
             if (dynamicCountName != null && (!typedCountedSelectI64
                     || !zeroCountWitnesses.isEmpty() || dynamicCountName.isBlank()))
                 throw new IllegalArgumentException("invalid dynamic counted select witness");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName, String dynamicCountName,
+                        List<CountedZeroWitness> zeroCountWitnesses) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, dynamicCountName, zeroCountWitnesses, null);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
                         boolean typedDefaultSelectI64, boolean typedCountedSelectI64,

@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -432,6 +433,31 @@ final class ClassConstructorHardeningTest {
                 }
                 """);
         assertEquals("42", output);
+    }
+
+    @Test
+    void newableWitnessDoesNotGrantAwaitOrRuntimeInterfaceAdmission() {
+        String declarations = """
+                define pub class Cart implements Newable[Cart] as
+                  val int quantity = 42;
+                  pub fnc new(): Cart { return new Cart(); }
+                end
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(declarations));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(declarations + """
+                        fnc bad(Cart cart): int { return await cart; }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(declarations + """
+                        fnc bad(Newable[Cart] witness): void { return; }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define pub class Cart implements Newable[Cart] as
+                          val int quantity = 42;
+                        end
+                        """));
     }
 
     @Test

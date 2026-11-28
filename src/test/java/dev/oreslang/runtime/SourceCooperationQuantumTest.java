@@ -131,6 +131,44 @@ final class SourceCooperationQuantumTest {
     }
 
     @Test
+    void independentWatchdogRequestWinsAtNextBatchedSafepointWithoutClockRead() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 0; i < 127; i++) {
+            assertFalse(q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.completedBackedgeNeedsCheck());
+        assertEquals(2, clock.reads.get(), "hot-path backedges must not read the clock");
+        assertTrue(q.shouldCooperateAtCheck(true),
+                "watchdog should request cooperation at the next resumable boundary");
+        assertEquals(2, clock.reads.get(),
+                "watchdog requests must not perform an extra clock read");
+        assertFalse(q.shouldCooperateAtCheck(false),
+                "a consumed ticket must not re-run the cold path");
+        assertEquals(2, clock.reads.get(),
+                "a duplicate poll cannot read the clock again");
+    }
+
+    @Test
+    void overdueNoYieldRegionPreserves128StepSampling() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int n = 1; n <= 768; ++n) {
+            boolean due = q.completedBackedgeNeedsCheck();
+            assertEquals(n % 128 == 0, due,
+                    "overdue quantum invoked expensive polling on backedge " + n);
+            if (due) {
+                assertEquals(n >= 512, q.shouldCooperateAtCheck());
+            }
+        }
+        assertEquals(768L, q.completedBackedgesThisDispatch());
+        // 2 initialization samples, and only 3 pre-cap clock reads.
+        assertEquals(5, clock.reads.get());
+    }
+
+    @Test
     void signedLongMaxSaturatesWithoutForcingPerStepColdChecks()
             throws ReflectiveOperationException {
         Clock clock = new Clock();
@@ -174,6 +212,149 @@ final class SourceCooperationQuantumTest {
             assertEquals(i % 128 == 0, q.completedBackedgeNeedsCheck());
         }
         assertEquals(2, clock.reads.get());
+    }
+
+
+    @Test
+    void eightShortPhysicalDispatchesCannotEvade128BackedgeChecks() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        int polls = 0;
+        for (int dispatch = 0; dispatch < 8; dispatch++) {
+            q.beginDispatch();
+            for (int i = 0; i < 127; i++) {
+                int total = dispatch * 127 + i + 1;
+                boolean due = q.completedBackedgeNeedsCheck();
+                assertEquals(total % 128 == 0, due,
+                        "physical dispatch restart skipped logical checkpoint at " + total);
+                if (due) {
+                    polls++;
+                    assertFalse(q.shouldCooperateAtCheck(),
+                            "physical dispatch clock is fresh, with no elapsed soft quantum");
+                } else {
+                    int before = clock.reads.get();
+                    assertFalse(q.shouldCooperateAtCheck(true),
+                            "watchdog must not bypass the authorized cold poll phase");
+                    assertEquals(before, clock.reads.get(),
+                            "off-cycle calls must never read monotonic clock");
+                }
+            }
+            assertEquals(127L, q.completedBackedgesThisDispatch());
+        }
+        assertEquals(7, polls, "8 * 127 committed backedges require 7 cold polls");
+        assertEquals(1 + 8 + 7, clock.reads.get(),
+                "one constructor, eight new dispatches and seven cold polls");
+    }
+
+    @Test
+    void coldPollTicketIsSingleUseAndCannotSurvivePhysicalRedispatch() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 1; i < 128; i++) {
+            assertFalse(q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.completedBackedgeNeedsCheck());
+        assertFalse(q.shouldCooperateAtCheck());
+        assertEquals(3, clock.reads.get());
+        assertFalse(q.shouldCooperateAtCheck(true));
+        assertEquals(3, clock.reads.get(),
+                "replayed poll ticket must not sample time");
+        q.beginDispatch();
+        assertFalse(q.shouldCooperateAtCheck(true),
+                "new dispatch must not inherit stale poll authorization");
+        assertEquals(4, clock.reads.get());
+        for (int i = 1; i <= 128; i++) {
+            assertEquals(i == 128, q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.shouldCooperateAtCheck(true));
+        assertFalse(q.shouldCooperateAtCheck(true));
+        assertEquals(4, clock.reads.get(),
+                "watchdog still does not read clock at an authorized boundary");
+    }
+
+    @Test
+    void watchdogRequestIsOnlyActedOnAtCompletedBackedgeTicket() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 1; i <= 127; i++) {
+            assertFalse(q.completedBackedgeNeedsCheck());
+            assertFalse(q.shouldCooperateAtCheck(true));
+        }
+        assertEquals(2, clock.reads.get());
+        assertTrue(q.completedBackedgeNeedsCheck());
+        assertTrue(q.shouldCooperateAtCheck(true));
+        assertFalse(q.shouldCooperateAtCheck(true));
+        assertEquals(2, clock.reads.get());
+    }
+
+    @Test
+    void guardHeldReductionDebtSurvivesPhysicalRedispatchUntilRecordedCooperate() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int n = 1; n <= 512; n++) {
+            assertEquals(n % 128 == 0, q.completedBackedgeNeedsCheck());
+            // Simulate a verified no-yield scope: no cooperation while held.
+        }
+        assertTrue(q.pendingHandoffOnNoYieldExit(),
+                "512 committed backedges must retain a cold handoff request");
+        q.beginDispatch();
+        assertTrue(q.pendingHandoffOnNoYieldExit(),
+                "a different physical carrier must not forgive pending debt");
+        for (int i = 1; i <= 128; i++) {
+            assertEquals(i == 128, q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.shouldCooperateAtCheck(), "pending debt wins with fresh clock");
+        assertEquals(3, clock.reads.get(), "debt check must not read the clock");
+        q.recordedCooperate();
+        assertFalse(q.pendingHandoffOnNoYieldExit(),
+                "only a genuine cooperation acknowledges pending debt");
+        q.beginDispatch();
+        assertFalse(q.pendingHandoffOnNoYieldExit(),
+                "acknowledged dispatch must not relatch the old 512 cap");
+        for (int i = 1; i <= 128; i++) q.completedBackedgeNeedsCheck();
+        assertFalse(q.shouldCooperateAtCheck(),
+                "fresh dispatch has no pending debt or elapsed time");
+    }
+
+    @Test
+    void pendingTimeAndWatchdogRequestsRemainTaskOwnedAcrossAwait() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        clock.nanos.set(2_000_001L);
+        for (int i = 1; i <= 128; i++) {
+            assertEquals(i == 128, q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.shouldCooperateAtCheck());
+        assertTrue(q.pendingHandoffOnNoYieldExit(),
+                "unserved time-budget debt cannot disappear in an await");
+        q.beginDispatch();
+        for (int i = 1; i <= 128; i++) {
+            assertEquals(i == 128, q.completedBackedgeNeedsCheck());
+        }
+        int before = clock.reads.get();
+        assertTrue(q.shouldCooperateAtCheck(),
+                "the new physical dispatch cannot erase a logical request");
+        assertEquals(before, clock.reads.get(),
+                "an existing handoff request requires no clock sample");
+        q.recordedCooperate();
+        assertFalse(q.pendingHandoffOnNoYieldExit());
+    }
+
+    @Test
+    void millionCommittedBackedgesKeepSlowPathCold() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 1; i <= 1_048_576; i++) {
+            assertEquals(i % 128 == 0, q.completedBackedgeNeedsCheck());
+        }
+        assertEquals(2, clock.reads.get(),
+                "every committed backedge is cheap, including after 512");
+        assertEquals(1_048_576L, q.completedBackedgesThisDispatch());
     }
 
     @Test

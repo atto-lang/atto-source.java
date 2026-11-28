@@ -14,12 +14,11 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Loads compiler-owned Oreslang library source from packaged resources.
+ * Loads compiler-owned AttoLang library sources from packaged resources.
  *
- * <p>Oreslang exposes exactly two public library namespaces:
- * {@code ores.core/*} is freestanding/no-OS source and {@code ores.std/*}
- * is hosted/platform source. Legacy {@code std/*} remains a compatibility
- * spelling for {@code ores.std/*}; it is not a third library layer.</p>
+ * <p>Canonical core, alloc and std namespaces coexist with closed legacy
+ * aliases. The optional actor runtime namespace is reserved separately;
+ * unsupported modules must not resolve through ambient project paths.</p>
  */
 public final class CoreLibrarySources {
     private static final String CORE_IMPORT_PREFIX = "ores.core/";
@@ -48,7 +47,8 @@ public final class CoreLibrarySources {
             "error.atto",
             "ptr.atto",
             "atomic.atto",
-            "iter.atto");
+            "iter.atto",
+            "borrow_admission.atto");
 
     // Preserve the complete existing hosted std registry. New hosted modules
     // remain explicit additions to this closed set.
@@ -83,7 +83,8 @@ public final class CoreLibrarySources {
             "process.atto", "process_policy.atto",
             "http.atto",
             "sync.atto", "path_lexical.atto",
-            "telemetry_otlp.atto");
+            "telemetry_otlp.atto",
+            "metrics.atto", "json.atto", "zorde.atto");
 
     private CoreLibrarySources() { }
 
@@ -106,7 +107,7 @@ public final class CoreLibrarySources {
 
     private static final java.util.Map<Layer, Set<String>> V1_UNITS = java.util.Map.of(
             Layer.CORE, Set.of("num", "cmp", "option", "result", "mem", "range", "cell", "contracts"),
-            Layer.ALLOC, Set.of("arena", "heap", "region", "bitset", "linked_list", "map", "allocator", "arc", "drop", "pool", "set", "weak", "actor_heap", "deque", "slab", "aligned", "secure", "stats", "json"),
+            Layer.ALLOC, Set.of("box", "vec", "string", "arena", "heap", "region", "bitset", "linked_list", "map", "allocator", "arc", "drop", "pool", "set", "weak", "actor_heap", "deque", "slab", "aligned", "secure", "stats", "json"),
             Layer.STD, Set.of("io", "path"));
 
     /** OS family for platform-variant units (std/path). */
@@ -330,7 +331,7 @@ public final class CoreLibrarySources {
     public static boolean isReservedOresLibraryImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
-        for (String root : new String[] {"ores.core", "ores.std", "atto.core", "atto.alloc", "atto.std", "alloc"}) {
+        for (String root : new String[] {"ores.core", "ores.std", "atto.core", "atto.alloc", "atto.std", "atto.runtime.actor", "alloc"}) {
             if (normalized.equals(root) || normalized.startsWith(root + "/")) return true;
         }
         // Bare layer names are never package or project selectors, and a
@@ -475,7 +476,7 @@ public final class CoreLibrarySources {
             throw new IllegalArgumentException("Oreslang library import must name a module");
         }
 
-        String[] segments = raw.split("/");
+        String[] segments = raw.split("/", -1);
         if (segments.length > MAX_MODULE_SEGMENTS) {
             throw new IllegalArgumentException("Oreslang library import nesting is too deep");
         }

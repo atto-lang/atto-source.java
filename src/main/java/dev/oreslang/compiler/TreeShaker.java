@@ -687,7 +687,10 @@ public final class TreeShaker {
                         fields,
                         constructor,
                         methods,
-                        klass.actorConcurrency());
+                        klass.actorConcurrency(),
+                        klass.sealedStateFields(),
+                        klass.annotations(),
+                        klass.actorMessageContract());
             }
             return declaration;
         }
@@ -1049,7 +1052,7 @@ public final class TreeShaker {
                                 task.body(),
                                 module,
                                 new LinkedHashMap<>(locals)),
-                        task.legacyNb(), task.typedDefaultSelectI64(), task.typedCountedSelectI64(), task.zeroCountSourceName(), task.dynamicCountName());
+                        task.legacyNb(), task.typedDefaultSelectI64(), task.typedCountedSelectI64(), task.zeroCountSourceName(), task.dynamicCountName(), task.zeroCountWitnesses(), task.payloadType());
             }
             if (expression instanceof Ast.ChannelOpExpr operation) {
                 return new Ast.ChannelOpExpr(
@@ -1063,6 +1066,23 @@ public final class TreeShaker {
                         selected.mode(),
                         selected.policy(),
                         rewriteExpression(selected.cases(), module, locals));
+            }
+            if (expression instanceof Ast.SelectExpr selected) {
+                List<Ast.SelectArm> arms = new ArrayList<>();
+                List<Ast.Expr> values = new ArrayList<>();
+                for (int i = 0; i < selected.select().arms().size(); i++) {
+                    Ast.SelectArm arm = selected.select().arms().get(i);
+                    arms.add(new Ast.SelectArm(arm.operation(),
+                            rewriteExpression(arm.channel(), module, locals),
+                            rewriteExpression(arm.value(), module, locals),
+                            arm.bindingKind(), arm.bindingName(), List.of(),
+                            arm.mutableReferent(), arm.bindingType()));
+                    Map<String, Object> armLocals = new java.util.HashMap<>(locals);
+                    if (arm.bindingName() != null) armLocals.put(arm.bindingName(), UNKNOWN);
+                    values.add(rewriteExpression(selected.armValues().get(i), module, armLocals));
+                }
+                return new Ast.SelectExpr(new Ast.SelectStmt(selected.select().mode(),
+                        selected.select().policy(), arms, false), values);
             }
             if (expression instanceof Ast.ListExpr list) {
                 List<Ast.Expr> elements = new ArrayList<>();
@@ -1248,6 +1268,16 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 for (Ast.TypeRef parent : klass.parents()) scanType(parent);
                 for (Ast.TypeRef iface : klass.interfaces()) scanType(iface);
+                // Actor DATA contracts and sealed-state types are part of its
+                // immutable public/behavioral ABI. They must keep their nominal
+                // dependencies reachable even when no body mentions them.
+                scanType(klass.actorMessageContract().receives());
+                scanType(klass.actorMessageContract().sends());
+                for (Ast.ProtectedStateField field : klass.sealedStateFields()) {
+                    scanType(field.type());
+                    scanExpression(module, field.initializer(), Set.of("self"));
+                }
+                for (Ast.Annotation annotation : klass.annotations()) scanAnnotation(annotation);
                 for (Ast.FieldDecl field : klass.fields()) {
                     scanType(field.type());
                     scanExpression(module, field.initializer(), Set.of("self"));
@@ -1495,6 +1525,17 @@ public final class TreeShaker {
                 scanExpression(module, operation.value(), locals);
             } else if (expression instanceof Ast.DynamicSelectExpr selected) {
                 scanExpression(module, selected.cases(), locals);
+            } else if (expression instanceof Ast.SelectExpr selected) {
+                for (Ast.SelectArm arm : selected.select().arms()) {
+                    scanExpression(module, arm.channel(), locals);
+                    scanExpression(module, arm.value(), locals);
+                }
+                for (int i = 0; i < selected.armValues().size(); i++) {
+                    Set<String> armLocals = new java.util.HashSet<>(locals);
+                    String bound = selected.select().arms().get(i).bindingName();
+                    if (bound != null) armLocals.add(bound);
+                    scanExpression(module, selected.armValues().get(i), armLocals);
+                }
             } else if (expression instanceof Ast.ListExpr list) {
                 for (Ast.Expr element : list.elements()) scanExpression(module, element, locals);
             } else if (expression instanceof Ast.TupleExpr tuple) {

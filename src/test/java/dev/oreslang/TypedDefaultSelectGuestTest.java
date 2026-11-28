@@ -12,6 +12,103 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Restricted executable typed-default and checked scalar counted selection. */
 @Timeout(20)
 final class TypedDefaultSelectGuestTest {
+    @Test void literalDefaultIsAlreadySettledWithoutScheduling() throws Exception {
+        assertEquals("false|#success|42", run("""
+                pub async fnc main(): void {
+                  val Future<int> f = select<int> { default: -> { return 42; } };
+                  stdio.stdout.write(f.cancel()); stdio.stdout.write("|");
+                  stdio.stdout.write(await f.get_done()); stdio.stdout.write("|");
+                  stdio.stdout.write(await f);
+                  return;
+                }
+                """));
+    }
+
+    @Test void literalDefaultAndDistinctAliasRotationAreDeterministic() throws Exception {
+        String code = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "tests/fixtures/select-source-v2/counted-distinct-alias-projection.atto"));
+        try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            for (int i = 0; i < 64; i++) {
+                assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code,
+                        "counted-distinct-alias-projection.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong(),
+                        "distinct alias trial " + i);
+            }
+        }
+    }
+
+    @Test void localRawFutureBindingKeepsInferredResultType() throws Exception {
+        assertEquals("42|43|44",run("""
+                pub async fnc main(): void {
+                  const Future selection = select { default: -> { return 42; } };
+                  val Future typed = select<int> over default: -> { return 43; } end;
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 44;
+                  const Future counted = select(1) {
+                    when readch incoming: int n -> { return n; }
+                  };
+                  val Array[int] values = await counted;
+                  stdio.stdout.write(await selection); stdio.stdout.write("|");
+                  stdio.stdout.write(await typed); stdio.stdout.write("|");
+                  stdio.stdout.write(values[0]);
+                  return;
+                }
+                """));
+    }
+
+    @Test void localRawFutureBindingCannotEraseAnUnrelatedType() {
+        for (String body : new String[]{
+            "const Future selection = 42;",
+            "const Future selection = select { default: -> { return 42; } }; val bool wrong = await selection;",
+            "const Future selection = select<int> { default: -> { return true; } };",
+            "const Future selection = select(1) { when readch incoming: int n -> { return n; } }; val int wrong = await selection;"
+        }) assertThrows(IllegalArgumentException.class,
+            () -> OresCompiler.parseAndTypeCheck("pub async fnc main(): void { val Channel<int> incoming = Channel.new<int>(1); "+body+" return; }"),body);
+    }
+
+    @Test void exactSharedFutureDefaultGuestAndDenials() throws Exception {
+        var fixtures = java.nio.file.Path.of("tests/fixtures/select-source-v2");
+        String code = java.nio.file.Files.readString(fixtures.resolve("future-default.atto"));
+        try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code, "future-default.atto")
+                    .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong());
+        }
+        for (String name : new String[]{"reject-select-implicit-await", "reject-select-missing-result"}) {
+            String negative = java.nio.file.Files.readString(fixtures.resolve(name + ".atto"));
+            assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(negative), name);
+        }
+    }
+
+    @Test void inferredDefaultSelectProducesSameTrackedFutureAsTypedForm() throws Exception {
+        assertEquals("42|43|44",run("""
+                pub async fnc main(): void {
+                  val Future<int> first = select { default: -> { return 40 + 2; } };
+                  val Future<int> second = nb select over
+                    default: -> { return 43; }
+                  end;
+                  val int third = await select { default: -> { return 44; } };
+                  stdio.stdout.write(await first); stdio.stdout.write("|");
+                  stdio.stdout.write(await second); stdio.stdout.write("|");
+                  stdio.stdout.write(third);
+                  return;
+                }
+                """));
+    }
+
+    @Test void inferredDefaultSelectDoesNotBroadenUnsupportedProfiles() {
+        for (String body : new String[]{
+            "val int result = select { default: -> { return 42; } };",
+            "val Future<bool> result = select { default: -> { return 42; } };",
+            "val Future<int> result = try select { default: -> { return 42; } };",
+            "val Future<int> result = select { default: -> { return true; } };",
+            "val Future<int> result = select { default: -> { return missing; } };",
+            "val Future<int> result = select { default: -> {} };",
+            "val Future<int> result = select { when readch incoming: int n -> { return n; } };",
+            "val Future<int> result = select { default: -> { return 1"+ " + 1".repeat(64)+"; } };"
+        }) assertThrows(IllegalArgumentException.class,
+            () -> OresCompiler.parseAndTypeCheck("pub async fnc main(): void { val Channel<int> incoming = Channel.new<int>(1); "+body+" return; }"),body);
+    }
+
     @Test void bareTypedSelectAndLegacyAliasReturnTrackedFuture() throws Exception {
         assertEquals("42|42",run("""
                 pub async fnc main(): void {
@@ -391,6 +488,27 @@ final class TypedDefaultSelectGuestTest {
                 }
                 """));
         assertTrue(failure.getMessage().contains("all counted selection sources exhausted"), failure.getMessage());
+    }
+
+    // A tracked default task is not necessarily ready at select construction.
+    // Observe its physical completion without consuming the Future's value.
+    // This is a distinct readiness-controlled regression, not a replacement
+    // for the exact shared fixture or its unresolved scheduling assumption.
+    @Test void distinctAliasProjectionWithExplicitReadinessFence() throws Exception {
+        String original = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "tests/fixtures/select-source-v2/counted-distinct-alias-projection.atto"));
+        String anchor = "  val Array[int] values = await select<int>(4) fair over";
+        assertTrue(original.contains(anchor));
+        String code = original.replace(anchor,
+                "  await pending.get_done();\n" + anchor);
+        for (int trial = 0; trial < 32; trial++) {
+            try (var context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+                assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, code,
+                        "distinct-alias-readiness-fence.atto")
+                        .mimeType(OresLanguage.MIME_TYPE).buildLiteral()).asLong(),
+                        "readiness-fenced trial " + trial);
+            }
+        }
     }
 
     @Test void portableMixedCountedExactBlobsReturn42() throws Exception {

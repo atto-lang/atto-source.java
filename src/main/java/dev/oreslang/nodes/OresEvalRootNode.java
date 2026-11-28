@@ -1844,8 +1844,11 @@ public final class OresEvalRootNode extends RootNode {
                     initialBlockEnv = null;
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
+                    // Async trap may settle Err only from the terminal SourceFlow
+                    // after cleanup, not from an unexpected evaluator exception.
                     if (!cancellationUnwinding && function != null
-                            && function.trapped() && isTrappableFailure(failure)) {
+                            && function.trapped() && !function.async()
+                            && isTrappableFailure(failure)) {
                         return OresScheduler.done(trapErr(failure));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -2167,7 +2170,23 @@ public final class OresEvalRootNode extends RootNode {
                 switch (flow.kind()) {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
-                    case THROW -> throw sourceFailure(flow.failure());
+                    case THROW -> {
+                        if (function != null && function.trapped() && function.async()) {
+                            Throwable failure = flow.failure();
+                            if (dev.oreslang.runtime.AsyncTrapAdmission.accepts(
+                                    failure, cancellationUnwinding, activeCleanup.isEmpty())) {
+                                done(trapErr(failure));
+                            } else {
+                                // Preserve wrapper/suppression information. A
+                                // general unwrap here could erase terminal causes.
+                                if (failure instanceof RuntimeException runtime) throw runtime;
+                                if (failure instanceof Error error) throw error;
+                                throw new RuntimeException(failure);
+                            }
+                        } else {
+                            throw sourceFailure(flow.failure());
+                        }
+                    }
                     case BREAK, CONTINUE ->
                             throw new IllegalStateException(
                                     "loop control crossed a source function boundary");
@@ -2183,6 +2202,11 @@ public final class OresEvalRootNode extends RootNode {
                         function != null
                                 ? "function " + function.name()
                                 : "method " + method.name();
+                if (function != null && function.trapped() && function.async()
+                        && (cancellationUnwinding || !activeCleanup.isEmpty())) {
+                    throw new IllegalStateException(
+                            "async trap attempted success before physical cleanup");
+                }
                 Object shaped = shapeReturnedValue(returnType, value, label);
                 return function != null && function.trapped()
                         ? trapOk(shaped) : shaped;
@@ -2405,6 +2429,20 @@ public final class OresEvalRootNode extends RootNode {
                         "checked Task capture admission execution domain does not match TaskExpr");
             }
 
+            // A checked default-only select returning an i64 literal has no
+            // registration, captures, effects, cleanup or continuation work.
+            // Settle it at construction, as in the other ready-only profiles.
+            // Never inline an arbitrary default body (including arithmetic,
+            // captured scalars, calls, cancellation points or defers).
+            if (taskExpr.typedDefaultSelectI64()
+                    && admitted.isEmpty() && syntactic.isEmpty()
+                    && taskExpr.body().size() == 1
+                    && taskExpr.body().getFirst() instanceof Ast.ReturnStmt returned
+                    && returned.value() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Long scalar) {
+                return SourceTaskHandles.completedWithoutWork(scalar);
+            }
+
             Long dynamicCount = null;
             List<Ast.Stmt> taskBody = taskExpr.body();
             if (taskExpr.dynamicCountName() != null) {
@@ -2622,6 +2660,93 @@ public final class OresEvalRootNode extends RootNode {
 
                     throw new IllegalStateException(
                             "Future chain resumed after completion");
+                }
+            });
+        }
+
+        /** The winning arm's value, evaluated in that arm's binding scope. */
+        private Object selectedArmValue(
+                Ast.SelectExpr valueSelect,
+                ChannelRuntime.SelectResult result,
+                Env parent) {
+            Ast.SelectStmt selected = valueSelect.select();
+            if (result.index() < 0 || result.index() >= selected.arms().size()) {
+                throw new IllegalStateException(
+                        "select result index is outside its source arm set: " + result.index());
+            }
+            Ast.SelectArm arm = selected.arms().get(result.index());
+            Env armEnv = new Env(parent);
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
+                    && arm.bindingName() != null) {
+                armEnv.define(arm.bindingName(), result.value(), arm.bindingKind());
+            }
+            return eval(valueSelect.armValues().get(result.index()), armEnv);
+        }
+
+        /**
+         * select / nb select / try select in expression position (atto-spec
+         * ch. 6): T after one arm commits, Future<T> immediately, or Option<T>
+         * from a single probe. Registration is atomic; losing arms consume and
+         * publish nothing (ChannelRuntime.SelectSet).
+         */
+        private Object evalSelectValue(Ast.SelectExpr valueSelect, Env env) {
+            Ast.SelectStmt selected = valueSelect.select();
+            if (selected.mode() != Ast.WaitMode.IMMEDIATE && env.hasLiveMutexGuards()) {
+                throw new IllegalStateException("cannot arm select while holding a live MutexGuard");
+            }
+            java.util.function.Function<ChannelRuntime.SelectResult, Object> mapping = null;
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                // The Future's arm value is computed after the winner commits,
+                // off this turn. Validate before registering: a late rejection
+                // could already have consumed a message.
+                for (Ast.Expr value : valueSelect.armValues()) {
+                    if (expressionContainsPotentialSuspension(value,
+                            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()))) {
+                        throw new IllegalStateException(
+                                "a select Future's arm values cannot suspend; use 'await select' "
+                                        + "to suspend inside the winning arm");
+                    }
+                }
+                Env captured = env.snapshot();
+                mapping = result -> selectedArmValue(valueSelect, result, captured);
+            }
+            ChannelRuntime.SelectSet set = buildStaticSelectSet(selected, env);
+            ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
+            if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
+                java.util.Optional<ChannelRuntime.SelectResult> result = set.trySelect(policy);
+                return result.isPresent()
+                        ? new OptionValue(true, selectedArmValue(valueSelect, result.get(), env))
+                        : new OptionValue(false, null);
+            }
+            OresFuture<ChannelRuntime.SelectResult> future = set.selectAsync(policy);
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                ChannelRuntime.SelectResult result = (ChannelRuntime.SelectResult)
+                        awaitBlockingChannelFuture(future, "select");
+                return selectedArmValue(valueSelect, result, env);
+            }
+            return mapSelectFuture(future, mapping);
+        }
+
+        /** Future<T> of an nb select: await the registration, then map the winner. */
+        private OresFuture<Object> mapSelectFuture(
+                OresFuture<ChannelRuntime.SelectResult> source,
+                java.util.function.Function<ChannelRuntime.SelectResult, Object> mapping) {
+            return startFutureChainTask(new OresScheduler.Task<>() {
+                private boolean waiting;
+
+                @Override
+                public OresScheduler.Step<Object> resume(OresScheduler.Resume resume) {
+                    if (!waiting) {
+                        if (!resume.initial()) {
+                            throw new IllegalStateException(
+                                    "nb select Future started with a non-initial resume");
+                        }
+                        waiting = true;
+                        return OresScheduler.await(source);
+                    }
+                    if (resume.failure() != null) throw sourceFailure(resume.failure());
+                    return OresScheduler.done(mapping.apply((ChannelRuntime.SelectResult) resume.value()));
                 }
             });
         }
@@ -2865,8 +2990,17 @@ public final class OresEvalRootNode extends RootNode {
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
                     || expr instanceof Ast.DynamicSelectExpr selected
-                        && selected.mode() == Ast.WaitMode.BLOCKING) {
+                        && selected.mode() == Ast.WaitMode.BLOCKING
+                    || expr instanceof Ast.SelectExpr valueSelect
+                        && valueSelect.select().mode() == Ast.WaitMode.BLOCKING) {
                 return true;
+            }
+            if (expr instanceof Ast.SelectExpr valueSelect) {
+                for (Ast.SelectArm arm : valueSelect.select().arms()) {
+                    if (expressionContainsPotentialSuspension(arm.channel(), seen)
+                            || expressionContainsPotentialSuspension(arm.value(), seen)) return true;
+                }
+                return false;
             }
             if (expr instanceof Ast.MatchExpr matched) {
                 // Value matches are expressions, but canonical arms may own
@@ -3045,7 +3179,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env parent,
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
-            ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
+            ArrayDeque<RegisteredDefer> defers = new ArrayDeque<>();
             SourceCleanupFrame cleanup = task.registerSourceCleanup(
                     (owner, finished) -> runOneDefer(
                             owner, env, defers,
@@ -3101,7 +3235,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 List<Ast.Stmt> statements,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 int index,
                 SourceFlowCont continuation) {
             if (index >= statements.size()) {
@@ -3194,47 +3328,23 @@ public final class OresEvalRootNode extends RootNode {
          * An earlier exit owns its status; an earlier unhandled failure must
          * never be downgraded by a later deferred exit(0).
          */
-        private static final int MAX_CLEANUP_SUPPRESSED = 64;
-
         private static void suppressCleanupFailure(Throwable primary, Throwable secondary) {
-            if (primary == secondary) return;
-            synchronized (primary) {
-                if (primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
-                    primary.addSuppressed(secondary);
-                }
-            }
+            CleanupFailureOrder.suppress(primary, secondary);
+        }
+
+        private Throwable selectCleanupFailure(Throwable earlier, Throwable cleanupFailure) {
+            return CleanupFailureOrder.merge(earlier, cleanupFailure,
+                    cleanupFailure instanceof ProcessExitSignal,
+                    isUnmaskableFailure(cleanupFailure),
+                    earlier != null && isUnmaskableFailure(earlier),
+                    earlier instanceof java.util.concurrent.CancellationException,
+                    cleanupFailure instanceof dev.oreslang.runtime.UntrappableTaskFailure);
         }
 
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
-            if (earlier == cleanupFailure) return currentFlow; // no self-suppression
-            // The first genuine failure is the PRIMARY cause of the Task.
-            // Defer/finally/guard failures are secondary diagnostics and must
-            // never erase the original THROW, RAISE, PANIC or cancellation.
-            // In particular ProcessExitSignal from a defer cannot replace a
-            // pending error. Preserve original identity for source and actor
-            // supervisor attribution.
-            if (earlier != null) {
-                // An untrappable panic/authority failure in cleanup must
-                // still escape an earlier ordinary THROW. Otherwise catch or
-                // trap could swallow a fatal cleanup panic. A deferred
-                // process-exit never replaces an already pending failure.
-                if (!(cleanupFailure instanceof ProcessExitSignal)
-                        && isUnmaskableFailure(cleanupFailure)
-                        && (!isUnmaskableFailure(earlier)
-                            || (earlier instanceof java.util.concurrent.CancellationException
-                                && cleanupFailure instanceof
-                                    dev.oreslang.runtime.UntrappableTaskFailure))) {
-                    suppressCleanupFailure(cleanupFailure, earlier);
-                    return SourceFlow.throwing(cleanupFailure);
-                }
-                // Two ordinary failures: the original Task error wins.
-                // Any already-fatal primary also remains authoritative.
-                suppressCleanupFailure(earlier, cleanupFailure);
-                return currentFlow;
-            }
-            // A cleanup failure after a normal return still fails the Task.
-            return SourceFlow.throwing(cleanupFailure);
+            Throwable selected = selectCleanupFailure(earlier, cleanupFailure);
+            return selected == earlier ? currentFlow : SourceFlow.throwing(selected);
         }
 
         /**
@@ -3263,7 +3373,7 @@ public final class OresEvalRootNode extends RootNode {
         private void finishBlock(
                 SourceTask task,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 SourceFlow initialFlow,
                 SourceFlowCont continuation) {
             if (defers.isEmpty()) {
@@ -3287,14 +3397,46 @@ public final class OresEvalRootNode extends RootNode {
                     continuation);
         }
 
+        // Runtime-owned registration, not a guest-visible callable token.
+        // A delayed expression retains its lexical environment via the block;
+        // a bound factory has already produced its owned callback value.
+        private record RegisteredDefer(Ast.Expr delayed, Invokable bound) {
+            private RegisteredDefer {
+                if ((delayed == null) == (bound == null)) {
+                    throw new IllegalArgumentException("exactly one defer registration form required");
+                }
+            }
+        }
+
+        private RegisteredDefer bindDeferredFactory(
+                Ast.CallExpr factory, List<Object> values, Env env) {
+            // Ownership admission proves the outer lambda has no external
+            // lexical captures. Do not snapshot unrelated caller slots,
+            // guards, actor receiver authority, or structured Task scope.
+            if (env.descendantsNonLexical() || env.instanceMethodOwner() != null
+                    || env.lexicalContainerClass() != null) {
+                throw new IllegalStateException("defer factory requires the checked lexical profile");
+            }
+            Env isolated = new Env(null, false, null, null, env.lexicalModule());
+            Object outer = eval(factory.callee(), isolated);
+            if (!(outer instanceof Invokable creator)) {
+                throw new IllegalStateException("checked defer factory is not callable");
+            }
+            Object value = invoke(invokableInvocation(creator, values));
+            if (!(value instanceof Invokable callable)) {
+                throw new IllegalStateException("checked defer factory did not produce a callable");
+            }
+            return new RegisteredDefer(null, callable);
+        }
+
         private void runOneDefer(
                 SourceTask task,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 SourceFlow currentFlow,
                 SourceFlowCont continuation) {
-            Ast.Expr defer = defers.pollFirst();
-            if (defer == null) {
+            RegisteredDefer registration = defers.pollFirst();
+            if (registration == null) {
                 SourceFlow completed = currentFlow;
                 try {
                     env.releaseMutexGuards(
@@ -3306,6 +3448,19 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            if (registration.bound() != null) {
+                SourceFlow flow = currentFlow;
+                try {
+                    invoke(invokableInvocation(registration.bound(), List.of()));
+                } catch (RuntimeException | Error failure) {
+                    flow = mergeCleanupFailure(currentFlow, failure);
+                }
+                SourceFlow next = flow;
+                task.dispatchImmediateSourceCallback(
+                        () -> runOneDefer(task, env, defers, next, continuation));
+                return;
+            }
+            Ast.Expr defer = registration.delayed();
             evalSuspendableExpr(
                     task,
                     defer instanceof Ast.LambdaExpr
@@ -3335,7 +3490,7 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Stmt stmt,
                 Env env,
-                ArrayDeque<Ast.Expr> defers,
+                ArrayDeque<RegisteredDefer> defers,
                 SourceFlowCont continuation) {
             try {
                 if (stmt instanceof Ast.UsingBorrowStmt) {
@@ -3505,8 +3660,27 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.DeferStmt defer) {
-                    defers.push(defer.expression());
-                    continuation.accept(task, SourceFlow.normal());
+                    if (defer.boundFactory() != null) {
+                        evalSuspendableArguments(task, defer.boundFactory().arguments(), env,
+                                (owner, values, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(owner, SourceFlow.throwing(failure));
+                                        return;
+                                    }
+                                    RegisteredDefer registration;
+                                    try {
+                                        registration = bindDeferredFactory(defer.boundFactory(), values, env);
+                                    } catch (RuntimeException | Error invalid) {
+                                        continuation.accept(owner, SourceFlow.throwing(invalid));
+                                        return;
+                                    }
+                                    defers.push(registration);
+                                    continuation.accept(owner, SourceFlow.normal());
+                                });
+                    } else {
+                        defers.push(new RegisteredDefer(defer.expression(), null));
+                        continuation.accept(task, SourceFlow.normal());
+                    }
                     return;
                 }
 
@@ -4944,6 +5118,54 @@ public final class OresEvalRootNode extends RootNode {
                             operation,
                             env,
                             continuation);
+                    return;
+                }
+
+                if (expr instanceof Ast.SelectExpr valueSelect
+                        && valueSelect.select().mode() == Ast.WaitMode.BLOCKING) {
+                    // await select: suspend the task (never the carrier) until
+                    // one arm commits, then evaluate that arm's value, which may
+                    // itself suspend.
+                    OresFuture<ChannelRuntime.SelectResult> future;
+                    try {
+                        if (env.hasLiveMutexGuards()) {
+                            throw new IllegalStateException(
+                                    "cannot arm select while holding a live MutexGuard");
+                        }
+                        future = buildStaticSelectSet(valueSelect.select(), env)
+                                .selectAsync(runtimeSelectPolicy(valueSelect.select().policy()));
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, null, failure);
+                        return;
+                    }
+                    SourceValueCont winner = (t, value, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(t, null, failure);
+                            return;
+                        }
+                        ChannelRuntime.SelectResult result = (ChannelRuntime.SelectResult) value;
+                        Ast.SelectArm arm = valueSelect.select().arms().get(result.index());
+                        Env armEnv = new Env(env);
+                        if ((arm.operation() == Ast.ChannelOperation.READ
+                                || arm.operation() == Ast.ChannelOperation.AWAIT)
+                                && arm.bindingName() != null) {
+                            armEnv.define(arm.bindingName(), result.value(), arm.bindingKind());
+                        }
+                        evalSuspendableExpr(t, valueSelect.armValues().get(result.index()),
+                                armEnv, continuation);
+                    };
+                    if (future.isDone()) {
+                        Object chosen;
+                        try {
+                            chosen = future.join();
+                        } catch (RuntimeException | Error failure) {
+                            continuation.accept(task, null, failure);
+                            return;
+                        }
+                        task.dispatchImmediateSourceCallback(() -> winner.accept(task, chosen, null));
+                        return;
+                    }
+                    task.suspend(future, winner);
                     return;
                 }
 
@@ -7252,7 +7474,7 @@ public final class OresEvalRootNode extends RootNode {
             if (fn.actorKind() == Ast.ActorKind.NONE) {
                 // Imported calls may select the scheduler path. Keep the trap
                 // wrapper around that path as well as direct execution.
-                if (fn.trapped()) return callFunctionBodyRaw(fn, normalized);
+                if (fn.trapped() && !fn.async()) return callFunctionBodyRaw(fn, normalized);
                 if (fn.async() || functionContainsPotentialSuspension(fn)) {
                     OresFuture<Object> future =
                             startSourceFunctionTask(
@@ -7527,7 +7749,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
-            if (!fn.trapped() || functionContainsPotentialSuspension(fn)) {
+            if (!fn.trapped() || fn.async() || functionContainsPotentialSuspension(fn)) {
                 // SourceTask owns the trap boundary for scheduled execution.
                 return callFunctionBodyUnchecked(fn, args);
             }
@@ -7676,6 +7898,13 @@ public final class OresEvalRootNode extends RootNode {
             if (method.async() || methodContainsPotentialSuspension(method)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(method, receiver, args);
+                // The task completion is an implementation envelope, not an
+                // extra source-level Future. Match the existing free-function
+                // rule for a synchronous callable explicitly returning Future.
+                // Async methods keep their own declared task boundary.
+                if (!method.async() && method.returnType().name().equals("Future")) {
+                    return chainFuture(future, values -> values.getFirst(), true, false);
+                }
                 return returnSourceTaskResult(future, method.async());
             }
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
@@ -7707,7 +7936,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
             Env env = new Env(parent);
-            ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
+            ArrayDeque<RegisteredDefer> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
             Throwable pendingFailure = null;
             try {
@@ -7725,49 +7954,28 @@ public final class OresEvalRootNode extends RootNode {
                 // Always run the entire LIFO cleanup stack. In particular,
                 // a failed defer must not prevent remaining resource cleanup.
                 while (!deferred.isEmpty()) {
-                    Ast.Expr cleanup = deferred.pop();
+                    RegisteredDefer registration = deferred.pop();
                     try {
-                        eval(cleanup instanceof Ast.LambdaExpr
-                                ? new Ast.CallExpr(cleanup, List.of())
-                                : cleanup, env);
-                    } catch (RuntimeException | Error failure) {
-                        if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                            // Never let a deferred ordinary failure replace a panic,
-                            // denial, cancellation, host Error, or earlier process exit.
-                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                        } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
-                            // A deferred exit(0) must not convert an earlier
-                            // unhandled failure into a successful process exit.
-                            // Keep the original failure authoritative; the exit
-                            // attempt is diagnostic only.
-                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
+                        if (registration.bound() != null) {
+                            invoke(invokableInvocation(registration.bound(), List.of()));
                         } else {
-                            if (pendingFailure != null && pendingFailure != failure) {
-                                suppressCleanupFailure(failure, pendingFailure);
-                            }
-                            pendingFailure = failure;
+                            Ast.Expr cleanup = registration.delayed();
+                            eval(cleanup instanceof Ast.LambdaExpr
+                                    ? new Ast.CallExpr(cleanup, List.of())
+                                    : cleanup, env);
                         }
+                    } catch (RuntimeException | Error failure) {
+                        pendingFailure = selectCleanupFailure(pendingFailure, failure);
                     }
                 }
                 try {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                    } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
-                        // Mutex cleanup cannot downgrade an already failing
-                        // root task into successful exit(0).
-                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
-                    } else {
-                        if (pendingFailure != null && pendingFailure != failure) {
-                            suppressCleanupFailure(failure, pendingFailure);
-                        }
-                        pendingFailure = failure;
-                    }
+                    pendingFailure = selectCleanupFailure(pendingFailure, failure);
                 }
                 // If only the body failed, Java will rethrow it naturally.
-                // If cleanup failed, the most recent failure takes precedence
-                // and retains earlier failures as suppressed exceptions.
+                // If cleanup selected a stronger failure, rethrow it with the
+                // earlier failure retained as a bounded suppressed diagnostic.
                 if (pendingFailure != null && pendingFailure != originalFailure) {
                     if (pendingFailure instanceof RuntimeException runtimeFailure) {
                         throw runtimeFailure;
@@ -7780,7 +7988,7 @@ public final class OresEvalRootNode extends RootNode {
         private void executeStatement(
                 Ast.Stmt stmt,
                 Env env,
-                ArrayDeque<Ast.Expr> deferred,
+                ArrayDeque<RegisteredDefer> deferred,
                 boolean inheritedTailBarrier) {
             // Defense in depth: source can reach this evaluator through host
             // adapters that do not run the normal TypeChecker on every call.
@@ -7882,7 +8090,14 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
-            if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
+            if (stmt instanceof Ast.DeferStmt defer) {
+                RegisteredDefer registration = defer.boundFactory() == null
+                        ? new RegisteredDefer(defer.expression(), null)
+                        : bindDeferredFactory(defer.boundFactory(),
+                                evaluateArguments(defer.boundFactory().arguments(), env), env);
+                deferred.push(registration);
+                return;
+            }
             if (stmt instanceof Ast.BlockStmt block) {
                 executeBlock(
                         block.body(),
@@ -9875,6 +10090,9 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.ChannelOpExpr channelOp) {
                 return evalChannelOperation(channelOp, env);
             }
+            if (expr instanceof Ast.SelectExpr valueSelect) {
+                return evalSelectValue(valueSelect, env);
+            }
             if (expr instanceof Ast.DynamicSelectExpr selected) {
                 ChannelRuntime.SelectSet set = asSelectSet(eval(selected.cases(), env));
                 ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
@@ -10549,6 +10767,16 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
+                    case "bind_udp" -> (Invokable) args -> {
+                        requireTwo(args, "network.bind_udp");
+                        String host = requireString(args.get(0), "UDP numeric host");
+                        if (!(args.get(1) instanceof Number port) || !isIntegral(port)
+                                || port.longValue() < 0 || port.longValue() > 65535) {
+                            throw new IllegalArgumentException("UDP bind port must be integer 0..65535");
+                        }
+                        return dev.oreslang.runtime.AsyncNioUdp.bindAsync(
+                                context, host, port.intValue());
+                    };
                     case "listen_async" -> (Invokable) args -> {
                         requireTwo(args, "network.listen_async");
                         String host = requireString(args.get(0), "network.listen_async host");
@@ -10567,6 +10795,51 @@ public final class OresEvalRootNode extends RootNode {
                                 "network." + name, () -> network.connect(values));
                     };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioUdp.Socket udp) {
+                return switch (name) {
+                    case "local_port" -> (Invokable) args -> {
+                        requireZero(args, "udp.local_port");
+                        return udp.localPort();
+                    };
+                    case "send_to" -> (Invokable) args -> {
+                        requireTwo(args, "udp.send_to");
+                        if (!(args.get(0) instanceof Number port) || !isIntegral(port)
+                                || port.longValue() < 1 || port.longValue() > 65535) {
+                            throw new IllegalArgumentException("UDP destination port must be integer 1..65535");
+                        }
+                        if (!(args.get(1) instanceof List<?> octets)) {
+                            throw new IllegalArgumentException("UDP payload must be a List<int>");
+                        }
+                        return udp.sendTo(port.intValue(), octets);
+                    };
+                    case "recv_from" -> (Invokable) args -> {
+                        requireOne(args, "udp.recv_from");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)
+                                || n.longValue() < 1 || n.longValue() > 65507) {
+                            throw new IllegalArgumentException("UDP receive capacity must be 1..65507");
+                        }
+                        return udp.receiveFrom(n.intValue());
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "udp.close");
+                        return udp.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown UDP socket member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioUdp.Packet packet) {
+                return switch (name) {
+                    case "bytes" -> (Invokable) args -> {
+                        requireZero(args, "udp.packet.bytes");
+                        return packet.bytes();
+                    };
+                    case "source_port" -> (Invokable) args -> {
+                        requireZero(args, "udp.packet.source_port");
+                        return packet.sourcePort();
+                    };
+                    default -> throw new IllegalArgumentException("unknown UDP packet member " + name);
                 };
             }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Listener listener) {
@@ -12297,6 +12570,9 @@ public final class OresEvalRootNode extends RootNode {
                                 fn.async()
                                         ? detachAsyncArguments(args, fn.parameters())
                                         : args);
+                if (!fn.async() && fn.returnType().name().equals("Future")) {
+                    return chainFuture(future, values -> values.getFirst(), true, false);
+                }
                 return returnSourceTaskResult(future, fn.async());
             }
             return callStaticFunctionBodyRaw(fn, args);

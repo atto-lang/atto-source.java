@@ -110,6 +110,9 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.TypeAliasDecl, String> typeAliasOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    // The slot arity inventory depends only on declarations, not specialization.
+    // Cache successful results by declaration identity for this checker instance.
+    private final IdentityHashMap<Ast.InterfaceDecl, Map<Ast.MethodArity, Integer>> interfaceArityCache = new IdentityHashMap<>();
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -324,12 +327,16 @@ public final class TypeChecker {
      * objects without passing through Parser. Never allow such a forged
      * method to masquerade as the future compiler-owned state-loan intrinsic.
      */
+    private static boolean isStateAccessIntrinsic(String name) {
+        return Set.of("handle_state", "handle_state_ro", "handle_state_w", "state_ro", "state_w").contains(name);
+    }
+
     private static void rejectForgedActorStateIntrinsic(Ast.ClassDecl actor) {
         if (actor.actorKind() != Ast.ActorKind.NONE
-                && actor.methods().stream().anyMatch(m -> m.name().equals("handle_state"))) {
+                && actor.methods().stream().anyMatch(m -> isStateAccessIntrinsic(m.name()))) {
             throw new IllegalArgumentException(
                     "ACTOR_STATE_INTRINSIC_FORGED: actor '" + actor.name()
-                            + "' cannot define compiler-owned handle_state");
+                            + "' cannot define compiler-owned handle_state or state access aliases");
         }
         if (actor.methods().stream().anyMatch(Ast.MethodDecl::critical)) {
             throw new IllegalArgumentException(
@@ -1490,7 +1497,7 @@ public final class TypeChecker {
                             trappedSignature.parameters(),
                             trappedSignature.mutableParameters(),
                             trappedSignature.async(),
-                            trapResult(true, trappedSignature.result()),
+                            trapWrappedCallType(fn.async(), trappedSignature.result()),
                             trappedSignature.effects());
                 }
 
@@ -1616,7 +1623,7 @@ public final class TypeChecker {
                                 "actor-local lifecycle contract hook '" + method.name()
                                         + "' must be private, zero-argument and return void");
                     }
-                } else if (Set.of("handle_state", "on_panic", "on_throw",
+                } else if (isStateAccessIntrinsic(method.name()) || Set.of("on_panic", "on_throw",
                         "on_throws", "on_raise", "on_recover",
                         "on_stop", "on_restart").contains(method.name())) {
                     throw new IllegalArgumentException(
@@ -1701,8 +1708,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "*_blocking function '" + fn.name() + "' must declare suspends");
         if (fn.trapped()) {
-            if (fn.async()) {
-                throw new IllegalArgumentException("async trap callables are not enabled until the trap boundary spans every await");
+            if (fn.suspends()) {
+                throw new IllegalArgumentException("suspending trap callables require a verified inline unwind boundary");
             }
             if (fn.generator()) {
                 throw new IllegalArgumentException("trap generators are not enabled until the trap boundary spans generator suspension");
@@ -2014,7 +2021,10 @@ public final class TypeChecker {
 
     private Map<Ast.MethodArity, Integer> validateInterfaceAritySlots(
             Ast.InterfaceDecl iface, Set<Ast.InterfaceDecl> stack) {
-        if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
+        if (stack.contains(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
+        Map<Ast.MethodArity, Integer> cached = interfaceArityCache.get(iface);
+        if (cached != null) return cached;
+        stack.add(iface);
         try {
             Map<Ast.MethodArity, Integer> slots = new LinkedHashMap<>();
             for (Ast.TypeRef parentRef : iface.parents()) {
@@ -2042,7 +2052,9 @@ public final class TypeChecker {
                             + iface.name() + "." + fn.name() + "'");
                 }
             }
-            return slots;
+            Map<Ast.MethodArity, Integer> result = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(slots));
+            interfaceArityCache.put(iface, result);
+            return result;
         } finally {
             stack.remove(iface);
         }
@@ -2259,6 +2271,7 @@ public final class TypeChecker {
                 || expr instanceof Ast.TaskExpr
                 || expr instanceof Ast.ChannelOpExpr
                 || expr instanceof Ast.DynamicSelectExpr
+                || expr instanceof Ast.SelectExpr
                 || expr instanceof Ast.AssignExpr) return true;
         if (expr instanceof Ast.RuntimeCallExpr) {
             // All runtime intrinsics carry semantics beyond an ordinary
@@ -3473,7 +3486,25 @@ public final class TypeChecker {
                 }
                 env.defineInferredType(name, actual);
             }
-            Type declared = declaredAhead == null
+            // A bare, unshadowed Record local is a shape-inferred record
+            // annotation, not an erased dynamic map or a nominal class.
+            // Keep the initializer's closed field types and readonly capability.
+            // Do not extend this rule to aliases, generic parameters, structs,
+            // interfaces, callable signatures, or explicit structural types.
+            boolean inferBareRecordShape = binding.declaredType() != null
+                    && binding.declaredType().name().equals("Record")
+                    && binding.declaredType().arguments().isEmpty()
+                    && declaredAhead instanceof Named namedRecord
+                    && namedRecord.name().equals("Record")
+                    && namedRecord.arguments().isEmpty()
+                    && actual instanceof Record recordShape
+                    && recordShape.kind() == AggregateKind.RECORD
+                    && !generics.contains("Record")
+                    && !importedNames.contains("Record")
+                    && findClass("Record") == null
+                    && findInterface("Record") == null
+                    && findTypeAlias("Record") == null;
+            Type declared = declaredAhead == null || inferBareRecordShape
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
@@ -3543,9 +3574,17 @@ public final class TypeChecker {
                         || (binding.initializer() instanceof Ast.NameExpr sourceName
                                 && env.lookup(sourceName.name()) != null
                                 && env.lookup(sourceName.name()).exactAggregate()));
+            // Collect source widths before installing the new lexical binding.
+            // Only closed readonly records carry this proof; no erased INT/FLOAT
+            // member type is treated as a source-width witness.
+            Map<String, String> recordWidths = strictAttoEquality
+                    && declared instanceof Record row && row.readOnly()
+                    && row.kind() == AggregateKind.RECORD
+                    ? strictRecordFieldWidths(binding.initializer(), env) : Map.of();
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
             if (exactAggregate) env.lookup(binding.name()).setExactAggregate(true);
+            env.lookup(binding.name()).strictRecordWidths = Map.copyOf(recordWidths);
             if (strictAttoEquality) {
                 Ast.TypeRef sourceType = binding.declaredType();
                 if (sourceType == null) {
@@ -3674,8 +3713,53 @@ public final class TypeChecker {
             }
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            requireRuntimeValue(typeOf(expression.expression(), env, generics, self), "expression statement");
+            return;
+        }
         if (stmt instanceof Ast.DeferStmt defer) {
+            Ast.CallExpr factory = defer.boundFactory();
+            if (factory != null) {
+                Ast.LambdaExpr outer = (Ast.LambdaExpr) factory.callee();
+                Ast.LambdaExpr inner = (Ast.LambdaExpr) outer.expressionBody();
+                if (self != null || currentClassOwner != null || env.descendantsNonLexical()
+                        || outer.nonLexical() || inner.nonLexical()
+                        || inner.blockBody() == null || !inner.parameters().isEmpty()
+                        || factory.arguments().size() != outer.parameters().size()) {
+                    throw new IllegalArgumentException(
+                            "defer factory requires a top-level callable, scalar bindings and a nullary braced cleanup");
+                }
+                List<Type> params = new ArrayList<>();
+                for (Ast.Param param : outer.parameters()) {
+                    Type type = resolveParam(param, generics, self);
+                    if (param.mutable() || param.structural() || param.type().isBorrow()
+                            || !(type == Primitive.INT || type == Primitive.BOOL
+                                || type == Primitive.STRING || type == Primitive.FLOAT)) {
+                        throw new IllegalArgumentException(
+                                "defer factory parameters must be immutable scalar values");
+                    }
+                    params.add(type);
+                }
+                // Contextually validate both lambda bodies: the outer
+                // expression must produce an actual synchronous () => void.
+                validateLambdaAgainstExpected(outer,
+                        new Function(params, new Function(List.of(), Primitive.VOID)),
+                        env, generics, self);
+                // These expressions run now, not during cleanup; their
+                // ordinary initialization/effect rules apply at registration.
+                for (int i = 0; i < params.size(); i++) {
+                    Ast.Expr arg = factory.arguments().get(i);
+                    if (arg instanceof Ast.NamedArgExpr || arg instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException("defer factory requires fixed positional arguments");
+                    }
+                    Type actual = typeOfAgainstExpected(arg, params.get(i), env, generics, self);
+                    if (containsUnknown(actual) || actual instanceof Borrow) {
+                        throw new IllegalArgumentException("defer factory requires proven owned scalar arguments");
+                    }
+                    requireAssignable(actual, params.get(i), "defer factory argument " + (i + 1));
+                }
+                return;
+            }
             if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
                 throw new IllegalArgumentException(
                         "defer cleanup lambda must accept zero parameters");
@@ -3690,7 +3774,18 @@ public final class TypeChecker {
                     validateLambdaAgainstExpected(lambda,
                             new Function(List.of(), Primitive.VOID), env, generics, self);
                 } else {
-                    typeOf(defer.expression(), env, generics, self);
+                    Type result = typeOf(defer.expression(), env, generics, self);
+                    // The current evaluator delays ordinary expressions. It
+                    // cannot bind a callable result at registration or invoke
+                    // that result on exit. Never silently drop such a callback.
+                    if (result instanceof Function) {
+                        throw new IllegalArgumentException(
+                                "defer callable values and factories require checked registration-time lowering");
+                    }
+                    if (result instanceof Named named && named.name().equals("Result")) {
+                        throw new IllegalArgumentException(
+                                "defer must handle a fallible Result explicitly");
+                    }
                 }
             } finally {
                 // Defer executes later; checking its expression now must not
@@ -4141,6 +4236,14 @@ public final class TypeChecker {
                 rejectUnimportedModuleNamespace(name.name());
                 return moduleShape(moduleNamespace);
             }
+            // A nominal declaration is available to type resolution, never to a
+            // value expression. ClassNamespace below is a compiler-only receiver
+            // for static member lookup; it must not escape as a runtime value.
+            if (findInterface(name.name()) != null || findTypeAlias(name.name()) != null) {
+                throw new IllegalArgumentException(
+                        "E_TYPE_NOT_VALUE: type declaration '" + name.name()
+                                + "' is not a runtime value");
+            }
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) {
                 // Imported actors are linked only as protocol metadata so method
@@ -4205,6 +4308,16 @@ public final class TypeChecker {
                 Env.Binding binding = env.lookup(name.name());
                 if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
                 if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("E_IMMUTABLE_REBIND: cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
+                if (strictAttoEquality && !binding.strictRecordWidths.isEmpty()) {
+                    Map<String, String> replacement = strictRecordFieldWidths(assignment.value(), env);
+                    for (var field : binding.strictRecordWidths.entrySet()) {
+                        if (!field.getValue().equals(replacement.get(field.getKey()))) {
+                            throw new IllegalArgumentException(
+                                    "ATTO_STRICT_UNRESOLVED_NUMERIC_WIDTH: record reassignment requires exact "
+                                    + field.getValue() + " source provenance for field " + field.getKey());
+                        }
+                    }
+                }
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
@@ -4380,10 +4493,12 @@ public final class TypeChecker {
 
             env.restoreInitialization(afterCondition);
             Type left = typeOf(conditional.whenTrue(), env, generics, self);
+            requireRuntimeValue(left, "conditional true arm");
             Map<Env.Binding, Set<String>> leftExit = env.initializationSnapshot();
 
             env.restoreInitialization(afterCondition);
             Type right = typeOf(conditional.whenFalse(), env, generics, self);
+            requireRuntimeValue(right, "conditional false arm");
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(leftExit, rightExit));
@@ -4416,6 +4531,7 @@ public final class TypeChecker {
             Type ready = env.captureTypes.get(capture);
             if (ready != null) return ready;
             Type value = typeOf(capture.value(), env, generics, self);
+            requireRuntimeValue(value, "capture value");
             if (value == Primitive.VOID) throw new IllegalArgumentException("cannot capture a void expression");
             env.define(capture.name(), value, Ast.BindingKind.LET);
             env.captureTypes.put(capture, value);
@@ -4441,6 +4557,7 @@ public final class TypeChecker {
                         "trap expression cannot contain suspension until its continuation and cleanup are verified");
             }
             Type inner = typeOf(trapped.expression(), env, generics, self);
+            requireRuntimeValue(inner, "trap operand");
             if (inner instanceof Named named && named.name().equals("Future")) {
                 throw new IllegalArgumentException(
                         "trap expression cannot wrap Future<T>; asynchronous failure capture is unsupported");
@@ -4452,6 +4569,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
+            requireRuntimeValue(operand, "unary operand");
             if (unary.operator().equals("&")) {
                 // Reborrow an existing loan; borrowing the wrapper must not
                 // create Borrow<Borrow<T>> or erase the source lifetime.
@@ -4498,6 +4616,7 @@ public final class TypeChecker {
                         + " Chains and nested uses are rejected; use '<<<', '>>>' or 'ashr' for bit shifts");
             }
             Type left = typeOf(binary.left(), env, generics, self);
+            requireRuntimeValue(left, "binary left operand");
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
                 Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
@@ -4509,6 +4628,7 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            requireRuntimeValue(right, "binary right operand");
             return switch (binary.operator()) {
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -4683,6 +4803,20 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // Direct bare declaration names are not runtime call arguments, even
+            // on builtin/variadic paths that do not invoke requireAssignable.
+            // Lexical value bindings still take precedence over type names.
+            for (Ast.Expr argument : call.arguments()) {
+                if (argument instanceof Ast.NameExpr name
+                        && env.lookup(name.name()) == null
+                        && (findClass(name.name()) != null
+                            || findInterface(name.name()) != null
+                            || findTypeAlias(name.name()) != null)) {
+                    throw new IllegalArgumentException(
+                            "E_TYPE_NOT_VALUE: call argument cannot use type declaration '"
+                                    + name.name() + "' as a runtime value");
+                }
+            }
             if (call.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
                 throw new IllegalArgumentException(
                         "NAMED_CALL_BINDING_UNSUPPORTED: named arguments are parsed and preserved, "
@@ -4765,7 +4899,7 @@ public final class TypeChecker {
                     if (argument instanceof Ast.SpreadExpr) {
                         throw new IllegalArgumentException("stdio console spread is unsupported; use stdio.stdout.log");
                     }
-                    typeOf(argument, env, generics, self);
+                    requireRuntimeValue(typeOf(argument, env, generics, self), "stdio console argument");
                 }
                 return Primitive.VOID;
             }
@@ -4778,7 +4912,7 @@ public final class TypeChecker {
                     if (argument instanceof Ast.SpreadExpr spread) {
                         requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
                     } else {
-                        typeOf(argument, env, generics, self);
+                        requireRuntimeValue(typeOf(argument, env, generics, self), "stdio log argument");
                     }
                 }
                 return isBuiltinStdoutCall(call, "log_async", env)
@@ -4833,9 +4967,9 @@ public final class TypeChecker {
                     && currentInstanceMethodOwner != null
                     && currentInstanceMethodOwner.actorKind() != Ast.ActorKind.NONE
                     && call.callee() instanceof Ast.NameExpr reservedState
-                    && reservedState.name().equals("handle_state")) {
+                    && isStateAccessIntrinsic(reservedState.name())) {
                 throw new IllegalArgumentException(
-                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare handle_state "
+                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare " + reservedState.name() + " "
                                 + "requires the compiler-owned current-actor critical loan; "
                                 + "use imports::handle_state(...) for an imported ordinary fnc");
             }
@@ -4931,6 +5065,28 @@ public final class TypeChecker {
                     }
                     return trappedCallableResult(target.trapped(), target.async(), target.suspends(), target.generator(), result);
                 }
+            }
+            // A uniquely linked, concrete named import can be invoked
+            // directly when no lexical/local callable family owns the name.
+            // Reuse the explicit-import type/effect path, not a local AOT slot
+            // or an opaque first-class callable. Actor calls remain explicit.
+            if (currentActorKind == Ast.ActorKind.NONE
+                    && call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr importedName
+                    && env.lookup(importedName.name()) == null
+                    && !functions.containsKey(importedName.name())
+                    && !functions.containsKey(Parser.ROOT_MODULE + "." + importedName.name())
+                    && linkedImportCallables.contains(importedName.name())) {
+                int arity = fixedCallArity(call.arguments(), env, generics, self,
+                        "imported function " + importedName.name());
+                if (findQualifiedFunction(Parser.IMPORTS_NAMESPACE + "." + importedName.name(), arity) == null) {
+                    throw new IllegalArgumentException("imported function '" + importedName.name()
+                            + "' has no matching arity");
+                }
+                return typeOf(call.rewrite(
+                                new Ast.MemberExpr(new Ast.NameExpr(Parser.IMPORTS_NAMESPACE), importedName.name()),
+                                call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                        env, generics, self);
             }
             // Primitive display is explicit, deterministic, and not a host
             // Object.toString() escape hatch. Declared user functions win at
@@ -7020,6 +7176,8 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.TaskExpr task) {
+            if (task.payloadType() != null)
+                return checkTaskExpression(task, resolve(task.payloadType(), generics, self), env, generics, self);
             if (task.typedCountedSelectI64())
                 return checkTaskExpression(task, new ListType(Primitive.INT), env, generics, self);
             if (task.typedDefaultSelectI64())
@@ -7143,6 +7301,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.MatchExpr valueMatch) {
             Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
+            requireRuntimeValue(subject, "value match subject");
             Type declaredResult = valueMatch.resultType() == null ? null
                     : resolve(valueMatch.resultType(), generics, self);
             if (declaredResult == Primitive.VOID || declaredResult == Unknown.INSTANCE) {
@@ -7219,6 +7378,59 @@ public final class TypeChecker {
                 env.restoreInitialization(before);
             }
         }
+        if (expr instanceof Ast.SelectExpr valueSelect) {
+            Ast.SelectStmt selected = valueSelect.select();
+            Type result = null;
+            for (int i = 0; i < selected.arms().size(); i++) {
+                Ast.SelectArm arm = selected.arms().get(i);
+                Env armEnv = new Env(env);
+                if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
+                    Type source = typeOf(arm.channel(), env, generics, self);
+                    Type element;
+                    if (arm.operation() == Ast.ChannelOperation.AWAIT) {
+                        if (!(deref(source) instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException("when await requires Future<T>, got " + source);
+                        }
+                        element = future.arguments().getFirst();
+                    } else {
+                        element = channelElementType(source, "select " + arm.operation().name().toLowerCase());
+                    }
+                    if (arm.operation() == Ast.ChannelOperation.WRITE) {
+                        requireAssignable(typeOf(arm.value(), env, generics, self), element, "writech select value");
+                    } else if (arm.bindingName() != null) {
+                        Type bound = element;
+                        if (arm.bindingType() != null) {
+                            bound = resolve(arm.bindingType(), generics, self);
+                            requireReadonlyCapabilityPreserved(element, bound,
+                                    "typed select binding '" + arm.bindingName() + "'");
+                            requireAssignable(element, bound, "typed select binding '" + arm.bindingName() + "'");
+                        }
+                        requireMutableReferentCompatible(bound, arm.mutableReferent(),
+                                "select binding '" + arm.bindingName() + "'");
+                        armEnv.define(arm.bindingName(), bound, arm.bindingKind());
+                    }
+                }
+                Type actual = typeOf(valueSelect.armValues().get(i), armEnv, generics, self);
+                if (actual == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            "value select arm must produce a value; use 'do select { ... }' for effects only");
+                }
+                if (result == null) {
+                    result = actual;
+                } else {
+                    requireReadonlyCapabilityPreserved(actual, result, "select arm");
+                    requireAssignable(actual, result, "select arm");
+                    requireAssignable(result, actual, "select arm");
+                }
+            }
+            return switch (selected.mode()) {
+                case BLOCKING -> result;
+                case NONBLOCKING -> new Named("Future", List.of(result));
+                case IMMEDIATE -> new Named("Option", List.of(result));
+            };
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
@@ -7239,7 +7451,9 @@ public final class TypeChecker {
             for (int i = 1; i < list.elements().size(); i++) {
                 element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
             }
-            return new ListType(element);
+            Type result = new ListType(element);
+            requireRuntimeValue(result, "list element");
+            return result;
         }
         if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
             Ast.TypeRef witness = mapLiteral.mapType();
@@ -7327,7 +7541,10 @@ public final class TypeChecker {
                             + "unresolved or unsupported witness " + witness);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            Type result = new Tuple(tuple.elements().stream()
+                    .map(item -> typeOf(item, env, generics, self)).toList());
+            requireRuntimeValue(result, "tuple element");
+            return result;
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
@@ -7440,6 +7657,7 @@ public final class TypeChecker {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
+                requireRuntimeValue(exactValueType, "aggregate field '" + field.name() + "'");
                 if (members.putIfAbsent(
                         field.name(),
                         object.inferredFieldTypes()
@@ -7513,6 +7731,14 @@ public final class TypeChecker {
                         Type inferredReturn = typeOf(returned.value(), lambdaEnv, generics, self);
                         checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, inferredReturn, self);
                         result = inferredReturn;
+                    } else if (lambda.blockBody().size() == 1
+                            && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt bareReturn
+                            && bareReturn.value() == null) {
+                        // Bare return is a known void result, not Unknown. In
+                        // particular this must agree with |...| -> void { }
+                        // and |...| : void -> { } for the same signature.
+                        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+                        result = Primitive.VOID;
                     } else {
                         checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
                         result = Unknown.INSTANCE;
@@ -8087,6 +8313,11 @@ public final class TypeChecker {
                 && future.name().equals("Future")
                 && future.arguments().size() == 1) {
             Type result = future.arguments().getFirst();
+            if (task.payloadType() != null) {
+                Type actual = typeOf(task, env, generics, self);
+                requireAssignable(actual, future, "declared task payload");
+                return actual;
+            }
             if (task.typedDefaultSelectI64() && result != Primitive.INT)
                 throw new IllegalArgumentException("select<int> has result Future<int>; contextual result cannot change it");
             if (task.typedCountedSelectI64() && !new ListType(Primitive.INT).equals(result))
@@ -8953,6 +9184,20 @@ public final class TypeChecker {
                 default -> throw new IllegalArgumentException("unknown Bytes member " + name);
             };
         }
+        // UDP packet reads are immediate immutable snapshots. Socket guest
+        // methods return Future<T>; full compiler-proven affine ownership
+        // still needs a separate move/alias audit (the runtime denies
+        // cross-task detachment of the host socket).
+        if (named.name().equals("UdpPacket")) {
+            return switch (name) {
+                case "bytes" -> new Function(List.of(), new ListType(Primitive.INT));
+                case "source_port" -> new Function(List.of(), Primitive.INT);
+                default -> throw new IllegalArgumentException("unknown UdpPacket member " + name);
+            };
+        }
+        if (named.name().equals("UdpSocket") && name.equals("local_port")) {
+            return new Function(List.of(), Primitive.INT);
+        }
         // Async TCP v1.1: split is synchronous and consumes the connection.
         if (named.name().equals("NioConnection") && name.equals("split")) {
             return new Function(List.of(), new Tuple(
@@ -9009,6 +9254,10 @@ public final class TypeChecker {
             }
             case "network", "net" -> {
                 switch (name) {
+                    case "bind_udp" -> {
+                        result = new Named("UdpSocket", List.of());
+                        parameters = List.of(Primitive.STRING, Primitive.INT);
+                    }
                     case "listen_async" -> {
                         result = new Named("NioListener", List.of());
                         parameters = List.of(Primitive.STRING, Primitive.INT);
@@ -9039,6 +9288,23 @@ public final class TypeChecker {
                         result = Primitive.VOID; parameters = List.of();
                     }
                     default -> throw new IllegalArgumentException("unknown BinaryFile member " + name);
+                }
+            }
+            case "UdpSocket" -> {
+                switch (name) {
+                    case "send_to" -> {
+                        result = Primitive.INT;
+                        parameters = List.of(Primitive.INT, new ListType(Primitive.INT));
+                    }
+                    case "recv_from" -> {
+                        result = new Named("UdpPacket", List.of());
+                        parameters = List.of(Primitive.INT);
+                    }
+                    case "close" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown UdpSocket member " + name);
                 }
             }
             case "NioListener" -> {
@@ -9395,7 +9661,8 @@ public final class TypeChecker {
                     where + " cannot transfer affine Map<K,V> through actor mail in V1");
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+        if (named.name().equals("UdpSocket") || named.name().equals("UdpPacket")
+                || named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("HttpClientResponse") || named.name().equals("HttpClientBody")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")
@@ -9643,6 +9910,15 @@ public final class TypeChecker {
             return inferBoundaryAutoTraits(bound, seen, genericBindings);
         }
 
+        // Privileged native UDP handles are never task/actor Send just
+        // because a guest declares an unrelated nominal class with the same
+        // spelling. Packet snapshots stay non-transferable until their ABI
+        // and ownership semantics have a separate compiler-backed proof.
+        if (type instanceof Named nativeUdp
+                && (nativeUdp.name().equals("UdpSocket")
+                    || nativeUdp.name().equals("UdpPacket"))) {
+            return new AutoTraitRules.Capabilities(false, false, false);
+        }
         java.util.Optional<AutoTraitRules.Capabilities> builtin =
                 TypeAutoTraits.inferBuiltin(
                         type,
@@ -10821,7 +11097,7 @@ public final class TypeChecker {
      */
     private static boolean hasSuspendingSumCallbackSyntax(Ast.Expr expr) {
         if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
-                || expr instanceof Ast.DynamicSelectExpr) return true;
+                || expr instanceof Ast.DynamicSelectExpr || expr instanceof Ast.SelectExpr) return true;
         if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return false;
         if (expr instanceof Ast.BinaryExpr binary)
             return hasSuspendingSumCallbackSyntax(binary.left())
@@ -11972,6 +12248,23 @@ public final class TypeChecker {
         return strictNumericName(ref, new HashSet<>());
     }
 
+    // Keep width proofs separate from the structural row's erased member types.
+    // Spread and unknown-producing expressions intentionally fail closed.
+    private Map<String, String> strictRecordFieldWidths(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.NameExpr name) {
+            Env.Binding binding = env.lookup(name.name());
+            return binding == null ? Map.of() : binding.strictRecordWidths;
+        }
+        if (!(expr instanceof Ast.ObjectExpr object) || !object.structuralRecord()
+                || object.fields().stream().anyMatch(Ast.ObjectField::spread)) return Map.of();
+        Map<String, String> widths = new HashMap<>();
+        for (Ast.ObjectField field : object.fields()) {
+            String width = strictNumericSource(field.value(), env);
+            if (width != null) widths.put(field.name(), width);
+        }
+        return widths;
+    }
+
     private Ast.TypeRef strictSourceRef(Ast.Expr expr, Env env) {
         if (expr instanceof Ast.NameExpr name) {
             Ast.TypeRef declared = env.lookupStrictSourceType(name.name());
@@ -11984,6 +12277,8 @@ public final class TypeChecker {
         if (expr instanceof Ast.NewExpr object) return object.type();
         if (expr instanceof Ast.CastExpr cast) return cast.targetType();
         if (expr instanceof Ast.MemberExpr member) {
+            String recordWidth = strictRecordFieldWidths(member.receiver(), env).get(member.member());
+            if (recordWidth != null) return Ast.TypeRef.simple(recordWidth);
             Ast.TypeRef receiver = strictSourceRef(member.receiver(), env);
             if (receiver == null || receiver.isBorrow()) return null;
             Ast.ClassDecl klass = findClass(receiver.name());
@@ -12670,7 +12965,7 @@ public final class TypeChecker {
                 collectModuleContractActorNames(parent, names, seen);
             }
         }
-        seen.remove(iface);
+        // Keep completed ancestors visited: this traversal accumulates a set of names.
     }
 
     private void collectInterfaceFieldNames(
@@ -12685,7 +12980,7 @@ public final class TypeChecker {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent != null) collectInterfaceFieldNames(parent, names, seen);
         }
-        seen.remove(iface);
+        // Keep completed ancestors visited: this traversal accumulates a set of names.
     }
 
     private void collectInterfaceMethodNames(
@@ -12700,7 +12995,7 @@ public final class TypeChecker {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent != null) collectInterfaceMethodNames(parent, names, seen);
         }
-        seen.remove(iface);
+        // Keep completed ancestors visited: this traversal accumulates a set of names.
     }
 
     private void requireClassMemberVisible(
@@ -12880,6 +13175,18 @@ public final class TypeChecker {
         return callableResult(async, suspends, false, trapResultType(result));
     }
 
+    /** Function and module member signatures have already lifted their return into Future.
+     * Keep the Result inside the Future, never Result<Future<T>, Error>.
+     */
+    private Type trapWrappedCallType(boolean async, Type lifted) {
+        if (!async) return trapResultType(lifted);
+        if (!(lifted instanceof Named future) || !future.name().equals("Future")
+                || future.arguments().size() != 1) {
+            throw new IllegalStateException("async trap callable signature requires Future<T>");
+        }
+        return new Named("Future", List.of(trapResultType(future.arguments().getFirst())));
+    }
+
     private Function trapFunctionType(Ast.FunctionDecl fn, Set<String> generics, Type self) {
         Function raw = functionType(
                 fn.parameters(),
@@ -12894,7 +13201,7 @@ public final class TypeChecker {
                 raw.parameters(),
                 raw.mutableParameters(),
                 raw.async(),
-                trapResult(true, raw.result()),
+                trapWrappedCallType(fn.async(), raw.result()),
                 raw.effects());
     }
 
@@ -13523,7 +13830,18 @@ public final class TypeChecker {
                     ? inferredArgumentTypes.get(i)
                     : expandedCallArgumentType(
                             argument, expected, env, callerGenerics, callerSelf);
-            if (!params.get(i).structural()) {
+            if (params.get(i).structural()) {
+                if (argument.expression() instanceof Ast.RuntimeCallExpr runtime
+                        && (runtime.operation().equals("take") || runtime.operation().equals("move"))) {
+                    throw new IllegalArgumentException("argument " + (i + 1) + " cannot transfer ownership into a structural view");
+                }
+                if (actual instanceof Borrow loan) {
+                    if (loan.mutable()) throw new IllegalArgumentException("argument " + (i + 1) + " cannot pass a mutable borrow into a structural view");
+                    // Only this explicit nonescaping structural parameter
+                    // permits inspecting the borrowed target's read-only shape.
+                    actual = loan.target();
+                }
+            } else {
                 requireReadonlyCapabilityPreserved(
                         actual,
                         expected,
@@ -14773,6 +15091,9 @@ public final class TypeChecker {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
                 for (Ast.TypeRef ref : klass.interfaces()) {
+                    // Static factory and actor-port witnesses are checked in
+                    // their dedicated paths, not runtime instance interfaces.
+                    if (ref.name().equals("Newable") || ref.name().equals("StreamOperator")) continue;
                     Type discovered = hasFutureResult(
                             concreteClassReference(ref, klass, named), seen);
                     result = mergeAwaitResult(result, discovered);
@@ -14813,6 +15134,7 @@ public final class TypeChecker {
         if (actual == null) return false;
 
         for (Ast.TypeRef ifaceRef : actual.interfaces()) {
+            if (ifaceRef.name().equals("Newable") || ifaceRef.name().equals("StreamOperator")) continue;
             Named ifaceType = concreteClassReference(ifaceRef, actual, actualType);
             if (interfaceTypeExtends(ifaceType, expectedInterfaceType, new LinkedHashSet<>())) {
                 return true;
@@ -15004,7 +15326,60 @@ public final class TypeChecker {
         return ref.inferArguments() || ref.arguments().stream().anyMatch(this::hasInferredArgs);
     }
 
+    private void requireRuntimeValue(Type actual, String where) {
+        // Identity-based traversal protects recursive inferred shapes from
+        // unbounded validation, without conflating structurally equal types.
+        requireRuntimeValue(actual, where, new IdentityHashMap<>());
+    }
+
+    private void requireRuntimeValue(
+            Type actual, String where, IdentityHashMap<Type, Boolean> visited) {
+        if (visited.put(actual, Boolean.TRUE) != null) return;
+        if (actual instanceof ClassNamespace namespace) {
+            throw new IllegalArgumentException(
+                    "E_TYPE_NOT_VALUE: " + where + " cannot use class declaration '"
+                            + namespace.className() + "' as a runtime value; "
+                            + "construct an instance or access a static member");
+        }
+        // All compiler type wrappers must be inspected. Unknown and generic
+        // value slots do not authorize a namespace to become a runtime object.
+        if (actual instanceof Record record) {
+            record.members().forEach((name, member) ->
+                    requireRuntimeValue(member, where + "." + name, visited));
+        } else if (actual instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                requireRuntimeValue(element, where + " tuple element", visited);
+            }
+        } else if (actual instanceof ListType list) {
+            requireRuntimeValue(list.element(), where + " list element", visited);
+        } else if (actual instanceof Function function) {
+            requireRuntimeValue(function.result(), where + " callable result", visited);
+            for (Type param : function.parameters()) {
+                requireRuntimeValue(param, where + " callable parameter", visited);
+            }
+        } else if (actual instanceof Named named) {
+            for (Type argument : named.arguments()) {
+                requireRuntimeValue(argument, where + " generic value type", visited);
+            }
+        } else if (actual instanceof Union union) {
+            for (Type option : union.options()) {
+                requireRuntimeValue(option, where + " union alternative", visited);
+            }
+        } else if (actual instanceof Borrow borrow) {
+            requireRuntimeValue(borrow.target(), where + " borrowed value", visited);
+        } else if (actual instanceof SelfType receiver) {
+            requireRuntimeValue(receiver.bound(), where + " self bound", visited);
+        } else if (actual instanceof Types.Not excluded) {
+            requireRuntimeValue(excluded.excluded(), where + " exclusion type", visited);
+        }
+    }
+
     private void requireAssignable(Type actual, Type expected, String where) {
+        // Never allow the compiler-only static-class receiver to satisfy an
+        // inferred, generic or Unknown value slot (including return/argument
+        // positions). Static member lookup uses ClassNamespace directly and
+        // does not go through runtime value assignment.
+        requireRuntimeValue(actual, where);
         if (!assignable(actual, expected)) throw new IllegalArgumentException(where + " has type " + actual + " but expected " + expected);
     }
 
@@ -15212,6 +15587,7 @@ public final class TypeChecker {
             private final Ast.BindingKind kind;
             private final Set<String> uninitializedFields;
             private boolean exactAggregate;
+            private Map<String, String> strictRecordWidths = Map.of();
 
             private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields) {
                 this.type = type;
