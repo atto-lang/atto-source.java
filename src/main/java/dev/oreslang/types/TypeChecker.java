@@ -126,6 +126,9 @@ public final class TypeChecker {
     // import fnc bindings whose checked signature is linked; imports::f(...)
     // then types as a call into the synthetic $imports$ module.
     private final Set<String> linkedImportCallables = new HashSet<>();
+    // Aliases of imported modules linked from other units: explicit
+    // dependencies, so actors may use them (same-file modules they may not).
+    private final Set<String> linkedModuleAliases = new HashSet<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -799,6 +802,7 @@ public final class TypeChecker {
             }
             checker.importedValues.remove(alias);
             checker.modules.put(alias, module);
+            checker.linkedModuleAliases.add(alias);
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn
                         && fn.visibility() == Ast.Visibility.PUBLIC) {
@@ -963,20 +967,22 @@ public final class TypeChecker {
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "HttpClientResponse", "HttpClientBody",
+                "ChildProcess", "ExitStatus", "ProcessOutput", "ProcessError",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorGroup", "Topic", "Subscription", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
         Set<String> builtinNames = Set.copyOf(localNames);
+        Set<String> userDeclaredNames = new HashSet<>();
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) {
-                localNames.add(module.name());
+                { localNames.add(module.name()); userDeclaredNames.add(module.name()); }
                 nonFunctionDeclarations.add(module.name());
             }
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) {
-                    localNames.add(fn.name());
+                    { localNames.add(fn.name()); userDeclaredNames.add(fn.name()); }
                     if (module.name().equals(Parser.ROOT_MODULE)) {
                         rootFunctions.add(fn.name());
                     } else {
@@ -995,15 +1001,15 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 klass.name() + " is a sealed HTTP transport type; user classes cannot shadow it");
                     }
-                    localNames.add(klass.name());
+                    { localNames.add(klass.name()); userDeclaredNames.add(klass.name()); }
                     nonFunctionDeclarations.add(klass.name());
                 }
                 else if (declaration instanceof Ast.InterfaceDecl iface) {
-                    localNames.add(iface.name());
+                    { localNames.add(iface.name()); userDeclaredNames.add(iface.name()); }
                     nonFunctionDeclarations.add(iface.name());
                 }
                 else if (declaration instanceof Ast.FieldDecl field) {
-                    localNames.add(field.name());
+                    { localNames.add(field.name()); userDeclaredNames.add(field.name()); }
                     nonFunctionDeclarations.add(field.name());
                 }
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
@@ -1015,7 +1021,7 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
                     }
-                    localNames.add(alias.name());
+                    { localNames.add(alias.name()); userDeclaredNames.add(alias.name()); }
                     nonFunctionDeclarations.add(alias.name());
                 }
             }
@@ -1041,7 +1047,16 @@ public final class TypeChecker {
                 }
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
-                if (localNames.contains(name)
+                // `import module process from "std/process"` deliberately shadows
+                // the builtin namespace of the same name (a user declaration of
+                // that name still conflicts).
+                boolean stdModuleShadowsBuiltin = imported.kind() == Ast.ImportKind.MODULE
+                        && !imported.wildcard()
+                        && builtinNames.contains(name)
+                        && !userDeclaredNames.contains(name)
+                        && dev.oreslang.stdlib.CoreLibrarySources.isStdImport(imported.path())
+                        && imported.names().contains(name);
+                if (localNames.contains(name) && !stdModuleShadowsBuiltin
                         && !(imported.kind() == Ast.ImportKind.FUNCTION
                                 && !imported.wildcard()
                                 && rootFunctions.contains(name)
@@ -3111,7 +3126,8 @@ public final class TypeChecker {
     }
 
     private void rejectUnimportedModuleNamespace(String name) {
-        if (!insideActorLexicalBoundary()) return;
+        // An explicitly imported (linked) module is a declared dependency.
+        if (!insideActorLexicalBoundary() || linkedModuleAliases.contains(name)) return;
         throw new IllegalArgumentException(
                 "actor '" + lexicalClassOrigin.name()
                         + "' cannot implicitly access module '" + name
@@ -4059,6 +4075,13 @@ public final class TypeChecker {
         return true;
     }
 
+    private static String calleeLabel(Ast.Expr callee) {
+        if (callee instanceof Ast.NameExpr name) return "'" + name.name() + "'";
+        if (callee instanceof Ast.MemberExpr member) return "'" + calleeLabel(member.receiver()).replace("'", "")
+                + "." + member.member() + "'";
+        return "function value";
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.ClosedRecurExpr) {
             if (currentFunction == null || !currentFunction.name().equals("main")
@@ -4176,6 +4199,13 @@ public final class TypeChecker {
                                     + local.uninitializedFields());
                 }
                 return local.type();
+            }
+            // A linked lowercase 'process' module is a lexical module
+            // namespace, not the ambient process intrinsic. std.process
+            // remains the explicit intrinsic inside its implementation.
+            if (name.name().equals("process") && modules.containsKey("process")) {
+                rejectUnimportedModuleNamespace("process");
+                return moduleShape(modules.get("process"));
             }
             if (name.name().equals("stdio")
                     || name.name().equals("std")
@@ -6370,7 +6400,26 @@ public final class TypeChecker {
                     expandFixedCallArguments(
                             call.arguments(), env, generics, self,
                             "function value call");
-            if (fn.parameters().size() != expanded.size()) throw new IllegalArgumentException("call arity mismatch");
+            // http.request(method, url, headers[, body]): the runtime accepts an
+            // optional bounded String or Bytes body as a fourth argument.
+            if (fn.parameters().size() == 3 && expanded.size() == 4
+                    && call.callee() instanceof Ast.MemberExpr httpCall
+                    && httpCall.member().equals("request")
+                    && httpCall.receiver() instanceof Ast.NameExpr httpName
+                    && httpName.name().equals("http") && env.lookup("http") == null) {
+                Type body = expandedCallArgumentType(expanded.get(3), Unknown.INSTANCE, env, generics, self);
+                Type expectedBody = body instanceof Named bytes && bytes.name().equals("Bytes")
+                        ? body : Primitive.STRING;
+                List<Type> withBody = new ArrayList<>(fn.parameters());
+                withBody.add(expectedBody);
+                List<Boolean> mutability = new ArrayList<>(fn.mutableParameters());
+                mutability.add(false);
+                fn = new Function(withBody, mutability, fn.async(), fn.result(), fn.effects());
+            }
+            if (fn.parameters().size() != expanded.size()) {
+                throw new IllegalArgumentException("call arity mismatch: " + calleeLabel(call.callee())
+                        + " takes " + fn.parameters().size() + " argument(s), got " + expanded.size());
+            }
             for (int i = 0; i < fn.parameters().size(); i++) {
                 ExpandedCallArgument argument = expanded.get(i);
                 if (argument.expression() != null) {
@@ -6450,6 +6499,25 @@ public final class TypeChecker {
                              && root.name().equals("std") && env.lookup("std") == null))) {
                 return new Function(List.of(Primitive.INT), Primitive.VOID);
             }
+            if (member.member().equals("spawn")
+                    && ((member.receiver() instanceof Ast.NameExpr processName
+                             && processName.name().equals("process")
+                             && env.lookup("process") == null)
+                        || (member.receiver() instanceof Ast.MemberExpr namespace
+                             && namespace.member().equals("process")
+                             && namespace.receiver() instanceof Ast.NameExpr root
+                             && root.name().equals("std")
+                             && env.lookup("std") == null))) {
+                // One restricted, explicit-cwd JVM host call. It cannot be
+                // confused with the source actor spawn keyword. No shell,
+                // environment inheritance, actor ownership or raw PID.
+                Type child = new Named("ChildProcess", List.of());
+                Type error = new Named("ProcessError", List.of());
+                Type result = new Named("Result", List.of(child, error));
+                return new Function(List.of(
+                        Primitive.STRING, new ListType(Primitive.STRING),
+                        Primitive.STRING), new Named("Future", List.of(result)));
+            }
             if (member.receiver() instanceof Ast.NameExpr idName && idName.name().equals("process")
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
                 return new Function(List.of(), Primitive.STRING);
@@ -6484,8 +6552,10 @@ public final class TypeChecker {
             Type receiver = typeOf(member.receiver(), env, generics, self);
             if (receiver instanceof Named named && named.name().equals("$TelemetrySpan")) {
                 return switch (member.member()) {
-                    case "attribute" -> new Function(
+                    case "attribute", "set_attribute" -> new Function(
                             List.of(Primitive.STRING, Unknown.INSTANCE), Primitive.VOID);
+                    case "add_event" -> new Function(
+                            List.of(Primitive.STRING), Primitive.VOID);
                     case "trace_id", "span_id" ->
                             new Function(List.of(), Primitive.STRING);
                     case "recording" ->
@@ -6495,6 +6565,51 @@ public final class TypeChecker {
                 };
             }
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            if (sumReceiver instanceof Named processType
+                    && processType.arguments().isEmpty()) {
+                if (processType.name().equals("ChildProcess")) {
+                    Type error = new Named("ProcessError", List.of());
+                    Type status = new Named("ExitStatus", List.of());
+                    Type output = new Named("ProcessOutput", List.of());
+                    return switch (member.member()) {
+                        case "wait", "terminate", "kill" ->
+                                new Function(List.of(), new Named("Future", List.of(
+                                        new Named("Result", List.of(status, error)))));
+                        case "collect_output" ->
+                                new Function(List.of(), new Named("Future", List.of(
+                                        new Named("Result", List.of(output, error)))));
+                        case "try_wait" -> new Function(List.of(),
+                                new Named("Option", List.of(status)));
+                        case "alive" -> Primitive.BOOL;
+                        case "close" -> new Function(List.of(), Primitive.VOID);
+                        default -> throw new IllegalArgumentException(
+                                "unknown ChildProcess member '" + member.member() + "'");
+                    };
+                }
+                if (processType.name().equals("ExitStatus")) {
+                    return switch (member.member()) {
+                        case "code" -> Primitive.INT;
+                        case "signaled" -> Primitive.BOOL;
+                        case "success" -> new Function(List.of(), Primitive.BOOL);
+                        default -> throw new IllegalArgumentException(
+                                "unknown ExitStatus member '" + member.member() + "'");
+                    };
+                }
+                if (processType.name().equals("ProcessOutput")) {
+                    return switch (member.member()) {
+                        case "stdout", "stderr" -> Primitive.STRING;
+                        default -> throw new IllegalArgumentException(
+                                "unknown ProcessOutput member '" + member.member() + "'");
+                    };
+                }
+                if (processType.name().equals("ProcessError")) {
+                    return switch (member.member()) {
+                        case "kind", "message" -> Primitive.STRING;
+                        default -> throw new IllegalArgumentException(
+                                "unknown ProcessError member '" + member.member() + "'");
+                    };
+                }
+            }
             // Nested extraction consumes the receiver. unwrap_all also
             // requires a checked static-depth proof bound to the CallExpr's
             // identity. A first-class method value would bypass both direct
@@ -13735,10 +13850,14 @@ public final class TypeChecker {
             requireMutableReferentCompatible(
                     actual, params.get(i).mutable(),
                     "argument " + (i + 1) + " to mutable parameter");
-            requireAssignable(
-                    actual,
-                    expected,
-                    "argument " + (i + 1));
+            try {
+                requireAssignable(
+                        actual,
+                        expected,
+                        "argument " + (i + 1));
+            } catch (IllegalArgumentException mismatch) {
+                throw new IllegalArgumentException(mismatch.getMessage() + " in call to " + label, mismatch);
+            }
         }
 
         Type result = substituteGenerics(

@@ -7,6 +7,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.stdlib.CoreLibrarySources;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
@@ -9668,12 +9669,27 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
+                // An explicit import binding (the checker admits only a
+                // same-named std module, e.g. std/process) wins over the
+                // builtin namespace of that name.
+                if (namedImports.containsKey(name.name()) || namespaceImports.containsKey(name.name())) {
+                    Object imported = importedValue(name.name());
+                    if (imported != Env.MISSING) return imported;
+                }
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("std")) return new StdFacade(context);
                 if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
+                // An explicitly linked lowercase module named 'process' must
+                // win over the pre-existing unqualified process intrinsic.
+                // Inside std/process.atto the intrinsic is reachable through
+                // std.process; do not recursively dispatch to this module.
+                if (name.name().equals("process") && modules.containsKey("process")) {
+                    requireLexicalNamespaceAccess(env, "process", "module");
+                    return new ModuleFacade(this, modules.get("process"));
+                }
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -10409,12 +10425,20 @@ public final class OresEvalRootNode extends RootNode {
 
             if (receiver instanceof dev.oreslang.runtime.TelemetrySpanScope scope) {
                 return switch (name) {
-                    case "attribute" -> (Invokable) args -> {
+                    case "attribute", "set_attribute" -> (Invokable) args -> {
                         if (args.size() != 2 || !(args.get(0) instanceof String key)) {
                             throw new IllegalArgumentException(
-                                    "span.attribute requires (string key, scalar value)");
+                                    "span.set_attribute requires (string key, scalar value)");
                         }
-                        scope.attribute(key, args.get(1));
+                        scope.setAttribute(key, args.get(1));
+                        return null;
+                    };
+                    case "add_event" -> (Invokable) args -> {
+                        if (args.size() != 1 || !(args.getFirst() instanceof String eventName)) {
+                            throw new IllegalArgumentException(
+                                    "span.add_event requires (string name)");
+                        }
+                        scope.addEvent(eventName);
                         return null;
                     };
                     case "trace_id" -> (Invokable) args -> {
@@ -11286,6 +11310,51 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ProcessFacade process) {
                 return switch (name) {
+                    // Non-parking by default. _async suffixes are not the public
+                    // convention; any future genuinely blocking API is _blocking.
+                    case "spawn" -> (Invokable) args -> {
+                        if (args.size() != 3) {
+                            throw new IllegalArgumentException(
+                                    "process.spawn requires absolute executable, string argv, absolute cwd");
+                        }
+                        if (ActorRuntime.currentActorId().isPresent()
+                                || ActorRuntime.currentActorPolicy() != null) {
+                            // Actor termination hooks must own children before
+                            // actor process launch can be admitted safely.
+                            throw new SecurityException(
+                                    "actor-owned child processes await lifecycle supervision");
+                        }
+                        String executable = requireString(args.get(0), "process.spawn executable");
+                        java.util.List<Object> raw =
+                                expandArgumentSequence(args.get(1), "process.spawn arguments");
+                        java.util.List<String> arguments = new java.util.ArrayList<>(raw.size());
+                        for (Object argument : raw) {
+                            arguments.add(requireString(argument, "process.spawn argv element"));
+                        }
+                        String cwd = requireString(args.get(2), "process.spawn cwd");
+                        try {
+                            return OresFuture.from(context.childProcesses()
+                                    .spawn(executable, arguments, cwd, (command, directory) -> {
+                                        context.requirePermission(
+                                                dev.oreslang.runtime.RuntimePermissions.Permission.RUN,
+                                                command, "process.spawn");
+                                        context.requirePermission(
+                                                dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                                directory, "process.spawn.cwd");
+                                    })
+                                    .handle((child, failure) -> failure == null
+                                            ? new ResultValue(true, child)
+                                            : new ResultValue(false,
+                                                    dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                            .from(failure))));
+                        } catch (RuntimeException failure) {
+                            // Permission denial, malformed paths, and admission
+                            // failures are ordinary typed Err outcomes.
+                            return OresFuture.completed(new ResultValue(false,
+                                    dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                            .from(failure)));
+                        }
+                    };
                     case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
                     case "sleep_async" -> (Invokable) args -> {
                         requireOne(args, "process.sleep_async");
@@ -11305,6 +11374,84 @@ public final class OresEvalRootNode extends RootNode {
                     case "gc" -> (Invokable) process::gc;
                     case "exit" -> (Invokable) process::exit;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeChildProcesses.Child child) {
+                return switch (name) {
+                    case "wait" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.wait");
+                        return OresFuture.from(child.waitForExit().handle((status, failure) ->
+                                failure == null ? new ResultValue(true, status)
+                                        : new ResultValue(false,
+                                                dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                        .from(failure))));
+                    };
+                    case "collect_output" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.collect_output");
+                        return OresFuture.from(child.collectOutput().handle((output, failure) ->
+                                failure == null ? new ResultValue(true, output)
+                                        : new ResultValue(false,
+                                                dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                        .from(failure))));
+                    };
+                    case "try_wait" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.try_wait");
+                        dev.oreslang.runtime.NativeChildProcesses.ExitStatus status = child.tryWait();
+                        return status == null ? new OptionValue(false, null)
+                                : new OptionValue(true, status);
+                    };
+                    case "terminate" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.terminate");
+                        return OresFuture.from(child.terminate().handle((status, failure) ->
+                                failure == null ? new ResultValue(true, status)
+                                        : new ResultValue(false,
+                                                dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                        .from(failure))));
+                    };
+                    case "kill" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.kill");
+                        return OresFuture.from(child.kill().handle((status, failure) ->
+                                failure == null ? new ResultValue(true, status)
+                                        : new ResultValue(false,
+                                                dev.oreslang.runtime.NativeChildProcesses.ProcessError
+                                                        .from(failure))));
+                    };
+                    case "alive" -> child.alive();
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "ChildProcess.close");
+                        child.close();
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown ChildProcess member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeChildProcesses.ExitStatus status) {
+                return switch (name) {
+                    case "code" -> (long) status.code();
+                    case "signaled" -> status.signaled();
+                    case "success" -> (Invokable) args -> {
+                        requireZero(args, "ExitStatus.success");
+                        return status.success();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown ExitStatus member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeChildProcesses.Output output) {
+                return switch (name) {
+                    case "stdout" -> output.stdout();
+                    case "stderr" -> output.stderr();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ProcessOutput member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeChildProcesses.ProcessError failure) {
+                return switch (name) {
+                    case "kind" -> failure.kind();
+                    case "message" -> failure.message();
+                    default -> throw new IllegalArgumentException(
+                            "unknown ProcessError member " + name);
                 };
             }
             if (receiver instanceof ActorFacade actor) {
@@ -12558,6 +12705,25 @@ public final class OresEvalRootNode extends RootNode {
 
         private String resolveImportUnitId(String rawPath) {
             String hostResolved = context.resolvedLinkedImport(codeUnitId, rawPath);
+
+            // Runtime defense in depth: even a direct or legacy single-unit
+            // evaluation must not resolve compiler-owned std/core/alloc names
+            // through ambient files, package roots or an attacker-selected
+            // linked source ID. The authenticated loader must bind them to
+            // exactly the compiler's closed registry identity.
+            String expectedBuiltin =
+                    CoreLibrarySources.requiredRegisteredBuiltinUnitId(rawPath);
+            if (expectedBuiltin != null) {
+                if (hostResolved == null) {
+                    throw new SecurityException(
+                            "compiler-owned import has no linked registered source: " + rawPath);
+                }
+                if (!expectedBuiltin.equals(normalizeUnitId(hostResolved))) {
+                    throw new SecurityException(
+                            "compiler-owned import identity mismatch: " + rawPath);
+                }
+                return expectedBuiltin;
+            }
             if (hostResolved != null) return hostResolved;
 
             String raw = rawPath.replace('\\', '/');
@@ -12575,9 +12741,26 @@ public final class OresEvalRootNode extends RootNode {
             return candidate;
         }
 
+        /**
+         * A public declaration inside a private module is not a cross-unit
+         * export. Use the exact checked AST declaration identity so an
+         * unrelated equal-named public declaration cannot confer authority.
+         */
+        private boolean isPubliclyExportableDeclaration(Ast.Decl declaration) {
+            for (Ast.ModuleDecl ownerModule : program.modules()) {
+                if (!ownerModule.name().equals(Parser.ROOT_MODULE)
+                        && ownerModule.visibility() != Ast.Visibility.PUBLIC) continue;
+                for (Ast.Decl member : ownerModule.declarations()) {
+                    if (member == declaration) return true;
+                }
+            }
+            return false;
+        }
+
         private Invocation prepareImportedInvocation(Ast.ImportKind kind, String name, List<Object> args) {
             Ast.FunctionDecl fn = findFunction(name, args.size());
-            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
+            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                    || !isPubliclyExportableDeclaration(fn)) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export callable '" + name + "'");
             }
@@ -12608,7 +12791,8 @@ public final class OresEvalRootNode extends RootNode {
             return switch (kind) {
                 case FUNCTION -> {
                     Ast.FunctionDecl fn = findSingleFunction(name);
-                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
+                    if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
+                            || !isPubliclyExportableDeclaration(fn)) {
                         throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export function '" + name + "'");
                     }
                     if (fn.kind() != Ast.CallableKind.FNC || fn.actorKind() != Ast.ActorKind.NONE) {
@@ -12627,7 +12811,8 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.ClassDecl klass = findClass(name);
                     if (klass == null
                             || klass.actorKind() != Ast.ActorKind.NONE
-                            || klass.visibility() != Ast.Visibility.PUBLIC) {
+                            || klass.visibility() != Ast.Visibility.PUBLIC
+                            || !isPubliclyExportableDeclaration(klass)) {
                         throw new IllegalArgumentException(
                                 "code unit '" + codeUnitId
                                         + "' does not export public ordinary class '" + name + "'");
@@ -12640,8 +12825,10 @@ public final class OresEvalRootNode extends RootNode {
                                         + " is a type-only selector and cannot be evaluated as a runtime value");
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
-                    if (module == null || module.name().equals(Parser.ROOT_MODULE)) {
-                        throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    if (module == null || module.name().equals(Parser.ROOT_MODULE)
+                            || module.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId + "' does not export public module '" + name + "'");
                     }
                     yield new ModuleFacade(this, module);
                 }
@@ -12651,13 +12838,21 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object exportAny(String name) {
             Ast.ModuleDecl module = modules.get(name);
-            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return new ModuleFacade(this, module);
+            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) {
+                if (module.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "code unit '" + codeUnitId + "' does not export public module '" + name + "'");
+                }
+                return new ModuleFacade(this, module);
+            }
             Ast.ClassDecl klass = findClass(name);
-            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC) {
+            if (klass != null && klass.visibility() == Ast.Visibility.PUBLIC
+                    && isPubliclyExportableDeclaration(klass)) {
                 return new ClassFacade(this, klass);
             }
             Ast.FunctionDecl fn = findSingleFunction(name);
-            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
+            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC
+                    && isPubliclyExportableDeclaration(fn)) {
                 if (fn.kind() == Ast.CallableKind.ROUTINE) {
                     throw new IllegalArgumentException(
                             "routine '" + name
@@ -12677,6 +12872,8 @@ public final class OresEvalRootNode extends RootNode {
                 return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
             }
             for (Ast.ModuleDecl candidate : program.modules()) {
+                if (!candidate.name().equals(Parser.ROOT_MODULE)
+                        && candidate.visibility() != Ast.Visibility.PUBLIC) continue;
                 for (Ast.Decl decl : candidate.declarations()) {
                     if (decl instanceof Ast.FieldDecl field
                             && field.visibility() == Ast.Visibility.PUBLIC

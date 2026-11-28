@@ -1,0 +1,89 @@
+name: Atto Java HTTP core borrow and namespace exact-head guests
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/**'
+      - 'src/test/java/dev/oreslang/runtime/NativeAttoHttp*'
+      - 'src/test/java/dev/oreslang/compiler/*Module*Test.java'
+      - 'src/test/java/dev/oreslang/compiler/RegisteredStdImportGraphTest.java'
+      - 'src/test/java/dev/oreslang/compiler/ImportedClassBorrowOwnershipTest.java'
+      - 'src/test/java/dev/oreslang/parser/NativeAttoStdNamespaceImportTest.java'
+      - 'src/test/resources/stdlib-parity/**'
+      - 'stdlib/http.atto'
+      - 'pom.xml'
+      - '.github/workflows/atto-http-core-borrow-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-http-borrow-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout immutable event HEAD without retained tokens
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source HEAD, tree and core guest fixture blobs
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "ATTO_HTTP_CORE_JAVA_HEAD=$EXPECTED_HEAD"
+          echo "ATTO_HTTP_CORE_JAVA_TREE=$(git rev-parse 'HEAD^{tree}')"
+          for path in \
+            stdlib/http.atto \
+            src/test/resources/stdlib-parity/http-core-borrow-positive.atto \
+            src/test/resources/stdlib-parity/http-core-borrow-negative.atto \
+            src/test/resources/stdlib-parity/http-core-noncopy-argument-negative.atto; do
+            test "$(git rev-parse "HEAD:$path")" = "$(git hash-object --no-filters "$path")"
+            echo "ATTO_HTTP_CORE_JAVA_GIT_BLOB=$path:$(git rev-parse "HEAD:$path")"
+          done
+      - name: Set up GraalVM 25 JDK (JVM tests, not Native Image)
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Compile Java checker/linker and execute ten JUnit suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true \
+            -Dtest=NativeAttoHttpStdlibTest,NativeAttoHttpBoundaryNegativeTest,NativeAttoPublicModuleGuestTest,NativeAttoHttpCoreBorrowBoundaryTest,ModuleVisibilityRewriteRegressionTest,PublicModuleVisibilityCompilerTest,StdHttpSelectiveModuleLinkTest,RegisteredStdImportGraphTest,ImportedClassBorrowOwnershipTest,NativeAttoStdNamespaceImportTest \
+            test
+      - name: Reject missing, skipped or failing guest receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in \
+            dev.oreslang.runtime.NativeAttoHttpStdlibTest \
+            dev.oreslang.runtime.NativeAttoHttpBoundaryNegativeTest \
+            dev.oreslang.runtime.NativeAttoPublicModuleGuestTest \
+            dev.oreslang.runtime.NativeAttoHttpCoreBorrowBoundaryTest \
+            dev.oreslang.compiler.ModuleVisibilityRewriteRegressionTest \
+            dev.oreslang.compiler.PublicModuleVisibilityCompilerTest \
+            dev.oreslang.compiler.StdHttpSelectiveModuleLinkTest \
+            dev.oreslang.compiler.RegisteredStdImportGraphTest \
+            dev.oreslang.compiler.ImportedClassBorrowOwnershipTest \
+            dev.oreslang.parser.NativeAttoStdNamespaceImportTest; do
+            report="target/surefire-reports/TEST-$suite.xml"
+            test -s "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '<testsuite[^>]*(failures|errors|skipped)="[1-9][0-9]*"' "$report"; then
+              echo "::error:: Nonzero failures/errors/skipped in $suite"
+              exit 1
+            fi
+            if grep -Eq '<skipped([ >])' "$report"; then
+              echo "::error:: Skipped required guest case in $suite"
+              exit 1
+            fi
+            echo "ATTO_HTTP_JAVA_JUNIT_EXECUTED=$suite"
+          done
+          echo 'ATTO_HTTP_JAVA_CORE_BORROW_GUEST_SUITE_PASS source=jvm_only'

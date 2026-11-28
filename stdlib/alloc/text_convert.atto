@@ -16,15 +16,15 @@ define module text_convert as
     if count == 0 || count > 20; do
       return Err("invalid signed decimal length");
     fi
-    let int start = 0;
-    let bool negative = false;
+    let mut int start = 0;
+    let mut bool negative = false;
     if points.get(0) == 45; do
       negative = true;
       start = 1;
     fi
     if start == count; do return Err("missing decimal digits"); fi
     if count - start > 19; do return Err("too many decimal digits"); fi
-    let int accumulator = 0;
+    let mut int accumulator = 0;
     for (let int index = start; index < count; index = index + 1) {
       val int scalar = points.get(index);
       if scalar < 48 || scalar > 57; do

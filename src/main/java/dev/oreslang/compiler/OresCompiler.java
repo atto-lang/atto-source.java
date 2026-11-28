@@ -41,6 +41,12 @@ public final class OresCompiler {
     }
 
     public static Ast.Program parseAndTypeCheck(String source) {
+        Ast.Program parsed = Parser.parse(source);
+        // Imports of compiler-owned core/alloc/std units are typed against
+        // their checked interfaces even for a single source.
+        Ast.Program linked = parsed.imports().isEmpty() ? null
+                : dev.oreslang.runtime.LinkedProgramRunner.checkAgainstCompilerLibraries(source);
+        if (linked != null) return linked;
         return parseAndTypeCheckNumericProfile(source,
                 dev.oreslang.runtime.AttoCheckedI64Profile.select(source));
     }

@@ -1,0 +1,117 @@
+name: Atto std path/sync/telemetry exact-head JVM guest (not Native Image)
+on:
+  pull_request:
+    paths:
+      - 'stdlib/path.atto'
+      - 'stdlib/sync.atto'
+      - 'stdlib/telemetry.atto'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/test/java/dev/oreslang/runtime/StdPathSyncTelemetryGuestTest.java'
+      - 'src/test/java/dev/oreslang/CoreBorrowRangesCompilerTest.java'
+      - 'stdlib/core/borrow_ranges.atto'
+      - 'src/test/java/dev/oreslang/runtime/NativeTraceStdlibTest.java'
+      - 'tests/fixtures/path_sync_telemetry_v1.atto'
+      - 'tests/fixtures/atto_std_pure_policy_guest_v1.atto'
+      - '.github/workflows/atto-std-path-sync-telemetry-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-atto-jvm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable PR head without retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify original head, clean files and exact blob IDs
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          for path in \
+            stdlib/path.atto stdlib/sync.atto stdlib/telemetry.atto \
+            tests/fixtures/path_sync_telemetry_v1.atto \
+            tests/fixtures/atto_std_pure_policy_guest_v1.atto \
+            src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java \
+            src/test/java/dev/oreslang/runtime/StdPathSyncTelemetryGuestTest.java; do
+            blob="$(git hash-object --no-filters -- "$path")"
+            test "$blob" = "$(git rev-parse "HEAD:$path")"
+            echo "ATTO_STDLIB_EXACT_BLOB=$path:$blob"
+          done
+          echo "ATTO_STDLIB_HEAD=$EXPECTED_SHA"
+          echo "ATTO_STDLIB_ROOT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Provision pinned GraalVM JDK25 for native Atto guest execution
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Compile compiler and run real linked .atto guest JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp \
+            -Dtest=StdPathSyncTelemetryGuestTest,NativeTraceStdlibTest,CoreBorrowRangesCompilerTest \
+            -DfailIfNoTests=true clean test
+      - name: Require executed tests, not a source-only or skipped suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          suites = {
+              "dev.oreslang.runtime.StdPathSyncTelemetryGuestTest": {
+                  "exactCompilerOwnedRegistryContainsNativeAttoSourceOnly",
+                  "importedNativeAttoPoliciesExecuteInLinkedGuest",
+                  "applicationFilesCannotShadowTrustedStdModules",
+                  "invalidPathInstancesFailInGuestBeforeReturning",
+                  "all134SharedPolicyVectorsExecuteAndMutationChangesGuestExitStatus",
+              },
+              "dev.oreslang.CoreBorrowRangesCompilerTest": {
+                  "distinctCoreOwnedLoansAreAdmittedAndReleasedAfterCall",
+                  "coreRangePredicateCannotAuthorizeDuplicateMutableLoan",
+                  "coreRangePredicateCannotAuthorizeSharedExclusiveAlias",
+                  "ownerCannotBeReusedAfterMoveDespiteValueLevelPermission",
+              },
+              "dev.oreslang.runtime.NativeTraceStdlibTest": {
+                  "independentlyPackagedTelemetryPolicyAndBatchExecuteInGuest",
+              },
+          }
+          for name, required in suites.items():
+              path = Path("target/surefire-reports") / f"TEST-{name}.xml"
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f"NOT_EXECUTED: missing Surefire suite {name}")
+              root = ET.parse(path).getroot()
+              for field in ("failures", "errors", "skipped"):
+                  if int(root.get(field, "-1")) != 0:
+                      raise SystemExit(f"NOT_PASSED: {name} {field}={root.get(field)}")
+              if int(root.get("tests", "0")) < len(required):
+                  raise SystemExit(f"NOT_EXECUTED: insufficient tests in {name}")
+              actual = {case.get("name") for case in root.findall(".//testcase")
+                        if case.find("skipped") is None
+                        and case.find("failure") is None
+                        and case.find("error") is None}
+              if not required <= actual:
+                  raise SystemExit(f"NOT_EXECUTED: missing named methods {required-actual}")
+              print(f"EXECUTED_REAL_ATTO_JVM_GUEST_SUITE={name}")
+          print("ATTO_STDLIB_JVM_GUEST=EXECUTED")
+          print("GRAAL_NATIVE_IMAGE_GUEST=NOT_EXECUTED")
+          PY
+      - name: Explain evidence limits
+        if: always()
+        shell: bash
+        run: |
+          echo 'Only stepful exact-head JVM guest execution counts as PASS.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Queued, zero-step, skipped and pending jobs are NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No source was copied to another organization. Native Image/LLVM/.NET parity remains unverified.' >> "$GITHUB_STEP_SUMMARY"

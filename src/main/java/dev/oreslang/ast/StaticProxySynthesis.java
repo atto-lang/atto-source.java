@@ -173,7 +173,7 @@ public final class StaticProxySynthesis {
                 }
             }
             modules.add(new Ast.ModuleDecl(
-                    module.name(), module.annotations(), module.contracts(), output));
+                    module.name(), module.annotations(), module.contracts(), output, module.visibility()));
         }
         // Preserve current-main export declarations. The legacy three-arg
         // constructor silently discards exports and is not safe for rewrites.

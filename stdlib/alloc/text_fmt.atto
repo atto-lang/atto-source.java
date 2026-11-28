@@ -11,21 +11,40 @@ define module text_fmt as
   pub fnc format_int(int value): String {
     if value == 0; do return "0"; fi
     val digits = arr["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
-    // Negative magnitude handles i64::MIN without abs/negation overflow.
-    // Walk decimal powers as scalars: no temporary powers array.
-    let int remaining = value > 0 ? -value : value;
-    let int power = -1000000000000000000;
-    let String result = "";
-    while power < 0; do
-      // Both operands are nonpositive; divisor is never zero or -1
-      // with an i64::MIN dividend (remaining shrinks on every digit).
-      val int digit = remaining / power;
-      remaining = remaining - power * digit;
+    val powers = arr[
+      -1000000000000000000, -100000000000000000,
+      -10000000000000000, -1000000000000000,
+      -100000000000000, -10000000000000, -1000000000000,
+      -100000000000, -10000000000, -1000000000,
+      -100000000, -10000000, -1000000, -100000,
+      -10000, -1000, -100, -10, -1
+    ];
+    let mut int remaining = value > 0 ? -value : value;
+    let mut String result = "";
+    for (const power of powers) {
+      let mut int digit = 0;
+      if remaining <= power; do
+        if remaining <= power * 8; do
+          remaining = remaining - power * 8;
+          digit = digit + 8;
+        fi
+        if remaining <= power * 4; do
+          remaining = remaining - power * 4;
+          digit = digit + 4;
+        fi
+        if remaining <= power * 2; do
+          remaining = remaining - power * 2;
+          digit = digit + 2;
+        fi
+        if remaining <= power; do
+          remaining = remaining - power;
+          digit = digit + 1;
+        fi
+      fi
       if digit > 0 || result != ""; do
         result = result + digits.get(digit);
       fi
-      power = power / 10;
-    done
+    }
     if value < 0; do return "-" + result; fi
     return result;
   }
@@ -36,7 +55,7 @@ define module text_fmt as
     fi
     val digits = arr["0", "1", "2", "3", "4", "5", "6", "7",
                      "8", "9", "a", "b", "c", "d", "e", "f"];
-    val int high = value / 16;
+    val int high = value >>> 4;
     val int low = value - high * 16;
     return Ok(digits.get(high) + digits.get(low));
   }

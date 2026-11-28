@@ -1,0 +1,312 @@
+package dev.oreslang.runtime;
+
+import dev.oreslang.interop.MixedSourceUnit;
+import dev.oreslang.stdlib.CoreLibrarySources;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Compile and execute actual packaged native Atto time source; source-inspection
+ * tests below are not substituted for guest execution.
+ */
+final class NativeTimeStdlibTest {
+    @TempDir Path temp;
+
+    @Test
+    void nativeTimeIsCompilerOwnedPackagedAttoAndDoesNotAllowLegacyShadowing()
+            throws Exception {
+        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("time.atto"));
+        assertEquals("@std/time.atto", CoreLibrarySources.unitId("std/time"));
+        assertEquals(CoreLibrarySources.unitId("std/time"),
+                CoreLibrarySources.unitId("ores.std/time.atto"));
+        assertEquals("time.atto", CoreLibrarySources.fileName("std/time"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.source("std/time.ores"));
+        String source = CoreLibrarySources.source("std/time");
+        var parsed = MixedSourceUnit.parse(
+                CoreLibrarySources.unitId("std/time"),
+                CoreLibrarySources.fileName("std/time"), source);
+        assertTrue(parsed.hasOresSource());
+        assertFalse(parsed.hasJavaSource());
+        assertTrue(source.contains("define pub class Duration"));
+        assertTrue(source.contains("define pub class Timer"));
+        assertFalse(source.contains("java:"));
+        assertFalse(source.contains("Thread.sleep"));
+        assertFalse(source.contains("java.util"));
+    }
+
+    @Test
+    void compiledGuestLinksNativeDurationAndChecksOverflowWithoutHostArithmetic()
+            throws Exception {
+        Path entry = temp.resolve("time_guest.atto");
+        Files.writeString(entry, """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val one = time.seconds(1).expect("one");
+                  stdio.println(one.as_ns());
+                  stdio.println(one.as_ms_ceil());
+                  val tiny = time.microseconds(1).expect("tiny");
+                  stdio.println(tiny.as_ms_floor());
+                  stdio.println(tiny.as_ms_ceil());
+                  stdio.println(time.milliseconds(-1).is_err());
+                  stdio.println(time.hours(2562048).is_err());
+                  stdio.println(one.checked_add(rt borrow one).expect("sum").as_ns());
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream errors = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(entry,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, errors);
+        assertTrue(linked.units().containsKey("@std/time.atto"),
+                "compiler must link trusted packaged .atto guest source");
+        assertEquals(String.join("\n",
+                "1000000000", "1000", "0", "1", "true", "true",
+                "2000000000"),
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
+                () -> errors.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void compiledGuestExercisesManualClockDeadlineTimerAndInterval() throws Exception {
+        Path entry = temp.resolve("time_scheduler_values.atto");
+        Files.writeString(entry, """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val half = time.milliseconds(500).expect("half");
+                  let mut manual = time.manual_clock(9, 1000000000);
+                  stdio.println(manual.now().ticks_ns);
+                  stdio.println(manual.advance(rt borrow half).expect("advance").ticks_ns);
+                  val __b1 = time.nanoseconds(0).expect("zero");
+                  stdio.println(manual.advance(rt borrow __b1).expect("still").ticks_ns);
+                  val start = time.instant(9, 1000000000);
+                  val later = manual.now();
+                  val due = time.deadline_after(rt borrow start, rt borrow half).expect("due");
+                  stdio.println(due.expired(rt borrow start).expect("not due"));
+                  stdio.println(due.expired(rt borrow later).expect("due"));
+                  val __b2 = time.instant(10, 1500000000);
+                  stdio.println(due.expired(rt borrow __b2).is_err());
+                  let mut timer = time.one_shot(due);
+                  stdio.println(timer.poll(rt borrow start).expect("early"));
+                  stdio.println(timer.poll(rt borrow later).expect("fire"));
+                  stdio.println(timer.poll(rt borrow later).expect("once"));
+                  stdio.println(timer.did_fire());
+                  let mut every = time.interval(manual.now(), time.milliseconds(500).expect("period"));
+                  stdio.println(every.poll(rt borrow later).expect("interval fire"));
+                  stdio.println(every.poll(rt borrow later).expect("interval no double fire"));
+                  stdio.println(every.next_due().expect("interval next").ticks_ns);
+                  stdio.println(every.cancel());
+                  stdio.println(every.next_due().is_err());
+                  let mut at_limit = time.manual_clock(20, 9223372036854775807);
+                  val __b3 = time.nanoseconds(1).expect("one ns");
+                  stdio.println(at_limit.advance(rt borrow __b3).is_err());
+                  stdio.println(at_limit.now().ticks_ns);
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream errors = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(entry,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(), output, errors);
+        assertTrue(linked.units().containsKey("@std/time.atto"),
+                "expected compiled compiler-owned Atto module");
+        assertEquals(String.join("\n",
+                "1000000000", "1500000000", "1500000000",
+                "false", "true", "true", "false", "true", "false",
+                "true", "true", "false", "2000000000",
+                "true", "true", "true", "9223372036854775807"),
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
+                () -> errors.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void compiledGuestRunsCanonicalFiftyTwoCaseTimeContract() throws Exception {
+        Path fixture = Path.of("examples", "atto-time-contract.atto");
+        assertTrue(Files.isRegularFile(fixture), "backend-owned Atto guest fixture missing");
+        String source = Files.readString(fixture);
+        assertTrue(source.contains("import module time from \"std/time\";"));
+        assertFalse(source.contains("import class Duration from"));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream errors = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(fixture,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, errors);
+        assertTrue(linked.units().containsKey("@std/time.atto"),
+                "time fixture must link compiler-owned .atto source");
+        String[] lines = output.toString(StandardCharsets.UTF_8)
+                .replace("\r", "").strip().split("\n");
+        assertEquals(53, lines.length, () -> errors.toString(StandardCharsets.UTF_8));
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (int i = 0; i < 52; ++i) {
+            assertTrue(lines[i].startsWith("TIME-PASS|"),
+                    "guest failed or emitted unexpected line " + i + ": " + lines[i]);
+            assertTrue(names.add(lines[i]), "duplicate guest check: " + lines[i]);
+        }
+        assertEquals("TIME-CONTRACT-DONE", lines[52]);
+        for (String required : java.util.List.of(
+                "TIME-PASS|ceil-sub-ms",
+                "TIME-PASS|hours-overflow",
+                "TIME-PASS|manual-overflow-atomic",
+                "TIME-PASS|clock-mismatch",
+                "TIME-PASS|timer-no-repeat",
+                "TIME-PASS|interval-coalesce",
+                "TIME-PASS|deadline-overflow")) {
+            assertTrue(names.contains(required), "guest contract case missing: " + required);
+        }
+    }
+
+    @Test
+    void compiledGuestAllowsValConstMutReceiversForClockTimerAndInterval() throws Exception {
+        // Atto val means const mut: the binding is fixed, but its referent
+        // may be borrowed exclusively by a mut self method.
+        Path guest = temp.resolve("val_time_guest.atto");
+        Files.writeString(guest, """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val clock = time.manual_clock(7, 0);
+                  val one = time.nanoseconds(1).expect("one");
+                  stdio.println(clock.advance(rt borrow one).expect("advance").ticks_ns);
+                  val __b4 = clock.now();
+                  val due = time.deadline_after(rt borrow __b4, rt borrow one).expect("due");
+                  val timer = time.one_shot(due);
+                  val __b5 = time.instant(7, 2);
+                  stdio.println(timer.poll(rt borrow __b5).expect("fire"));
+                  val repeating = time.interval(time.instant(7, 2), one);
+                  stdio.println(repeating.cancel());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(guest, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), out, err);
+        assertTrue(linked.units().containsKey("@std/time.atto"));
+        assertEquals(String.join("\n", "1", "true", "true"),
+                out.toString(StandardCharsets.UTF_8).trim().replace("\r", ""),
+                () -> err.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void coreOwnershipRejectsWritesToFixedDurationAndInstantFields() throws Exception {
+        // Mutating public fixed-value slots would bypass nonnegative and
+        // monotonic clock invariants. Enforce this through the real compiler,
+        // not just a runtime object wrapper or source-text regex.
+        String[] negativeBodies = {
+                """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val duration = time.nanoseconds(1).expect("one");
+                  duration.nanos = -1;
+                  return;
+                }
+                """,
+                """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val now = time.instant(9, 1);
+                  now.ticks_ns = -1;
+                  return;
+                }
+                """
+        };
+        String[] names = { "duration_nanos", "instant_ticks" };
+        for (int i = 0; i < negativeBodies.length; i++) {
+            Path source = temp.resolve("core_time_fixed_" + names[i] + ".atto");
+            Files.writeString(source, negativeBodies[i]);
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(source),
+                    "accepted forbidden write to fixed time field: " + names[i]);
+            String diagnostic = rejected.toString().toLowerCase(java.util.Locale.ROOT);
+            assertTrue(diagnostic.contains("immutable")
+                            || diagnostic.contains("fixed")
+                            || diagnostic.contains("final")
+                            || diagnostic.contains("ownership"),
+                    () -> "expected core fixed-field ownership rejection, got: " + diagnostic);
+        }
+    }
+
+    @Test
+    void compilerRejectsConstReceiversForMutatingTimeMethods() throws Exception {
+        // These must be rejected by the real compiler/ownership checker, not
+        // merely by a source-text linter. Compilation of a positive mutable
+        // receiver is tested separately in the 52-case linked guest.
+        String[] negatives = {
+                """
+                import module time from "std/time";
+                pub routine main(): void {
+                  const clock = time.manual_clock(7, 0);
+                  val __b6 = time.nanoseconds(1).expect("one");
+                  clock.advance(rt borrow __b6);
+                  return;
+                }
+                """,
+                """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val now = time.instant(7, 0);
+                  val __b7 = time.nanoseconds(1).expect("one");
+                  val due = time.deadline_after(rt borrow now, rt borrow __b7).expect("due");
+                  const timer = time.one_shot(due);
+                  timer.poll(rt borrow now);
+                  return;
+                }
+                """,
+                """
+                import module time from "std/time";
+                pub routine main(): void {
+                  val first = time.instant(7, 0);
+                  const repeat = time.interval(first, time.nanoseconds(1).expect("one"));
+                  repeat.cancel();
+                  return;
+                }
+                """
+        };
+        String[] names = { "clock", "timer", "interval" };
+        for (int i = 0; i < negatives.length; i++) {
+            Path source = temp.resolve("immutable_time_" + names[i] + ".atto");
+            Files.writeString(source, negatives[i]);
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(source),
+                    "compiler accepted immutable receiver: " + names[i]);
+            String diagnostic = rejected.toString().toLowerCase(java.util.Locale.ROOT);
+            assertTrue(diagnostic.contains("ownership")
+                            && (diagnostic.contains("mutab")
+                            || diagnostic.contains("borrow")
+                            || diagnostic.contains("read-only")),
+                    () -> "negative must fail with borrow/mutable-receiver error, not "
+                            + "an unrelated parser or import failure: " + diagnostic);
+        }
+    }
+
+    @Test
+    void projectLocalFakeTimeMustNotShadowCompilerOwnedTime()
+            throws Exception {
+        Path fake = Files.createDirectories(temp.resolve("std"));
+        Files.writeString(fake.resolve("time.atto"),
+                "define module time as pub fnc seconds(int n): int { return 7; } end");
+        Path entry = temp.resolve("time_shadow.atto");
+        Files.writeString(entry, """
+                import module time from "std/time";
+                pub routine main(): void {
+                  stdio.println(time.seconds(1).expect("real").as_ns());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(entry,
+                IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                output, new ByteArrayOutputStream());
+        assertTrue(linked.units().containsKey("@std/time.atto"));
+        assertEquals("1000000000", output.toString(StandardCharsets.UTF_8).trim());
+    }
+}
