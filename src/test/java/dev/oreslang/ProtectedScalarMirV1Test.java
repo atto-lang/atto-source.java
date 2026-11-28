@@ -126,6 +126,36 @@ final class ProtectedScalarMirV1Test {
         assertRejected("define grain ShoppingCart as end");
     }
 
+    @Test void exclusiveAliasesUseIdenticalCheckedPlanAndRuntime() {
+        var baseline = OresCompiler.compileProtectedScalarI64(COUNTER);
+        for (String name : java.util.List.of("state_w", "handle_state_w")) {
+            String source = COUNTER.replace("handle_state(critical-write ", name + "(")
+                    .replace("s.count;", "return s.count;");
+            var checked = OresCompiler.compileProtectedScalarI64(source);
+            assertEquals(baseline, checked);
+            try (var state = checked.new_state_container()) {
+                assertEquals(42L, checked.invoke(state, 42));
+                state.trySet(Long.MAX_VALUE);
+                assertThrows(ArithmeticException.class, () -> checked.invoke(state, 1));
+                assertEquals(Long.MAX_VALUE, state.tryRead().orElseThrow());
+            }
+        }
+        assertEquals(baseline, OresCompiler.compileProtectedScalarI64(
+                COUNTER.replace("critical-write", "critical")));
+    }
+
+    @Test void shortReadAndSpoofedWriteCannotEnterExclusiveMir() {
+        for (String name : java.util.List.of("state_ro", "handle_state_ro", "\"state_w\"",
+                "state_w(critical-write")) {
+            assertRejected(COUNTER.replace("handle_state(critical-write ", name + "("));
+        }
+        for (String name : java.util.List.of("state_w", "state_ro", "handle_state_w", "handle_state_ro")) {
+            assertRejected(COUNTER.replace("increment(", name + "("));
+            assertRejected(COUNTER.replace("int amount", "int " + name).replace("+ amount", "+ " + name));
+            assertRejected(COUNTER.replace("|s|", "|" + name + "|").replace("s.count", name + ".count"));
+        }
+    }
+
     private static void assertRejected(String source) {
         assertThrows(IllegalArgumentException.class, () -> ProtectedScalarMirV1.lower(source));
     }

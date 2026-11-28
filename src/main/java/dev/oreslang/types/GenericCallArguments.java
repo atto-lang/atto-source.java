@@ -87,6 +87,17 @@ final class GenericCallArguments {
     }
 
     private static void requireConcreteExplicitType(Ast.TypeRef value, String label) {
+        // A sequence dimension is not itself a type argument. In particular,
+        // the parser represents Box[int] as Box with a synthetic shape slot.
+        // Never allow that slot to masquerade as an ordinary nominal generic.
+        // Nested designated collection shapes (e.g. Box<Array[int]>) remain
+        // valid and are checked by the normal collection type resolver.
+        if (value.isSequenceShape() || value.isRepeatExact() || value.isRepeatMany()
+                || value.isIntLiteral()) {
+            throw new IllegalArgumentException(label
+                    + " requires a type generic argument, not a sequence shape or const value; "
+                    + "use '<...>' for generic specialization");
+        }
         Deque<Ast.TypeRef> pending = new ArrayDeque<>();
         pending.add(value);
         while (!pending.isEmpty()) {

@@ -126,7 +126,7 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(match('=') ? FALLIBLE_BIND : QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : match('=') ? COLON_ASSIGN : COLON); case '?' -> add(match('=') ? FALLIBLE_BIND : QUESTION); case '@' -> add(AT); case '`' -> template(); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE); case '•' -> add(BULLET);
             case '⧖', '∂' -> add(SUSPENDS);
@@ -254,6 +254,7 @@ public final class Lexer {
     }
 
     private void string(char quote) {
+        int tokenLine = line;
         StringBuilder value = new StringBuilder();
         while (!isAtEnd() && peek() != quote) {
             char c = advance();
@@ -276,7 +277,7 @@ public final class Lexer {
         if (isAtEnd()) throw error("unterminated string");
         advance();
         validateDecodedUnicode(value, "string");
-        tokens.add(new Token(STRING, value.toString(), line, startColumn));
+        tokens.add(new Token(STRING, value.toString(), tokenLine, startColumn, quote));
     }
 
     private void validateDecodedUnicode(CharSequence value, String kind) {

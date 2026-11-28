@@ -157,6 +157,33 @@ define pub class IntHashSet as
     return false;
   }
 
+  // Read-only membership comparisons, independent of capacity and probe order.
+  pub same_members(borrow IntHashSet other): bool {
+    if self.count neq other.len(); do return false; fi
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) eq 1 && !other.contains(self.keys.get(i)); do
+        return false;
+      fi
+    done
+    return true;
+  }
+
+  pub has_overlap(borrow IntHashSet other): bool {
+    if self.count eq 0 || other.is_empty(); do return false; fi
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) eq 1 && other.contains(self.keys.get(i)); do return true; fi
+    done
+    return false;
+  }
+
+  pub is_subset_of(borrow IntHashSet other): bool {
+    if self.count > other.len(); do return false; fi
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) eq 1 && !other.contains(self.keys.get(i)); do return false; fi
+    done
+    return true;
+  }
+
   // Full probe first: a tombstone can precede a duplicate key.
   pub insert(mut self)(int key): bool {
     if self.count >= self.limit; do return false; fi

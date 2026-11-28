@@ -151,4 +151,83 @@ final class ExecutionAffineStdioRuntimeTest {
         }
     }
 
+    @Test void immediateAdmissionKeepsOrdinaryExecutionOnItsCurrentDispatch() throws Exception {
+        StringWriter out = new StringWriter();
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(out));
+             OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger turns = new AtomicInteger();
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                turns.incrementAndGet();
+                long dispatch = OresScheduler.currentDispatchId();
+                for (int n=0; n<128; n++) {
+                    assertTrue(logs.tryAdmitImmediate("x"));
+                    assertEquals(dispatch, OresScheduler.currentDispatchId());
+                }
+                return OresScheduler.done(42);
+            });
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(1, turns.get());
+            logs.flushAsync().get(5, TimeUnit.SECONDS);
+            assertEquals("x".repeat(128), out.toString());
+        }
+    }
+
+    @Test void fastPathCannotOvertakePendingAdmissionAndKeepsZeroByteQuota() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        StringBuilder out = new StringBuilder();
+        Writer sink = new Writer() {
+            @Override public void write(char[] c, int offset, int count) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(15, TimeUnit.SECONDS)) throw new IOException("gate timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt(); throw new IOException(error);
+                }
+                out.append(c, offset, count);
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(sink));
+             OresScheduler scheduler = new OresScheduler(1)) {
+            try {
+                assertTrue(logs.tryAdmitImmediate("A"));
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                for (int n=0; n<1023; n++) assertTrue(logs.tryAdmitImmediate(""));
+                assertFalse(logs.tryAdmitImmediate("B"));
+                AtomicInteger turns = new AtomicInteger();
+                OresFuture<Integer> result = scheduler.start(resume -> {
+                    if (turns.getAndIncrement()==0) {
+                        assertFalse(logs.tryAdmitImmediate("B"));
+                        return OresScheduler.stdioAdmission(logs, "B");
+                    }
+                    assertNull(resume.failure());
+                    return OresScheduler.done(42);
+                });
+                eventually(() -> logs.pendingAdmissionCount() == 1);
+                assertFalse(logs.tryAdmitImmediate("C"));
+                assertEquals(7, scheduler.startSync(() -> 7).get(2, TimeUnit.SECONDS));
+                release.countDown();
+                assertEquals(42, result.get(5, TimeUnit.SECONDS));
+                logs.flushAsync().get(5, TimeUnit.SECONDS);
+                assertEquals("AB", out.toString());
+                assertEquals(2, turns.get());
+            } finally { release.countDown(); }
+        }
+    }
+
+    @Test void admissionOnlySinkFailureRemainsObservableWithoutDeliveryFuture() throws Exception {
+        Writer sink = new Writer() {
+            @Override public void write(char[] c, int offset, int count) throws IOException {
+                throw new IOException("deliberate sink failure");
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(sink));
+        assertTrue(logs.tryAdmitImmediate("A"));
+        assertThrows(IllegalStateException.class, logs::close);
+        assertThrows(IllegalStateException.class, () -> logs.tryAdmitImmediate("B"));
+    }
+
 }

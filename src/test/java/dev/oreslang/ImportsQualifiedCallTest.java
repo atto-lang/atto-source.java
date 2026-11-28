@@ -52,6 +52,37 @@ final class ImportsQualifiedCallTest {
     }
 
     @Test
+    void linkedDirectImportUsesConcreteSignatureWithoutCallableEscape() throws Exception {
+        Files.writeString(temp.resolve("math.atto"), "pub fnc answer(): int { return 42; }");
+        Path entry = temp.resolve("main.atto");
+        Files.writeString(entry, """
+                import fnc answer from "./math";
+                pub fnc main(): void { stdio.stdout.write(answer()); return; }
+                """);
+        assertEquals("42", run(entry));
+        Files.writeString(entry, """
+                import fnc answer from "./math";
+                pub fnc main(): void { answer(1); return; }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(entry));
+        Files.writeString(entry, """
+                import fnc answer from "./math";
+                pub fnc main(): void { val callback = answer; return; }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(entry));
+        Files.writeString(entry, """
+                import fnc answer from "./math";
+                pub fnc main(): void {
+                  let int value = 1;
+                  val borrowed = rt borrow value;
+                  answer();
+                  return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(entry));
+    }
+
+    @Test
     void importAliasesAreTheOnlyExposedImportNames() throws Exception {
         Files.writeString(temp.resolve("lib.ores"), """
                 pub fnc roodles(): int { return 23; }

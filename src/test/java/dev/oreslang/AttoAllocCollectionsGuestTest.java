@@ -53,6 +53,17 @@ final class AttoAllocCollectionsGuestTest {
     }
 
     @Test
+    void mapKeyedPredicatesExecuteIndependentGuest() throws Exception {
+        Path entry = ROOT.resolve("map-keyed.atto");
+        var build = LinkedProgramRunner.validate(entry, Map.of());
+        assertTrue(build.units().size() >= 2, "must link actual compiler-owned map");
+        var result = LinkedProgramRunner.runWithExitStatus(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(42, result.exitStatus(), "keyed comparison guest");
+    }
+
+    @Test
     void allocImportRegistryHasStableCanonicalIdentityAndRejectsTraversal() throws Exception {
         for (String name : new String[] {"bitset", "linked_list", "map"}) {
             assertTrue(CoreLibrarySources.packagedAllocPaths().contains(name + ".atto"));

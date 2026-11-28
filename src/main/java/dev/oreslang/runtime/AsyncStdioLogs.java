@@ -88,7 +88,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 && canAdmitLocked(waiting.peekFirst().bytes)) {
             PendingAdmission next = waiting.removeFirst();
             waitingBytes -= next.bytes;
-            enqueueLocked(next.text, next.bytes, deliveryFuture());
+            enqueueLocked(next.text, next.bytes, null);
             promoted.add(next);
         }
     }
@@ -142,7 +142,7 @@ public final class AsyncStdioLogs implements AutoCloseable {
             if (!accepting) return OresFuture.failed(
                     new IllegalStateException("async stdio writer is closed"));
             if (waiting.isEmpty() && canAdmitLocked(bytes)) {
-                enqueueLocked(text, bytes, deliveryFuture());
+                enqueueLocked(text, bytes, null);
                 return OresFuture.completed(null);
             }
             if (waiting.size() >= MAX_PENDING_ADMISSIONS
@@ -154,6 +154,23 @@ public final class AsyncStdioLogs implements AutoCloseable {
             waiting.addLast(pending);
             waitingBytes += bytes;
             return pending.admitted;
+        }
+    }
+
+    /**
+     * Trusted runtime fast path: false means temporary pressure, with no commit.
+     * True means the record is accepted, not delivered. No per-record Future is
+     * allocated. Sink failure is surfaced through the descriptor and flush/close.
+     * The caller must use owned admission when false, never spin or block.
+     */
+    boolean tryAdmitImmediate(String text) {
+        int bytes = checkedBytes(text);
+        synchronized (lock) {
+            if (failure != null) throw new IllegalStateException("async stdio writer failed", failure);
+            if (!accepting) throw new IllegalStateException("async stdio writer is closed");
+            if (!waiting.isEmpty() || !canAdmitLocked(bytes)) return false;
+            enqueueLocked(text, bytes, null);
+            return true;
         }
     }
 
@@ -292,8 +309,11 @@ public final class AsyncStdioLogs implements AutoCloseable {
                 }
                 completeAdmissions(promoted);
                 if (error != null) rejectWaiting(rejected, error);
-                if (error == null) record.completion().completeFromRuntime(null);
-                else record.completion().failFromRuntime(error);
+                // Admission-only records have no delivery observer.
+                if (record.completion() != null) {
+                    if (error == null) record.completion().completeFromRuntime(null);
+                    else record.completion().failFromRuntime(error);
+                }
                 for (Barrier barrier : ready) {
                     if (error == null) barrier.completion().completeFromRuntime(null);
                     else barrier.completion().failFromRuntime(error);
@@ -364,7 +384,9 @@ public final class AsyncStdioLogs implements AutoCloseable {
             wake.release();
         }
         rejectWaiting(rejected, terminal);
-        for (Record record : revoked) record.completion().failFromRuntime(terminal);
+        for (Record record : revoked) {
+            if (record.completion() != null) record.completion().failFromRuntime(terminal);
+        }
         for (Barrier barrier : pending) barrier.completion().failFromRuntime(terminal);
     }
 
