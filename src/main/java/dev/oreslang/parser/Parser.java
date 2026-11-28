@@ -5600,6 +5600,11 @@ public final class Parser {
             op = advance().lexeme();
             consume(EQUAL, "expected contiguous compound update");
             value = new Ast.BinaryExpr(op, new Ast.NameExpr(name), parseExpression());
+        } else if (isAdjacentReturnFirstArrow()) {
+            if (bang) throw error(peek(), "E_OWNERSHIP: set! does not admit a transfer arrow");
+            advance(); // <
+            advance(); // -
+            value = requireLiteralBindingTransfer(parseExpression());
         } else {
             consume(EQUAL, "expected '=' or explicit update operator");
             value = parseExpression();
@@ -5750,6 +5755,16 @@ public final class Parser {
                 : new Ast.TypedEmptyAggregateExpr(declaredType);
     }
 
+    // Literal-only pilot: no source place to invalidate and no hidden owner
+    // duplication. Named/compound RHS require a typed transfer operation.
+    private Ast.Expr requireLiteralBindingTransfer(Ast.Expr value) {
+        if (value instanceof Ast.LiteralExpr literal
+                && (literal.value() instanceof Long || literal.value() instanceof Boolean)) {
+            return value;
+        }
+        throw error(previous(), "E_OWNERSHIP: binding arrow currently requires an intrinsic int or bool literal");
+    }
+
     private Ast.BindingStmt parseBindingStatement() {
         return parseBindingStatement(List.of());
     }
@@ -5799,7 +5814,10 @@ public final class Parser {
             name = advance().lexeme();
             advance(); // name-first ':' or 'as' type annotation; not an expression cast
             type = parseTypeRef();
-        } else if (check(IDENT) && checkNext(EQUAL)) {
+        } else if (check(IDENT) && (checkNext(EQUAL)
+                || (current + 2 < tokens.size() && tokens.get(current + 1).type() == LT
+                    && tokens.get(current + 2).type() == MINUS
+                    && adjacent(tokens.get(current + 1), tokens.get(current + 2))))) {
             name = advance().lexeme();
         } else {
             type = parseTypeRef();
@@ -5820,10 +5838,19 @@ public final class Parser {
             consumeExpressionStatementTerminator(read, "channel read should end with ';'");
             return new Ast.BindingStmt(kind, type, name, read, mutableReferent);
         }
-        consume(EQUAL, "binding requires initializer");
+        boolean transfer = isAdjacentReturnFirstArrow();
+        if (transfer) {
+            if (kind != Ast.BindingKind.LET || functionShorthand) {
+                throw error(peek(), "E_OWNERSHIP: transfer arrow is restricted to let");
+            }
+            advance(); // <
+            advance(); // -
+        } else {
+            consume(EQUAL, "binding requires initializer");
+        }
         String inferredTypeName = null;
         Ast.Expr initializer;
-        if (isContextualIdentifier("infer") && checkNext(LT)) {
+        if (!transfer && isContextualIdentifier("infer") && checkNext(LT)) {
             advance(); // contextual 'infer'
             consume(LT, "expected '<' after infer");
             inferredTypeName = consume(IDENT, "expected inferred type name in infer<T>").lexeme();
@@ -5869,6 +5896,7 @@ public final class Parser {
                         new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false)), false);
             }
         }
+        if (transfer) initializer = requireLiteralBindingTransfer(initializer);
         initializer = resolveDirectContextualEmptyMap(type, initializer);
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
