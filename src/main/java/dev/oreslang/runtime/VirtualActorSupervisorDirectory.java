@@ -291,6 +291,14 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 throw new IllegalStateException(
                         "activation worker stopped or lost supervisor ownership during admission");
             }
+            // Logical keys must not alias one mutable physical worker. The
+            // bounded directory owns at most one binding per exact ActorId;
+            // check and publish under the same lock as physical retirement.
+            if (bindings.values().stream().anyMatch(existing ->
+                    existing.actor().id().equals(actor.id()))) {
+                abortPlanUnderLock(plan);
+                throw new IllegalStateException("physical worker already bound to another logical actor");
+            }
             Binding binding = new Binding(actor, plan.activation);
             if (bindings.putIfAbsent(plan.logical.identity(), binding) != null) {
                 abortPlanUnderLock(plan);
