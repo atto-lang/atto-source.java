@@ -67,7 +67,7 @@ final class MonotonicTimerDriver {
     long armAfter(long delayNanos, Runnable action) {
         if (delayNanos < 0) throw new IllegalArgumentException("negative timer delay");
         long now = now();
-        long deadline = delayNanos > Long.MAX_VALUE - now ? Long.MAX_VALUE - 1 : now + delayNanos;
+        long deadline = delayNanos >= Long.MAX_VALUE - now ? Long.MAX_VALUE - 1 : now + delayNanos;
         long handle;
         synchronized (lock) {
             handle = wheel.arm(deadline, action);
