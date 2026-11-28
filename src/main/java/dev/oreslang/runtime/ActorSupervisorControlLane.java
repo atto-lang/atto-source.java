@@ -38,6 +38,7 @@ final class ActorSupervisorControlLane {
         boolean queued;
         boolean inFlight;
         long deliveryTicket;
+        Delivery activeDelivery;
 
         Slot(ActorRuntime.ActorId child, long generation) {
             this.child = child;
@@ -137,7 +138,8 @@ final class ActorSupervisorControlLane {
         // Allocate both the opaque delivery lease and its Optional wrapper
         // before removing the notice from the queue. An allocation failure
         // must leave the original CONTROL notice reachable and retryable.
-        Optional<T> ready = Optional.of(receipt.apply(new Delivery(this, slot, ticket)));
+        Delivery delivery = new Delivery(this, slot, ticket);
+        Optional<T> ready = Optional.of(receipt.apply(delivery));
         nextDeliveryTicket = ticket;
         head = slot.next;
         if (head == null) tail = null;
@@ -145,6 +147,7 @@ final class ActorSupervisorControlLane {
         slot.queued = false;
         slot.inFlight = true;
         slot.deliveryTicket = ticket;
+        slot.activeDelivery = delivery;
         inFlight = 1;
         pending--;
         return ready;
@@ -155,6 +158,7 @@ final class ActorSupervisorControlLane {
         slots.remove(slot.child);
         slot.inFlight = false;
         slot.deliveryTicket = 0L;
+        slot.activeDelivery = null;
         slot.notice = null;
         inFlight = 0;
         acknowledged = saturatingIncrement(acknowledged);
@@ -164,6 +168,7 @@ final class ActorSupervisorControlLane {
         Slot slot = requiredDelivery(delivery);
         slot.inFlight = false;
         slot.deliveryTicket = 0L;
+        slot.activeDelivery = null;
         inFlight = 0;
         retried = saturatingIncrement(retried);
         enqueue(slot);
@@ -173,7 +178,7 @@ final class ActorSupervisorControlLane {
         Objects.requireNonNull(delivery, "delivery");
         Slot slot = delivery.slot;
         if (delivery.owner != this || slots.get(slot.child) != slot
-                || !slot.inFlight || slot.deliveryTicket != delivery.ticket
+                || !slot.inFlight || slot.activeDelivery != delivery || slot.deliveryTicket != delivery.ticket
                 || slot.notice != delivery.notice) {
             throw new IllegalStateException(
                     "stale, foreign or already-settled supervisor CONTROL delivery");
@@ -233,6 +238,7 @@ final class ActorSupervisorControlLane {
                         iterator.remove();
                         slot.inFlight = false;
                         slot.deliveryTicket = 0L;
+                        slot.activeDelivery = null;
                         slot.notice = null;
                         inFlight = 0;
                         transferred = saturatingIncrement(transferred);

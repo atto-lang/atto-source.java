@@ -245,11 +245,15 @@ final class ActorSupervisorControlLanePortTest {
         lane.reserve(child, 1);
         assertTrue(lane.publish(notice(child, 1, 1)));
         var before = lane.snapshot();
+        var leaked = new AtomicReference<ActorSupervisorControlLane.Delivery>();
         assertThrows(IllegalStateException.class, () -> lane.pollMapped(delivery -> {
+            leaked.set(delivery);
             throw new IllegalStateException("receipt construction failed");
         }));
         assertEquals(before, lane.snapshot());
         var delivery = lane.poll().orElseThrow();
+        assertThrows(IllegalStateException.class, () -> lane.ack(leaked.get()));
+        assertThrows(IllegalStateException.class, () -> lane.retry(leaked.get()));
         assertEquals(child, delivery.notice().actor());
         lane.ack(delivery);
     }
