@@ -33,7 +33,7 @@ final class IntrinsicContextualSingletonTupleTest {
         assertFalse(initializer("const [int] t=(42)+1;") instanceof Ast.TupleExpr);
     }
     @Test void typedGuestConstructionPreservesScalarAndTupleDistinction() {
-        String source = program("const [int] t=(42); const x=(42); stdio.out.write(t[0]); stdio.out.write(x);");
+        String source = program("const [int] t=(42); const x=(42); if t[0] == 42 then stdio.out.write(\"42\"); else stdio.out.write(\"bad-tuple\"); fi if x == 42 then stdio.out.write(\"42\"); else stdio.out.write(\"bad-scalar\"); fi");
         Ast.Program checked = assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(source));
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         assertDoesNotThrow(() -> {
