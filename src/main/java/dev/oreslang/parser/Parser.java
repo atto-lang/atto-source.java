@@ -4114,7 +4114,8 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseConditionalBraceBody();
-            consume(FI, "expected 'fi' to close if");
+            // Braced imperative if is self-delimiting. Do not consume fi:
+            // a following fi may close an enclosing keyword-form if.
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
@@ -4151,14 +4152,10 @@ public final class Parser {
 
     private List<Ast.Stmt> parseConditionalBraceBody() {
         consume(LBRACE, "expected '{' before conditional branch");
-        List<Ast.Stmt> body = parseUntil(RBRACE, FI);
-        if (match(RBRACE) && check(FI)) {
-            Token redundant = previous();
-            warnings.add(new SyntaxWarning(redundant.line(), redundant.column(),
-                    "redundant '}' before 'fi'; fi closes the final conditional branch"));
-        }
-        // The caller consumes the branch separator or the final fi. Retain
-        // the historical '} fi' spelling with a migration diagnostic.
+        List<Ast.Stmt> body = parseUntil(RBRACE);
+        consume(RBRACE, "expected '}' to close a braced if branch");
+        // Braces and fi are distinct delimiters. A fi immediately after a
+        // braced child may belong to an enclosing keyword-form conditional.
         return body;
     }
 
@@ -4918,6 +4915,40 @@ public final class Parser {
 
     private static boolean isPipelineCallable(Ast.Expr stage) {
         return stage instanceof Ast.NameExpr || stage instanceof Ast.LambdaExpr;
+    }
+
+    /**
+     * Value-producing if is distinct from statement if. It requires a
+     * final else, and each arm is evaluated as an expression, including the
+     * ternary-only lexical value-block arm syntax already supported here.
+     * Lower to ConditionalExpr so strict bool typing, branch laziness,
+     * ownership and static result joins share ternary semantics.
+     */
+    private Ast.Expr parseValueIf() {
+        List<Ast.Expr> conditions = new ArrayList<>();
+        List<Ast.Expr> values = new ArrayList<>();
+        do {
+            ConditionHead head = parseConditionHead(false);
+            if (head.binding() != null) {
+                throw error(peek(), "value-producing if cannot introduce an as-let binding; use an imperative if");
+            }
+            match(SEMICOLON);
+            consume(THEN, "value-producing if requires 'then'");
+            conditions.add(head.predicate());
+            values.add(parseTernaryArm(true));
+            // Lowering builds nested conditional expressions: bound the number
+            // of arms before typechecking/evaluating the nested AST.
+            if (conditions.size() >= 128 && check(ELSEIF)) {
+                throw error(peek(), "value-producing if exceeds 128 conditional arms");
+            }
+        } while (match(ELSEIF));
+        consume(ELSE, "value-producing if requires 'else' to produce a value");
+        Ast.Expr value = parseTernaryArm(false);
+        consume(FI, "expected 'fi' after value-producing if");
+        for (int i = conditions.size() - 1; i >= 0; i--) {
+            value = new Ast.ConditionalExpr(conditions.get(i), values.get(i), value);
+        }
+        return value;
     }
 
     private Ast.Expr parseConditional() {
@@ -5690,6 +5721,7 @@ public final class Parser {
                     + "(...) requires reviewed compiler-owned aggregate lowering; "
                     + "no host fallback is allowed");
         }
+        if (match(IF)) return parseValueIf();
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
