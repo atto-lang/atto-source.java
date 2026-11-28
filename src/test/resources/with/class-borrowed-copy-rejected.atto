@@ -1,0 +1,10 @@
+define class Pair as
+    pub final int x: 1;
+end
+
+pub routine main(): void {
+    const Pair original = new Pair();
+    const borrowed = rt borrow original;
+    const Pair illegal = rt copy borrowed with {x => 9};
+    return;
+}

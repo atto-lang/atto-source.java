@@ -1,0 +1,67 @@
+name: Java actor owned-graph borrowed-loan host proof
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/java-actor-graph-borrow-exact-head.yml'
+      - 'src/main/java/dev/oreslang/runtime/ActorOwnedGraphArena.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorOwnedGraphArenaBorrowSafetyTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorOwnedGraphArenaLifecycleTest.java'
+      - 'pom.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actor-graph-borrow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable exact source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Inspect exact source tree and bytes
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+          git hash-object src/main/java/dev/oreslang/runtime/ActorOwnedGraphArena.java
+          git hash-object src/test/java/dev/oreslang/runtime/ActorOwnedGraphArenaBorrowSafetyTest.java
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Compile independent Java21-compatible production graph primitive
+        run: |
+          set -euo pipefail
+          mkdir -p target/actor-graph-host-compile
+          javac --release 21 -Xlint:all -d target/actor-graph-host-compile \
+            src/main/java/dev/oreslang/runtime/ActorOwnedGraphArena.java
+      - name: Run existing and new deterministic ownership JUnit
+        run: |
+          mvn -B -ntp \
+            -Dtest=ActorOwnedGraphArenaLifecycleTest,ActorOwnedGraphArenaBorrowSafetyTest \
+            -DfailIfNoTests=true test
+      - name: Require complete, real no-skip JUnit reports
+        run: |
+          set -euo pipefail
+          for name in ActorOwnedGraphArenaLifecycleTest ActorOwnedGraphArenaBorrowSafetyTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.runtime.${name}.xml"
+            test -s "$report"
+            head -c 1024 "$report" | grep -Eq 'tests="[1-9][0-9]*"'
+            head -c 1024 "$report" | grep -q 'errors="0"'
+            head -c 1024 "$report" | grep -q 'failures="0"'
+            head -c 1024 "$report" | grep -q 'skipped="0"'
+          done
+          echo 'HOST_GRAPH_BORROW_ONLY: no compiled guest/native-image/zero-GC proof'
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'

@@ -181,4 +181,28 @@ final class SerializationAnnotationTest {
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("missing method " + name + "/" + arity));
     }
+    @Test
+    void accessorNameNormalizationCollisionIsNotMistakenForIdempotentExpansion() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> AnnotationExpander.expand(Parser.parse("""
+                        define class Bad as
+                          @FromJson("first")
+                          foo_bar: String;
+                          @FromJson("second")
+                          fooBar: String;
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("collides"), error.getMessage());
+
+        Ast.Program expanded = AnnotationExpander.expand(Parser.parse("""
+                define class Good as
+                  @FromJson("id")
+                  id: String;
+                end
+                """));
+        assertEquals(expanded, AnnotationExpander.expand(expanded),
+                "repeated expansion must preserve exactly the same generated AST");
+    }
+
+
 }

@@ -1,0 +1,11 @@
+// Real Java/Graal guest FS smoke, NOT a durable WAL implementation.
+// fs.write_text has NO verified append-and-fsync acknowledgement contract.
+// This file must only execute using a tested, authorized temporary pathname with an
+// explicit filesystem capability grant and no untrusted symlinks.
+pub async routine main(): void {
+  await fs.write_text("__ATTO_REDIS_IO_FILE__", "SET k v\n");
+  val String recovered = await fs.read_text("__ATTO_REDIS_IO_FILE__");
+  stdio.println(recovered == "SET k v\n");
+  await fs.remove("__ATTO_REDIS_IO_FILE__");
+  return;
+}

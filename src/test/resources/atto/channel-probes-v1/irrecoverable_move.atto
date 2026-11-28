@@ -1,0 +1,8 @@
+// Must reject use-after-move even on Accepted: original binding is invalid.
+pub routine main(): void {
+  val Channel<Array<int>> channel = Channel.new<Array<int>>(1);
+  val Array<int> payload = [7, 8];
+  val TryWriteResult<Array<int>> result = try writech channel, rt take payload;
+  stdio.stdout.write(payload[0]);
+  return;
+}

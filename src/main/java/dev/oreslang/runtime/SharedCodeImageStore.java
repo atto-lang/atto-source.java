@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Process-local, OresVM-owned read-only source code images.
@@ -29,17 +30,34 @@ public final class SharedCodeImageStore implements AutoCloseable {
     public static final class CodeImage {
         private final String codeUnitId;
         private final Ast.Program program;
+        private final CodeImageIdentity identity;
 
-        private CodeImage(String codeUnitId, Ast.Program program) {
+        private CodeImage(
+                String codeUnitId,
+                Ast.Program program,
+                CodeImageIdentity identity) {
             if (Objects.requireNonNull(codeUnitId, "codeUnitId").isBlank()) {
                 throw new IllegalArgumentException("code unit id cannot be blank");
             }
             this.codeUnitId = codeUnitId;
             this.program = Objects.requireNonNull(program, "program");
+            this.identity = Objects.requireNonNull(identity, "identity");
         }
 
         public String codeUnitId() { return codeUnitId; }
         public Ast.Program program() { return program; }
+        /**
+         * JVM-local source-layout generation. Only a live runtime-issued
+         * code image may supply this positive epoch to the structural
+         * projection verifier. It is not a transferable authority token.
+         */
+        public long checkedLayoutGeneration() {
+            if (!identity.isActive()) {
+                throw new IllegalStateException("retired code image cannot issue shape witnesses");
+            }
+            return identity.generation();
+        }
+        CodeImageIdentity identity() { return identity; }
 
         @Override
         public String toString() {
@@ -49,18 +67,32 @@ public final class SharedCodeImageStore implements AutoCloseable {
 
     private final Map<String, CodeImage> images = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicLong codeImageSequence = new AtomicLong();
 
     public CodeImage publish(String codeUnitId, Ast.Program immutableProgram) {
-        CodeImage image = new CodeImage(codeUnitId, immutableProgram);
+        Objects.requireNonNull(codeUnitId, "codeUnitId");
+        Objects.requireNonNull(immutableProgram, "immutableProgram");
         synchronized (images) {
             if (closed.get()) throw new IllegalStateException("shared code store is closed");
-            CodeImage prior = images.putIfAbsent(codeUnitId, image);
-            if (prior != null && prior.program() != immutableProgram) {
-                throw new IllegalStateException(
-                        "attempted to replace already-linked code unit '" + codeUnitId
-                        + "' without starting a new versioned code generation");
+            CodeImage prior = images.get(codeUnitId);
+            if (prior != null) {
+                if (prior.program() != immutableProgram) {
+                    throw new IllegalStateException(
+                            "attempted to replace already-linked code unit '" + codeUnitId
+                            + "' without starting a new versioned code generation");
+                }
+                return prior;
             }
-            return prior == null ? image : prior;
+            CodeImageIdentity identity =
+                    CodeImageIdentity.issue(codeUnitId, codeImageSequence.incrementAndGet());
+            try {
+                CodeImage image = new CodeImage(codeUnitId, immutableProgram, identity);
+                images.put(codeUnitId, image);
+                return image;
+            } catch (RuntimeException | Error publicationFailure) {
+                identity.revoke();
+                throw publicationFailure;
+            }
         }
     }
 
@@ -80,6 +112,9 @@ public final class SharedCodeImageStore implements AutoCloseable {
     public void close() {
         synchronized (images) {
             if (!closed.compareAndSet(false, true)) return;
+            for (CodeImage image : images.values()) {
+                image.identity().revoke();
+            }
             images.clear();
         }
     }

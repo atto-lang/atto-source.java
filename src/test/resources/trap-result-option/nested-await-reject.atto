@@ -1,0 +1,6 @@
+// Must be rejected by the type checker, before launching guest.
+async fnc later(): int { return 7; }
+async fnc invalid(): int {
+  val Option<int> caught = trap (1 + await later());
+  return 0;
+}

@@ -94,6 +94,73 @@ final class SourceActorCodeExecutorTest {
     }
 
     @Test
+    void suspendedSourceReceiveRetainsLogicalMailAdmissionWithoutParkingCarrier()
+            throws Exception {
+        Ast.Program program = Parser.parse("pub routine main(): void { return; }");
+        OresFuture<Void> releaseFirst = new OresFuture<>();
+        var firstSuspended = new java.util.concurrent.CountDownLatch(1);
+        var secondEntered = new java.util.concurrent.CountDownLatch(1);
+        var receives = new java.util.concurrent.atomic.AtomicInteger();
+
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            SharedCodeImageStore.CodeImage image = store.publish("app/serial.ores", program);
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override
+                public SharedCodeImageStore.CodeImage codeImage() {
+                    return image;
+                }
+
+                @Override
+                public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String actorTypeName,
+                        ActorRuntime.ActorContext<Object> context) {
+                    return new State(context.self().id());
+                }
+
+                @Override
+                public void receiveActor(
+                        String actorTypeName,
+                        ActorRuntime.ActorOwnedGuestState rawState,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    assertEquals("SerialWorker", actorTypeName);
+                    State state = assertInstanceOf(State.class, rawState);
+                    assertEquals(context.self().id(), state.ownerActorId());
+                    receives.incrementAndGet();
+                    if ("first".equals(mail.value())) {
+                        context.runtime().suspendCurrentUserMailboxUntil(releaseFirst);
+                        firstSuspended.countDown();
+                    } else if ("second".equals(mail.value())) {
+                        secondEntered.countDown();
+                        context.self().stop();
+                    } else {
+                        fail("unexpected user mail");
+                    }
+                }
+            };
+            ActorRuntime.ActorRef<Object> ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
+                    executor, "SerialWorker");
+            assertNull(ref.ready().join());
+            ref.send("first");
+            assertTrue(firstSuspended.await(2, TimeUnit.SECONDS),
+                    "first receive must suspend without parking its actor carrier");
+            ref.send("second");
+            assertFalse(secondEntered.await(150, TimeUnit.MILLISECONDS),
+                    "another mutable-state handler must not overtake the suspended logical turn");
+            assertEquals(1, receives.get());
+            assertTrue(releaseFirst.completeFromRuntime(null),
+                    "resolving the owned barrier must complete exactly once");
+            assertTrue(secondEntered.await(2, TimeUnit.SECONDS),
+                    "queued mail must resume after the original logical receive settles");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty(), "serial suspension must not terminate the actor");
+            assertEquals(2, receives.get());
+        }
+    }
+
+    @Test
     void sourceActorReadyFailsWhenInitializedStateClaimsWrongOwner()
             throws Exception {
         Ast.Program program =
@@ -136,16 +203,14 @@ final class SourceActorCodeExecutorTest {
                             bad,
                             "Worker");
 
-            Throwable failure = assertThrows(
-                    RuntimeException.class,
-                    () -> ref.ready().join());
-            assertTrue(failure.getMessage().contains("does not match actor")
-                            || (failure.getCause() != null
-                                && failure.getCause().getMessage().contains(
-                                        "does not match actor")),
-                    failure.toString());
+            assertThrows(RuntimeException.class, () -> ref.ready().join());
             assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
-            assertTrue(ref.failure().isPresent());
+            // #1223: ready sees the snapshot; the raw cause is on the host path.
+            Throwable raw = ref.failure().orElseThrow();
+            assertTrue(raw.getMessage().contains("does not match actor")
+                            || (raw.getCause() != null
+                                && raw.getCause().getMessage().contains("does not match actor")),
+                    raw.toString());
         }
     }
 }

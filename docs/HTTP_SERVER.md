@@ -1,5 +1,12 @@
 # Native HTTP server capabilities
 
+> **Current lower-level implementation.** The proposed Fetch-inspired
+> `HttpResponse` unary actor return is separately specified in
+> [HTTP_RESPONSE_FETCH_API_V1.md](HTTP_RESPONSE_FETCH_API_V1.md) and is
+> **not yet implemented or compiler-verified** on this backend. The API below
+> remains the existing `http.claim`/`HttpExchange` path; this document does
+> not claim that a `run(HttpMessage): HttpResponse` actor can already serve requests.
+
 `http.listen(host, port, capacity, body_limit_bytes, deadline_ms)` creates an
 HTTP/1.1 server under the supervisor's scoped NET permission. Port zero selects
 an ephemeral port. The native backend uses `jdk.httpserver`; Java socket,
@@ -95,6 +102,43 @@ per-listener admission check. Embedders that initialize another JDK HTTP server
 first must set the properties before that initialization; the backend cannot
 retroactively reconfigure JDK static limits. See NativeHttp.configureTransportDefaults.
 
+Quota provenance is **typed**: the transport raises the internal
+`RequestBodyTooLargeException` for both declared Content-Length over the
+listener limit and actual decoded body overflow. Only that marker qualifies
+a request-body read failure for HTTP 413; arbitrary exceptions whose message
+happens to be "body too large" do not qualify. The raw-wire suite also
+differentiates HTTP 413 for a declared length over quota from HTTP 400 for
+a malformed/overflowed decimal length.
+
+The admission layer requires one unambiguous HTTP/1.1 Host and rejects
+duplicate/joined, blank, whitespace/control or URI-delimiter Host values.
+The Host value must be a syntactically valid URI authority (not arbitrary
+printable ASCII): nonnumeric, empty or out-of-range ports are rejected,
+unbracketed IPv6 and malformed bracket literals fail closed, and canonical
+DNS hosts, numeric ports through 65535, and bracketed IPv6 remain accepted.
+This parses the authority locally without DNS lookups or blocking network I/O.
+HTTP/1.0 may omit Host, but a Host value supplied by the caller must still be
+well formed. Exactly one nonnegative decimal Content-Length is allowed. A
+duplicate, comma-joined, nondecimal or oversized Content-Length is rejected;
+any Content-Length together with Transfer-Encoding is forbidden. For this
+HTTP/1.1 adapter the only permitted Transfer-Encoding is a single `chunked`.
+The 8192-character per-field, 100-field and 32768-character aggregate limits
+remain. Header denials happen before the guest exchange enters admission.
+
+These post-parse checks complement but cannot replace JVM-wide JDK parser
+limits. The JDK may itself reject ambiguous framing before invoking our
+handler. Inbound body-reading IOExceptions (including malformed chunk lengths)
+map to HTTP 400 instead of 500; unlike header denial, this can occur *after*
+guest admission, so no pre-dispatch claim is made. Response-side I/O failures
+remain server errors. NativeHttpFramingAdmissionTest checks decoded header
+policy; NativeHttpRawWireAdmissionTest uses a JDK loopback socket and tracks
+headers admitted versus bodies successfully processed. Neither host test is
+equivalent to native AttoLang guest-backed Spin integration.
+
+**Proof status:** These are staged host-admission safeguards, not certification
+of a complete HTTP/1.1 parser. Exact-head CI, a live raw-wire Spin replay,
+and HTTP/1.0 compatibility need executed evidence before merging.
+
 This backend supports origin-form targets, strict UTF-8 paths, keep-alive,
 chunked transfer, and streaming. It rejects absolute/network-path/fragment
 request targets when they reach its handler. TLS termination, HTTP/2,
@@ -128,3 +172,35 @@ The planned native socket and request-scoped endpoint transfer paths, including
 serialized-only untrusted handlers, are described in
 [Actor physical boundaries](runtime/actor-physical-boundaries.md). The standalone
 native transfer tests do not change the JDK transport ownership model above.
+
+## Reusable request actors
+
+`http.handler("Worker").pooled(size)` registers a supervisor-owned lazy pool
+of 1..4096 workers. Register this handler with Spin as usual. Both shared and
+isolated source actors are supported; untrusted actors remain disallowed.
+A worker receives each request token through its existing bounded mailbox and
+calls `http.claim`. Return from `receive` after awaiting the response; **do not
+call `self.end()`** after each request. Actor fields persist across requests;
+request-local data should remain local to the receive callback.
+
+Each exchange still gets its own ownership generation and single-use token.
+Closing its response revokes its capability, removes it from the worker's active
+request set, releases HTTP admission, and settles `completion`. For pooled
+handlers, completion means transport/exchange completion, not worker termination
+or the end of any application code after `respond`. Later mailbox deliveries
+remain serialized across `await` by the existing source receive gate.
+
+Workers are selected round-robin. Pool size controls reusable actor count, not
+HTTP admission, mailbox capacity, or scheduler threads. A full mailbox rejects
+dispatch with 500 in this initial API; no hidden retry is performed. HTTP admission
+exhaustion remains 503. Set explicit ingress limits so accepted work fits bounded
+mailboxes. A request timeout/abort cancels its worker and fails other pending
+requests assigned to that worker; a later dispatch replaces a fully terminated
+worker. Failed dispatch does not cancel otherwise healthy workers. Completed
+requests do not accumulate actor-termination subscriptions.
+
+`handler.created` counts worker creations and `handler.reused` counts selections
+of existing workers; they are supervisor-only diagnostics, not successful-request
+counters. Pools live until their HTTP runtime/context closes; server shutdown
+still drains request exchanges, and context shutdown cancels idle pool workers.
+The existing unpooled API keeps its actor-per-request/self.end lifecycle.

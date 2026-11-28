@@ -76,7 +76,7 @@ final class ImportSelectorSyntaxTest {
                   pub fnc value(): int { return 1; }
                 end
 
-                shared actor Worker {
+                pub shared actor Worker {
                   pub fnc value(): int { return 2; }
                 }
 
@@ -91,8 +91,8 @@ final class ImportSelectorSyntaxTest {
                   fnc value() => int;
                 }
 
-                type Identifier = int;
-                type OtherIdentifier = int;
+                pub type Identifier = int;
+                pub type OtherIdentifier = int;
                 """);
 
         Files.writeString(main, """
@@ -163,7 +163,7 @@ final class ImportSelectorSyntaxTest {
     void classAndActorSelectorsDoNotAliasEachOther() throws Exception {
         Path child = temp.resolve("actors.ores");
         Files.writeString(child, """
-                shared actor Worker {
+                pub shared actor Worker {
                   pub fnc value(): int { return 1; }
                 }
 
@@ -193,7 +193,7 @@ final class ImportSelectorSyntaxTest {
         Path main = temp.resolve("main.ores");
 
         Files.writeString(child, """
-                shared actor Worker {
+                pub shared actor Worker {
                   pub fnc value(): int { return 1; }
                 }
                 """);

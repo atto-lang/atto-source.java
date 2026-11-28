@@ -1,0 +1,9 @@
+pub susp fnc main(): int {
+  val base = 6;
+  val answer = sync task<int> {
+    val val_a = base * 7;
+    do sync task { val shadow = 19; return; };
+    return (val_a + 2) - 2;
+  };
+  return answer;
+}

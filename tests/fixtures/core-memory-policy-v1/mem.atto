@@ -1,0 +1,30 @@
+// Real linked Atto guest: original boundary vectors, independent failure exits.
+import module mem from "atto.core/mem";
+pub fnc main(): int {
+  if mem.is_power_of_two_alignment(0) then return 1; fi
+  if !mem.is_power_of_two_alignment(1) then return 2; fi
+  if !mem.is_power_of_two_alignment(8) then return 3; fi
+  if mem.is_power_of_two_alignment(3) then return 4; fi
+  if !mem.is_power_of_two_alignment(4611686018427387904) then return 5; fi
+  if mem.align_up_checked(0, 8) != 0 then return 6; fi
+  if mem.align_up_checked(7, 8) != 8 then return 7; fi
+  if mem.align_up_checked(16, 16) != 16 then return 8; fi
+  if mem.align_up_checked(-1, 8) != -1 then return 9; fi
+  if mem.align_up_checked(7, 3) != -1 then return 10; fi
+  if mem.align_up_checked(9223372036854775807, 2) != -1 then return 11; fi
+  if mem.align_up_checked(9223372036854775806, 2) != 9223372036854775806 then return 12; fi
+  if mem.layout_stride(9, 8) != 16 then return 13; fi
+  if mem.layout_stride(0, 8) != 0 then return 14; fi
+  if mem.layout_stride(9223372036854775807, 8) != -1 then return 15; fi
+  if mem.array_bytes_checked(4, 8, 32) != 32 then return 16; fi
+  if mem.array_bytes_checked(5, 8, 32) != -1 then return 17; fi
+  if mem.array_bytes_checked(9223372036854775807, 2, 9223372036854775807) != -1 then return 18; fi
+  if mem.array_bytes_checked(0, 8, 0) != 0 then return 19; fi
+  if mem.array_bytes_checked(4, 0, 0) != 0 then return 20; fi
+  if mem.array_bytes_checked(-1, 8, 32) != -1 then return 21; fi
+  if !mem.span_fits(10, 0, 10) then return 22; fi
+  if !mem.span_fits(10, 10, 0) then return 23; fi
+  if mem.span_fits(10, 10, 1) then return 24; fi
+  if mem.span_fits(10, 9223372036854775807, 1) then return 25; fi
+  return 42;
+}

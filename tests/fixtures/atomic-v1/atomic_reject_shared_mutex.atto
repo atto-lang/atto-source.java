@@ -1,0 +1,6 @@
+// EXPECTED_COMPILE_REJECT: SharedMutex cannot launder unproven atomic ownership.
+pub fnc main(): void {
+  val counter: Atomic<int> = Atomic.new(0);
+  val shared = SharedMutex.new(counter);
+  return;
+}

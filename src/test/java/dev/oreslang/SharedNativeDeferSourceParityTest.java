@@ -26,12 +26,40 @@ final class SharedNativeDeferSourceParityTest {
                           return;
                         }
                         fnc invalid(borrow Counter c): void {
-                          mutate(rt borrow mut c);
+                          mutate(rt mut borrow c);
                           return;
                         }
                         """)));
         assertTrue(failure.getMessage().contains("cannot mutably reborrow a shared borrow"),
                 failure::getMessage);
+    }
+
+    @Test
+    void deferredFieldWritesKeepTheAlreadyEvaluatedReturnValue() throws Exception {
+        Path fixture = Path.of("contracts/v1/semantics/fixtures/native-defer-field-return.ores");
+        String source = Files.readString(fixture, StandardCharsets.UTF_8);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)),
+                "native and GraalVM must admit the same field-defer return fixture");
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Value result = context.eval(Source.newBuilder("ores", source, fixture.toString()).build());
+            assertTrue(result.fitsInLong());
+            assertEquals(42L, result.asLong(),
+                    "pending scalar return snapshots must survive deferred mutation");
+        }
+    }
+
+    @Test
+    void nonthrowingNativeTryFinallyPreservesReturnAndOrderedCleanup() throws Exception {
+        Path fixture = Path.of("contracts/v1/semantics/fixtures/native-try-finally-return-snapshot.ores");
+        String source = Files.readString(fixture, StandardCharsets.UTF_8);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)),
+                "shared nonthrowing try/catch/finally must typecheck on Java/GraalVM");
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Value result = context.eval(Source.newBuilder("ores", source, fixture.toString()).build());
+            assertTrue(result.fitsInLong());
+            assertEquals(42L, result.asLong(),
+                    "pending returns must be snapshotted before ordered finally and outer defer");
+        }
     }
 
     @Test

@@ -1,0 +1,40 @@
+name: Native HTTP owned chunk admission
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - '.github/workflows/native-http-owned-chunks.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guest-transport:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out immutable compiler PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Check source identity
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git rev-parse HEAD HEAD^{tree}
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+      - name: Run compiled guest and native HTTP regressions
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -Dtest=OutboundHttpBodyPipeTest,OutboundHttpRequestGuestTest,AttoBytesV1GuestTest,AttoOwnedBytesNioGuestTest -Dsurefire.failIfNoSpecifiedTests=true test
+          test -z "$(git status --porcelain --untracked-files=all)"

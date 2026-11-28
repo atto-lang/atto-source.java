@@ -1,0 +1,30 @@
+// Portable overlap/read-only independence from DopRegionSchedule.java.
+// Input root identity is OWNER-VERIFIED metadata, never a guest capability.
+// Do not use a caller-supplied same_root boolean to authorize parallel tasks.
+define module region_policy as
+  // Modes: 1=READ, 2=WRITE, 3=DISCARD, 4=REDUCE, 5=ATOMIC.
+  pub fnc valid_access(int rows, int fields, int field,
+                       int begin, int end, int mode): bool {
+    return rows >= 0 && fields > 0 && field >= 0 && field < fields &&
+           begin >= 0 && begin <= end && end <= rows &&
+           mode >= 1 && mode <= 5;
+  }
+
+  pub fnc independent_metadata(
+      int rows, int fields, bool same_root,
+      int left_field, int left_begin, int left_end, int left_mode,
+      int right_field, int right_begin, int right_end, int right_mode): bool {
+    // Fail CLOSED on an invalid slice, even if the other root differs.
+    if !valid_access(rows, fields, left_field, left_begin, left_end, left_mode) ||
+       !valid_access(rows, fields, right_field, right_begin, right_end, right_mode); do
+      return false;
+    fi
+    if !same_root || left_field != right_field ||
+       left_begin == left_end || right_begin == right_end ||
+       left_end <= right_begin || right_end <= left_begin; do
+      return true;
+    fi
+    // Same-operator reductions still conflict without a certified tree.
+    return left_mode == 1 && right_mode == 1;
+  }
+end

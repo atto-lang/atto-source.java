@@ -14,12 +14,43 @@
 10. An actor has one mailbox and never executes two mailbox turns concurrently.
 11. Private and shared actors use separate dispatcher thread pools.
 12. Private actor transport rejects synchronized shared-memory cells.
-13. Shared actor state is still actor-owned; ordinary actor field mutation is serialized by the mailbox, not by implicit locks.
-14. Actor `self` and move-only actor-owned state cannot escape a mailbox turn as ordinary mutable aliases.
-15. Synchronized shared memory requires `SHARED_MEMORY`; strict FaaS does not grant it by default.
-16. Private slices and synchronized shared cells compete for one parent actor-memory ceiling.
-17. Actor message graphs are cycle-checked and bounded by depth, node count, and logical byte quotas before transport.
-18. SharedMutex runtime ownership is reserved before mailbox visibility and committed only after successful admission; failed first publication rolls back.
+13. Every actor kind has its own default actor-local allocation arena, including shared actors. “Shared” never means “allocate ordinary mutable actor state into one common heap.”
+14. Shared actor state is still actor-owned; ordinary actor field mutation is serialized by the mailbox, not by implicit locks. Explicit frozen/shared regions and synchronized shared-memory capabilities are separate from the actor's default arena.
+15. Actor `self` and move-only actor-owned state cannot escape a mailbox turn as ordinary mutable aliases.
+16. Synchronized shared memory requires `SHARED_MEMORY`; strict FaaS does not grant it by default.
+17. Actor-local arenas and explicit shared regions are accounted independently but compete for the configured parent actor-memory ceiling.
+18. Actor message graphs are cycle-checked and bounded by depth, node count, and logical byte quotas before transport.
+19. SharedMutex runtime ownership is reserved before mailbox visibility and committed only after successful admission; failed first publication rolls back.
+
+## Actor-local allocation arenas
+
+The default memory topology is **arena-per-actor**, not heap-per-actor-kind.
+Shared, private/isolated, untrusted, and dedicated actors all allocate ordinary
+actor-owned data into an actor-local arena. Shared actors may additionally hold
+leases on explicit frozen/read-only regions or, when policy grants
+`SHARED_MEMORY`, synchronized shared-memory objects. Those shared regions are
+not the actor's default mutable heap.
+
+The arena split serves both safety and performance:
+
+- allocation can use actor-local slabs/bump paths without a process-wide allocator
+  becoming the ordinary fast path;
+- short-lived scratch allocations can be reclaimed in bulk at validated turn,
+  task, or region boundaries;
+- persistent actor state can live in a longer-lived arena and be reclaimed when
+  the actor retires or the owning generation is torn down;
+- memory quotas and leak attribution remain naturally per actor;
+- JVM/Graal backends can move suitable payload bytes off the managed heap,
+  reducing managed allocation rate and tracing pressure;
+- native/LLVM backends can use ownership, borrowing, region lifetime proofs, and
+  deterministic arena destruction instead of a tracing collector on verified
+  paths.
+
+An actor-local arena is an **allocation/ownership domain**, not automatically a
+physical GC domain. On the JVM, Java wrappers, Truffle nodes, mailbox objects and
+other managed objects may still share one HotSpot/Native Image collector. A
+dedicated Graal isolate or OS process is a separate decision used when independent
+collector, address-space, or security fault domains are required.
 
 ## Deployment matrix
 
@@ -134,9 +165,9 @@ Example:
 
 ```ores
 val state = Mutex.new(new Counter());
-val guard = state.lock();
-guard.count = guard.count + 1;
-guard.release();
+val lock_guard = state.lock();
+lock_guard.count = lock_guard.count + 1;
+lock_guard.release();
 
 val shared = SharedMutex.new(new Cache());
 val shared_guard = await shared.lock_async();

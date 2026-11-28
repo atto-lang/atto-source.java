@@ -25,11 +25,9 @@ final class ProperTailCallTest {
                 }
 
                 routine routine_down(int n): int {
-                  if n == 0; do
-                    return 0;
-                  else
-                    return routine_down(n - 1);
-                  fi
+                  // Routines are single-pass/direct-call-only. This terminal
+                  // handoff must preserve the fnc tail-call trampoline.
+                  return fnc_down(n);
                 }
 
                 fnc is_even(int n): bool {
@@ -141,13 +139,13 @@ final class ProperTailCallTest {
                   }
                 }
 
-                fnc divide_by_zero(): int {
-                  return 1 / 0;
+                fnc remainder_by_zero(): int {
+                  return Integer.rem(1, 0);
                 }
 
                 fnc with_catch(): int {
                   try {
-                    return divide_by_zero();
+                    return remainder_by_zero();
                   } catch (err) {
                     return 42;
                   }

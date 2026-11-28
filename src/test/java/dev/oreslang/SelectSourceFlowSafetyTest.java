@@ -13,9 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SelectSourceFlowSafetyTest {
     @Test
-    void discardedReturnRunsArmDeferAndContinuesExactlyOnce() throws Exception {
+    void proceduralReturnRunsArmDeferAndExitsCallerExactlyOnce() throws Exception {
         String source = """
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       defer stdio.stdout.write("cleanup:");
@@ -23,12 +23,16 @@ final class SelectSourceFlowSafetyTest {
                       return 77;
                     }
                   }
-                  stdio.stdout.write("continuing");
+                  stdio.stdout.write("unreachable:");
+                  return 99;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(compute());
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("arm:cleanup:continuing", run(source));
+        assertWarnings(source, 0);
+        assertEquals("arm:cleanup:77", run(source));
     }
 
     @Test
@@ -58,9 +62,9 @@ final class SelectSourceFlowSafetyTest {
     }
 
     @Test
-    void discardedArmReturnPreservesItsOwnTryFinally() throws Exception {
+    void proceduralArmReturnPreservesTryFinallyAndExitsCaller() throws Exception {
         String source = """
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       try {
@@ -73,12 +77,129 @@ final class SelectSourceFlowSafetyTest {
                       }
                     }
                   }
-                  stdio.stdout.write("continuing");
+                  stdio.stdout.write("unreachable:");
+                  return 99;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(compute());
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("arm:finally:continuing", run(source));
+        assertWarnings(source, 0);
+        assertEquals("arm:finally:11", run(source));
+    }
+
+    @Test
+    void proceduralArmBreakRunsFinallyOnceBeforeExitingOuterLoop() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  loop {
+                    do select {
+                      default: {
+                        try {
+                          stdio.stdout.write("branch:");
+                          break;
+                        } catch (err) {
+                          stdio.stdout.write("unexpected:");
+                        } finally {
+                          stdio.stdout.write("cleanup:");
+                        }
+                      }
+                    }
+                  }
+                  stdio.stdout.write("done");
+                  return;
+                }
+                """;
+        assertWarnings(source, 0);
+        assertEquals("branch:cleanup:done", run(source));
+    }
+
+    @Test
+    void selectedProceduralReturnResumesAfterCooperateAndRunsBothDefersOnce()
+            throws Exception {
+        String source = """
+                pub fnc compute(): int {
+                  defer stdio.stdout.write("outer:");
+                  do select {
+                    default: {
+                      defer stdio.stdout.write("arm:");
+                      stdio.stdout.write("before:");
+                      rt cooperate;
+                      stdio.stdout.write("after:");
+                      return 27;
+                    }
+                  }
+                  return 99;
+                }
+                pub async fnc main(): void {
+                  stdio.stdout.write(compute());
+                  return;
+                }
+                """;
+        assertWarnings(source, 0);
+        assertEquals("before:after:arm:outer:27", run(source));
+    }
+
+    @Test
+    void selectedContinueAndBreakPropagateAfterCooperateWithoutReplay()
+            throws Exception {
+        String source = """
+                pub fnc count(): int {
+                  let int passes = 0;
+                  loop {
+                    passes = passes + 1;
+                    do select {
+                      default: {
+                        rt cooperate;
+                        if passes < 3; then
+                          continue;
+                        fi
+                        break;
+                      }
+                    }
+                  }
+                  return passes;
+                }
+                pub async fnc main(): void {
+                  stdio.stdout.write(count());
+                  return;
+                }
+                """;
+        assertWarnings(source, 0);
+        assertEquals("3", run(source));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(20)
+    void pendingDoSelectReceivesDelayedProducerAndReturnsFromAsyncCallable()
+            throws Exception {
+        String source = """
+                async fnc delayedSend(Channel<int> output): void {
+                  rt cooperate;
+                  rt cooperate;
+                  writech output, 19;
+                  return;
+                }
+                async fnc receiveOnce(Channel<int> input): int {
+                  do select {
+                    case readch input: val number {
+                      defer stdio.stdout.write("arm:");
+                      return number * 2;
+                    }
+                  }
+                  return -1;
+                }
+                pub async fnc main(): void {
+                  val Channel<int> pipe = Channel.new<int>(0);
+                  val Future<void> sender = delayedSend(pipe);
+                  stdio.stdout.write(await receiveOnce(pipe));
+                  await sender;
+                  return;
+                }
+                """;
+        assertWarnings(source, 0);
+        assertEquals("arm:38", run(source));
     }
 
     @Test

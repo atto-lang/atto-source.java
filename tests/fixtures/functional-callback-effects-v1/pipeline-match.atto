@@ -1,0 +1,17 @@
+// Functional composition: match arm returns a value; eager pipelines use |>.
+fnc increment(int value): int {
+  return value + 1;
+}
+
+fnc classify(Option<int> input): int {
+  return match input over {
+    on Some(n) { return n |> increment |> |next| -> next + 1; }
+    on None { return 0; }
+  };
+}
+
+pub fnc main(): void {
+  stdio.println(classify(Some(40)));
+  stdio.println(classify(None));
+  return;
+}

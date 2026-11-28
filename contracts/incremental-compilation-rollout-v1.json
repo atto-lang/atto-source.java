@@ -1,0 +1,101 @@
+{
+  "schema": "atto.incremental-compilation-rollout.v1",
+  "repository": "atto-lang/atto-source.java",
+  "status": "PARTIAL_FRONTEND_IMPLEMENTATION_NOT_EXECUTED",
+  "implementation_complete": false,
+  "executed_compiler_guest_evidence": false,
+  "primary_design": "docs/INCREMENTAL_COMPILATION_V1.md",
+  "canonical_design": "https://github.com/atto-lang/atto-common-source/pull/133",
+  "parity_tracker": "https://github.com/atto-lang/atto-compilers-parity-testing/issues/53",
+  "repository_role": "source-compiler",
+  "source_compiler_owner": true,
+  "upstream_compilers": [],
+  "target_codegen_domain": "java",
+  "planned": {
+    "explicit_namespace": "package-instance-qualified namespace may span verified files within a package",
+    "without_namespace": "one distinct package-qualified file unit per physical source file; never implicit global namespace",
+    "source_granularity": "file (with optional finer function/codegen caching)",
+    "incremental_public_abi_dependency": "recheck complete bound import/dependency closure including negative lookups",
+    "implementation_only_change": "owning unit codegen plus inlining/specialization consumers and necessary link outputs",
+    "metadata_identity": [
+      "package-instance-id",
+      "normalized-source-unit-id",
+      "source-digest",
+      "interface-digest",
+      "import-binding-digest",
+      "semantic-profile",
+      "target-and-toolchain-profile"
+    ],
+    "build_status_fields": [
+      "RECHECK",
+      "CODEGEN",
+      "RELINK",
+      "REUSED",
+      "UNSUPPORTED",
+      "NOT_EXECUTED"
+    ],
+    "fail_closed_on": [
+      "unresolved-import",
+      "changed-namespace-membership",
+      "unverified-ABI",
+      "invalid-ownership-proof",
+      "unsafe-cache-entry",
+      "incompatible-toolchain-profile"
+    ]
+  },
+  "required_acceptance_cases": [
+    "cold-clean-vs-incremental",
+    "noop-reuse",
+    "single-unnamespaced-file-edit-sibling-unaffected",
+    "single-file-in-namespaced-group-edit",
+    "public-abi-importer-recheck",
+    "effect-ownership-actor-contract-update",
+    "inlined-body-dependency",
+    "source-file-deletion",
+    "namespace-header-add-remove",
+    "package-version-rebind",
+    "negative-name-lookup",
+    "scc-interface-cycle",
+    "cache-corruption-fails-closed",
+    "target-profile-change",
+    "real-compiled-guest-execution-and-diagnostics"
+  ],
+  "implemented_in_draft": [
+    "process-local parsed AST reuse for unchanged source files",
+    "strict-Atto and legacy parser/checked-cache separation",
+    "per-file no-namespace checked-unit reuse (file-scoped IDs already supported on main)",
+    "source/interface/import-binding invalidation with transitive conservatism",
+    "transactional cache publication after full graph and ownership checks",
+    "empty complete-snapshot and explicit clear cache invalidation",
+    "reparsedUnits diagnostics on BuildResult with backward-compatible constructors",
+    "public ABI v4 includes checked effects, named parameters, actor/method policy, mutability and annotations",
+    "stable sorted exported declaration entries",
+    "import bindings keyed by complete imported declaration identity and actual provider source"
+  ],
+  "unimplemented_or_unverified": [
+    "executed JDK25 JUnit and compiled AttoLang guest receipts",
+    "manifest-qualified multi-file namespace grouping/linking",
+    "function-level codegen caching and object emission",
+    "persistent disk cache and cross-process cache invalidation",
+    "Native Image AOT execution, full guest codegen parity, cross-backend conformance",
+    "exact compiler semantic-profile and target/toolchain persistent cache keys",
+    "independent V3 private-source carrier authorization and source main branch protection",
+    "current exact head 10-case focused JDK25 JUnit execution with nonzero steps"
+  ],
+  "ci_check": ".github/workflows/incremental-file-fallback-v1.yml",
+  "focused_regression_cases_authored": 15,
+  "reference_model_tests_passed_locally": 20,
+  "reference_model_tests_are_not_java_compiler_evidence": true,
+  "overlap_reconciled_from_pr_697": [
+    "preserved old+new raw/expanded parsed-AST cache and binding invalidation ideas",
+    "named-argument and source-order-stable ABI and declared effect/actor extensions",
+    "failed typecheck cache retention and file deletion/restoration tests",
+    "annotation-derived wire ABI and unversioned external import tests",
+    "clear operation and immutable parse telemetry test"
+  ],
+  "overlap_unresolved": [
+    "executable current-head JDK25 regression and source compilation validation",
+    "complete versioned ABI/specialization semantics for persistent caches",
+    "approval of canonical vs overlapping Java PR #697"
+  ]
+}

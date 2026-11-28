@@ -1,0 +1,78 @@
+// Native Oreslang: from-scratch single trainable neuron.
+// This educational baseline uses an analytic gradient. It does NOT yet
+// exercise tensor-backed autograd, causal attention, or multi-layer GPT.
+define module scalar_training as
+  pub fnc predict(float input, float weight): float {
+    return input * weight;
+  }
+
+  pub fnc squared_error(float prediction, float target): float {
+    val float delta = prediction - target;
+    return delta * delta;
+  }
+
+  pub fnc gradient_w(float input, float weight, float target): float {
+    // d/dw (w*x - y)^2 = 2*(w*x - y)*x.
+    return 2.0 * (predict(input, weight) - target) * input;
+  }
+
+  pub fnc update_weight(float weight, float grad, float learning_rate): float {
+    return weight - learning_rate * grad;
+  }
+end
+
+pub routine main(): void {
+  let float weight = 0.0;
+  val float input = 2.0;
+  val float target = 6.0;
+  val float learning_rate = 0.1;
+
+  val float initial_loss = scalar_training.squared_error(
+    scalar_training.predict(input, weight), target
+  );
+
+  // Explicit scalar training loop; one weight and a deterministic sample.
+  for let step = 0; step < 8; step++ do
+    val float gradient = scalar_training.gradient_w(input, weight, target);
+    weight = scalar_training.update_weight(weight, gradient, learning_rate);
+  done
+
+  val float final_loss = scalar_training.squared_error(
+    scalar_training.predict(input, weight), target
+  );
+
+  if final_loss >= initial_loss; do
+    rt fail("training did not reduce squared error");
+  fi
+  if weight <= 0.0; do
+    rt fail("optimizer never updated its weight");
+  fi
+
+  // Held-out input: same y = 3*x rule, not one of the optimization steps.
+  // Prevents reporting only training-set loss as a learning proof.
+  val float heldout_prediction = scalar_training.predict(4.0, weight);
+  val float heldout_loss = scalar_training.squared_error(heldout_prediction, 12.0);
+  if heldout_loss >= 0.001; do
+    rt fail("held-out linear extrapolation error too large");
+  fi
+
+  // Analytic gradient checked against a numerical directional derivative.
+  val float epsilon = 0.001;
+  val float upper = scalar_training.squared_error(
+    scalar_training.predict(2.0, 1.0 + epsilon), 6.0
+  );
+  val float lower = scalar_training.squared_error(
+    scalar_training.predict(2.0, 1.0 - epsilon), 6.0
+  );
+  val float finite_difference = (upper - lower) / (2.0 * epsilon);
+  val float analytic = scalar_training.gradient_w(2.0, 1.0, 6.0);
+  if finite_difference < analytic - 0.02 || finite_difference > analytic + 0.02; do
+    rt fail("analytic gradient disagrees with numerical gradient");
+  fi
+
+  stdio.stdout.write("ORES-LLM-SCALAR-TRAIN|weight=");
+  stdio.stdout.write(weight);
+  stdio.stdout.write("|loss=");
+  stdio.stdout.println(final_loss);
+  return;
+}
