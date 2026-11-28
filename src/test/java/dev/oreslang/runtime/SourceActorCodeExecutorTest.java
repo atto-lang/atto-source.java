@@ -12,11 +12,15 @@ final class SourceActorCodeExecutorTest {
 
     private static final class State implements ActorRuntime.ActorOwnedGuestState {
         private final ActorRuntime.ActorId owner;
+        private final long generation;
         private int messages;
 
-        private State(ActorRuntime.ActorId owner) {
+        private State(ActorRuntime.ActorId owner, long generation) {
             this.owner = owner;
+            this.generation = generation;
         }
+
+        @Override public long ownerGeneration() { return generation; }
 
         @Override
         public ActorRuntime.ActorId ownerActorId() {
@@ -35,7 +39,7 @@ final class SourceActorCodeExecutorTest {
             assertSame(codeImage, context.codeImage().orElseThrow());
             assertTrue(context.currentMail().isEmpty(),
                     "startup must execute before any mailbox message");
-            return new State(context.self().id());
+            return new State(context.self().id(), context.self().generation());
         }
 
         @Override
@@ -117,7 +121,7 @@ final class SourceActorCodeExecutorTest {
                                 ActorRuntime.ActorContext<Object> context) {
                             ActorRuntime.ActorId wrong =
                                     ActorRuntime.ActorId.create();
-                            return () -> wrong;
+                            return new State(wrong, context.self().generation());
                         }
 
                         @Override

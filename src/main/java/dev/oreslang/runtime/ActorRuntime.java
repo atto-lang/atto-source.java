@@ -496,7 +496,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || droppedSequenceExhaustion < 0 || droppedTotal < 0) {
                 throw new IllegalArgumentException("invalid terminal journal statistics");
             }
-            final long classifiedDrops;
+            long classifiedDrops;
             try {
                 classifiedDrops = Math.addExact(
                         Math.addExact(droppedContention, droppedCapacity),
@@ -7433,7 +7433,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
             UntrustedLogicalQuota logicalQuota = CURRENT_UNTRUSTED_QUOTA.get();
             if (logicalQuota != null) {
-                if (!logicalQuota.ownedBy(this, cell.ref.id())) {
+                if (!logicalQuota.ownedBy(this, cell.ref)) {
                     throw new SecurityException(
                             "untrusted source-task quota escaped its actor");
                 }
