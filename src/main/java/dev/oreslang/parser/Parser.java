@@ -4628,6 +4628,7 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnaryBody() {
+        if (hasBangOwnershipAlias()) return parseBangOwnershipAlias();
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
         // token sequence as a single negative literal, without broadening
