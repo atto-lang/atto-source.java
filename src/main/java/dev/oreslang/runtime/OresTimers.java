@@ -7,11 +7,9 @@ import java.util.concurrent.Semaphore;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -55,17 +53,9 @@ public final class OresTimers implements AutoCloseable {
     static int availableGlobalIntervalSlots() {
         return GLOBAL_INTERVAL_SLOTS.availablePermits();
     }
-    private static final ScheduledThreadPoolExecutor CLOCK = createClock();
-
-    private static ScheduledThreadPoolExecutor createClock() {
-        AtomicInteger ids = new AtomicInteger();
-        ScheduledThreadPoolExecutor clock = new ScheduledThreadPoolExecutor(2,
-                runnable -> Thread.ofPlatform().daemon(true)
-                        .name("ores-monotonic-timer-" + ids.incrementAndGet())
-                        .unstarted(runnable));
-        clock.setRemoveOnCancelPolicy(true);
-        return clock;
-    }
+    // One clock thread over one logical timer wheel: the host arms a single
+    // wakeup for the nearest deadline, not one scheduled task per timer.
+    private static final MonotonicTimerDriver CLOCK = MonotonicTimerDriver.shared();
 
     private final Object admission = new Object();
     private final Set<OresFuture<Void>> active = new HashSet<>();
@@ -79,10 +69,10 @@ public final class OresTimers implements AutoCloseable {
      */
     public OresFuture<Void> afterNanos(long delayNanos) {
         if (delayNanos < 0) throw new IllegalArgumentException("negative timer delay");
-        AtomicReference<ScheduledFuture<?>> scheduled = new AtomicReference<>();
+        AtomicLong scheduled = new AtomicLong();
         OresFuture<Void> future = new OresFuture<>(() -> {
-            ScheduledFuture<?> event = scheduled.get();
-            if (event != null) event.cancel(false);
+            long event = scheduled.get();
+            if (event != 0) CLOCK.cancel(event);
         });
         synchronized (admission) {
             if (closed) throw new RejectedExecutionException("timer owner closed");
@@ -105,16 +95,14 @@ public final class OresTimers implements AutoCloseable {
                 });
                 registeredCleanup = true;
                 active.add(future);
-                scheduled.set(CLOCK.schedule(
-                        () -> {
-                            IN_CLOCK_THREAD.set(Boolean.TRUE);
-                            try {
-                                future.completeFromRuntime(null);
-                            } finally {
-                                IN_CLOCK_THREAD.remove();
-                            }
-                        },
-                        delayNanos, TimeUnit.NANOSECONDS));
+                scheduled.set(CLOCK.armAfter(delayNanos, () -> {
+                    IN_CLOCK_THREAD.set(Boolean.TRUE);
+                    try {
+                        future.completeFromRuntime(null);
+                    } finally {
+                        IN_CLOCK_THREAD.remove();
+                    }
+                }));
             } catch (RuntimeException | Error failure) {
                 // No Future escapes before this block exits. Settle it to
                 // run the same exact-once cleanup on failed admission.
