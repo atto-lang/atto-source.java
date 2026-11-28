@@ -321,9 +321,9 @@ final class SourceActorSpawnExecutionTest {
 
                   worker.send("finish");
 
-                  val done = worker.get_done();
-                  await done;
-                  await done;
+                  val done_observer = worker.get_done();
+                  await done_observer;
+                  await done_observer;
 
                   stdio.stdout.write("lifecycle-observers-reusable");
                   return;
