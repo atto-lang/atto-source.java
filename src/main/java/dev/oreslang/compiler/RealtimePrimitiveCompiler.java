@@ -1,0 +1,588 @@
+package dev.oreslang.compiler;
+
+import dev.oreslang.ast.Ast;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.HexFormat;
+import javax.lang.model.SourceVersion;
+import javax.tools.ToolProvider;
+
+/**
+ * A deliberately narrow, closed-world source-to-Java-bytecode proof of concept.
+ *
+ * This is a closed-world admission/lowering backend for a pure primitive
+ * subset, NOT a VM timing certificate. Public callers enter through
+ * {@link OresCompiler#compileRealtimePrimitive}, which performs type and
+ * ownership checking first. Compilation then performs an exact post-lowering
+ * classfile audit and emits a deterministic evidence manifest. Machine-code
+ * AOT, WCET and deployment qualification remain separate mandatory gates.
+ */
+public final class RealtimePrimitiveCompiler {
+    public static final String CLASS_NAME = "RtPrimitiveModule";
+    private static final int MAX_FUNCTIONS = 128;
+    private static final int MAX_PARAMS = 32;
+    private static final int MAX_STMTS = 4096;
+    private static final int MAX_REACHABLE_CALL_DEPTH = 64;
+    private static final int MAX_AST_NESTING = 64;
+    private int visitedStatements;
+    private int currentNesting;
+    private int matchExpressionSlots;
+    private static final int MAX_MATCH_EXPRESSION_SLOTS = 64;
+
+    private RealtimePrimitiveCompiler() { }
+
+    public record Budget(long maxSourceSteps, int maxCallDepth) {
+        public Budget {
+            if (maxSourceSteps < 1 || maxCallDepth < 1) {
+                throw new IllegalArgumentException("real-time budgets must be positive");
+            }
+        }
+    }
+
+    public record SourceReport(String entry, long maxSourceSteps, int maxCallDepth,
+                               int reachableFunctions, String assurance) { }
+
+    public record Artifact(
+            Path classFile,
+            Path manifestFile,
+            String bytecodeSha256,
+            SourceReport sourceReport,
+            RealtimeClassfileAudit.Report classfileReport) { }
+
+    private record Cost(long steps, int depth) { }
+    private final Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
+    private final Map<String, Cost> costs = new HashMap<>();
+    private final Set<String> active = new HashSet<>();
+    private final LinkedHashSet<String> reachable = new LinkedHashSet<>();
+
+    private RealtimePrimitiveCompiler(Ast.Program program) {
+        if (!program.imports().isEmpty() || program.modules().size() != 1) {
+            throw invalid("primitive real-time subset requires one closed module without imports");
+        }
+        Ast.ModuleDecl module = program.modules().getFirst();
+        if (!module.annotations().isEmpty() || !module.contracts().isEmpty()) {
+            throw invalid("module annotations/contracts have not been qualified for RT");
+        }
+        if (module.declarations().size() > MAX_FUNCTIONS) {
+            throw invalid("too many functions for bounded real-time compilation");
+        }
+        for (Ast.Decl declaration : module.declarations()) {
+            if (!(declaration instanceof Ast.FunctionDecl fn)) {
+                throw invalid("only ordinary free functions are admitted");
+            }
+            validateFunction(fn);
+            if (functions.putIfAbsent(key(fn.name(), fn.parameters().size()), fn) != null) {
+                throw invalid("ambiguous function overload: " + fn.name());
+            }
+        }
+    }
+
+    static SourceReport analyze(Ast.Program checkedProgram, String entry,
+                                       int arity, Budget budget) {
+        RealtimePrimitiveCompiler compiler = new RealtimePrimitiveCompiler(checkedProgram);
+        return compiler.report(entry, arity, budget);
+    }
+
+    /** Emits ordinary Java 8 classfile bytecode; does not load or execute it. */
+    static Artifact compile(Ast.Program checkedProgram, String entry, int arity,
+                                   Budget budget, Path outputDirectory) throws IOException {
+        RealtimePrimitiveCompiler compiler = new RealtimePrimitiveCompiler(checkedProgram);
+        SourceReport report = compiler.report(entry, arity, budget);
+        if (outputDirectory == null) throw invalid("output directory is required");
+        Files.createDirectories(outputDirectory);
+        Path directory = outputDirectory.toRealPath();
+        Path javaFile = directory.resolve(CLASS_NAME + ".java");
+        Files.writeString(javaFile, compiler.javaSource(), StandardCharsets.UTF_8);
+        var javac = ToolProvider.getSystemJavaCompiler();
+        if (javac == null) throw invalid("a full JDK with javac is required at build time");
+        int exit = javac.run(null, null, null,
+                "--release", "8", "-g:none", "-proc:none",
+                "-d", directory.toString(), javaFile.toString());
+        if (exit != 0) throw invalid("generated Java failed verification by javac");
+        Path result = directory.resolve(CLASS_NAME + ".class");
+        if (!Files.isRegularFile(result)) throw invalid("javac produced no classfile");
+        RealtimeClassfileAudit.Report classfileReport = RealtimeClassfileAudit.audit(result);
+        if (classfileReport.verifiedMethods() != report.reachableFunctions()) {
+            throw invalid("post-lowering method set does not match the source call graph");
+        }
+        String bytecodeSha256 = sha256(Files.readAllBytes(result));
+        Path manifest = RealtimeArtifactManifest.write(
+                directory, bytecodeSha256, report, classfileReport);
+        return new Artifact(
+                result,
+                manifest,
+                bytecodeSha256,
+                report,
+                classfileReport);
+    }
+
+    private SourceReport report(String entry, int arity, Budget budget) {
+        if (budget == null) throw invalid("budget is required");
+        validateIdentifier(entry);
+        Cost cost = analyzeFunction(key(entry, arity));
+        if (cost.steps() > budget.maxSourceSteps() || cost.depth() > budget.maxCallDepth()) {
+            throw invalid("real-time resource budget exceeded: source steps "
+                    + cost.steps() + ", call depth " + cost.depth());
+        }
+        return new SourceReport(entry, cost.steps(), cost.depth(), reachable.size(),
+                "SOURCE_AST_SUBSET_ONLY;BYTECODE_AND_WCET_UNVERIFIED");
+    }
+
+    private Cost analyzeFunction(String id) {
+        Cost cached = costs.get(id);
+        if (cached != null) return cached;
+        Ast.FunctionDecl fn = functions.get(id);
+        if (fn == null) throw invalid("unknown or external function: " + id);
+        if (!active.add(id)) throw invalid("recursive calls are not admitted: " + id);
+        if (active.size() > MAX_REACHABLE_CALL_DEPTH) throw invalid("call depth exceeds compiler safety ceiling");
+        reachable.add(id);
+        try {
+            Set<String> locals = new HashSet<>();
+            for (Ast.Param param : fn.parameters()) {
+                if (!locals.add(param.name())) throw invalid("duplicate parameter: " + param.name());
+            }
+            if (!alwaysReturns(fn.body(), 0)) throw invalid("function can complete without returning: " + id);
+            Cost body = statements(fn.body(), locals);
+            Cost total = new Cost(plus(1, body.steps()), body.depth());
+            costs.put(id, total);
+            return total;
+        } finally {
+            active.remove(id);
+        }
+    }
+
+    /**
+     * Every accepted non-void function must return on every path. Reject
+     * unreachable trailing statements: they cannot silently hide effects.
+     */
+    private static boolean alwaysReturns(List<Ast.Stmt> statements, int nesting) {
+        if (nesting > MAX_AST_NESTING) throw invalid("control flow nesting too deep");
+        boolean terminated = false;
+        for (Ast.Stmt stmt : statements) {
+            if (terminated) throw invalid("unreachable statement after guaranteed return");
+            if (stmt instanceof Ast.ReturnStmt) {
+                terminated = true;
+            } else if (stmt instanceof Ast.IfStmt cond) {
+                if (cond.branches().isEmpty()) throw invalid("empty conditional");
+                boolean branchesReturn = true;
+                for (Ast.IfBranch arm : cond.branches()) {
+                    branchesReturn &= alwaysReturns(arm.body(), nesting + 1);
+                }
+                boolean elseReturns = !cond.elseBody().isEmpty() && alwaysReturns(cond.elseBody(), nesting + 1);
+                terminated = branchesReturn && elseReturns;
+            }
+        }
+        return terminated;
+    }
+
+    private Cost statements(List<Ast.Stmt> statements, Set<String> locals) {
+        long steps = 0;
+        int depth = 1;
+        for (Ast.Stmt stmt : statements) {
+            if (++visitedStatements > MAX_STMTS) throw invalid("source AST exceeds statement budget");
+            Cost cost = statement(stmt, locals);
+            steps = plus(steps, cost.steps());
+            depth = Math.max(depth, cost.depth());
+        }
+        return new Cost(steps, depth);
+    }
+
+    private Cost statement(Ast.Stmt stmt, Set<String> locals) {
+        if (stmt instanceof Ast.ReturnStmt ret) {
+            if (ret.value() == null) throw invalid("only non-void returns are admitted");
+            if (ret.value() instanceof Ast.MatchExpr matched && matched.arms().size() > 2) {
+                return added(1, multiArmMatchCost(matched, locals));
+            }
+            return added(1, expression(ret.value(), locals));
+        }
+        if (stmt instanceof Ast.BindingStmt bind) {
+            if (!primitive(bind.declaredType()) || bind.initializer() == null
+                    || bind.mutableReferent() || bind.inferredTypeName() != null) {
+                throw invalid("only initialized primitive local bindings are admitted");
+            }
+            validateIdentifier(bind.name());
+            Cost value = expression(bind.initializer(), locals);
+            if (!locals.add(bind.name())) throw invalid("duplicate local: " + bind.name());
+            return added(1, value);
+        }
+        if (stmt instanceof Ast.IfStmt branch) {
+            long tests = 1;
+            long mostExpensiveBody = 0;
+            int depth = 1;
+            for (Ast.IfBranch arm : branch.branches()) {
+                Cost cond = expression(arm.condition(), locals);
+                Cost body = statements(arm.body(), new HashSet<>(locals));
+                tests = plus(tests, cond.steps());
+                mostExpensiveBody = Math.max(mostExpensiveBody, body.steps());
+                depth = Math.max(depth, Math.max(cond.depth(), body.depth()));
+            }
+            Cost other = statements(branch.elseBody(), new HashSet<>(locals));
+            mostExpensiveBody = Math.max(mostExpensiveBody, other.steps());
+            depth = Math.max(depth, other.depth());
+            return new Cost(plus(tests, mostExpensiveBody), depth);
+        }
+        throw invalid("unbounded or unverified statement: " + stmt.getClass().getSimpleName());
+    }
+
+    private Cost expression(Ast.Expr expr, Set<String> locals) {
+        if (++currentNesting > MAX_AST_NESTING) throw invalid("source AST expression nesting too deep");
+        try {
+            return expressionInner(expr, locals);
+        } finally {
+            currentNesting--;
+        }
+    }
+
+    private Cost expressionInner(Ast.Expr expr, Set<String> locals) {
+        if (expr instanceof Ast.LiteralExpr lit) {
+            Object v = lit.value();
+            if (!(v instanceof Boolean) && !(v instanceof Byte) && !(v instanceof Short)
+                    && !(v instanceof Integer) && !(v instanceof Long l
+                    && l >= Integer.MIN_VALUE && l <= Integer.MAX_VALUE)) {
+                throw invalid("only i32/bool constants are admitted");
+            }
+            return new Cost(1, 1);
+        }
+        if (expr instanceof Ast.NameExpr name) {
+            if (!locals.contains(name.name())) throw invalid("unbound primitive local: " + name.name());
+            return new Cost(1, 1);
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            if (!Set.of("+", "-", "*", "eq", "neq", "==", "!=", "<", "<=", ">", ">=",
+                    "&&", "||", "&", "|", "^").contains(binary.operator())) {
+                throw invalid("operator may throw or lacks bounded primitive semantics: " + binary.operator());
+            }
+            return combined(1, expression(binary.left(), locals), expression(binary.right(), locals));
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            if (!Set.of("-", "!", "~").contains(unary.operator())) {
+                throw invalid("unverified unary operator: " + unary.operator());
+            }
+            return added(1, expression(unary.operand(), locals));
+        }
+        if (expr instanceof Ast.MatchExpr matched) {
+            if (matched.arms().size() > 2) return added(1, multiArmMatchCost(matched, locals));
+            return expression(lowerPrimitiveMatch(matched), locals);
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            // Both alternatives must independently satisfy closed-world
+            // admission, including an unselected branch. Only one executes.
+            Cost predicate = expression(conditional.condition(), locals);
+            Cost whenTrue = expression(conditional.whenTrue(), locals);
+            Cost whenFalse = expression(conditional.whenFalse(), locals);
+            return new Cost(
+                    plus(plus(1, predicate.steps()), Math.max(whenTrue.steps(), whenFalse.steps())),
+                    Math.max(predicate.depth(), Math.max(whenTrue.depth(), whenFalse.depth())));
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            if (!(call.callee() instanceof Ast.NameExpr name)
+                    || call.typeArgumentsPresent() || !call.typeArguments().isEmpty()) {
+                throw invalid("dynamic/generic/external dispatch is forbidden");
+            }
+            long steps = 1;
+            int depth = 1;
+            for (Ast.Expr argument : call.arguments()) {
+                Cost c = expression(argument, locals);
+                steps = plus(steps, c.steps());
+                depth = Math.max(depth, c.depth());
+            }
+            Cost callee = analyzeFunction(key(name.name(), call.arguments().size()));
+            return new Cost(plus(steps, callee.steps()), Math.max(depth, 1 + callee.depth()));
+        }
+        throw invalid("reference/heap/suspend/unknown expression: " + expr.getClass().getSimpleName());
+    }
+
+    /**
+     * Closed two-arm scalar match lowering. The first arm tests one literal;
+     * the second must be an unguarded wildcard or its boolean complement.
+     * The subject occurs exactly once in the resulting conditional, even if
+     * it is a direct call. The checked frontend remains responsible for
+     * type compatibility, overlap, exhaustiveness and result ownership.
+     */
+    private static Ast.ConditionalExpr lowerPrimitiveMatch(Ast.MatchExpr matched) {
+        if (matched.arms().size() != 2) {
+            throw invalid("primitive value match requires exactly two arms");
+        }
+        Ast.MatchValueArm first = matched.arms().get(0);
+        Ast.MatchValueArm last = matched.arms().get(1);
+        if (first.guard() != null || last.guard() != null
+                || !first.prefixStatements().isEmpty() || !last.prefixStatements().isEmpty()) {
+            throw invalid("primitive value match does not admit guards or block prefixes");
+        }
+        if (!(first.pattern() instanceof Ast.LiteralPattern literal)) {
+            throw invalid("primitive value match requires a literal first arm");
+        }
+        Object value = literal.value();
+        boolean scalar = value instanceof Boolean || value instanceof Byte
+                || value instanceof Short || value instanceof Integer
+                || (value instanceof Long n && n >= Integer.MIN_VALUE && n <= Integer.MAX_VALUE);
+        if (!scalar) throw invalid("primitive value match requires a bool/i32 literal");
+        boolean complement = value instanceof Boolean b
+                && last.pattern() instanceof Ast.LiteralPattern other
+                && other.value() instanceof Boolean c && b != c;
+        if (!(last.pattern() instanceof Ast.WildcardPattern) && !complement) {
+            throw invalid("primitive value match requires an exhaustive wildcard or bool complement");
+        }
+        if (matched.resultType() != null && !primitive(matched.resultType())) {
+            throw invalid("primitive value match requires a primitive result type");
+        }
+        Ast.Expr condition = new Ast.BinaryExpr(
+                "eq", matched.subject(), new Ast.LiteralExpr(value));
+        return new Ast.ConditionalExpr(condition, first.value(), last.value());
+    }
+
+    /**
+     * Return-position multi-arm i32 matching uses a single primitive local
+     * and forward comparisons. No new dispatch object or helper call exists
+     * at runtime. Guard/prefix/binding patterns remain outside this profile.
+     */
+    private static void validateMultiArmMatch(Ast.MatchExpr matched) {
+        int count = matched.arms().size();
+        if (count < 3 || count > 64) {
+            throw invalid("multi-arm primitive match requires 3..64 arms");
+        }
+        if (matched.resultType() != null && !primitive(matched.resultType())) {
+            throw invalid("primitive value match requires a primitive result type");
+        }
+        Set<Long> seen = new HashSet<>();
+        for (int i = 0; i < count; i++) {
+            Ast.MatchValueArm arm = matched.arms().get(i);
+            if (arm.guard() != null || !arm.prefixStatements().isEmpty()) {
+                throw invalid("primitive value match does not admit guards or block prefixes");
+            }
+            if (i == count - 1) {
+                if (!(arm.pattern() instanceof Ast.WildcardPattern)) {
+                    throw invalid("multi-arm primitive match requires a final wildcard");
+                }
+                continue;
+            }
+            if (!(arm.pattern() instanceof Ast.LiteralPattern literal)) {
+                throw invalid("multi-arm primitive match requires i32 literals");
+            }
+            Object value = literal.value();
+            if (!(value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long)) {
+                throw invalid("multi-arm primitive match requires i32 literals");
+            }
+            long n = ((Number) value).longValue();
+            if (n < Integer.MIN_VALUE || n > Integer.MAX_VALUE || !seen.add(n)) {
+                throw invalid("out-of-range or duplicate multi-arm i32 pattern");
+            }
+        }
+    }
+
+    private Cost multiArmMatchCost(Ast.MatchExpr matched, Set<String> locals) {
+        validateMultiArmMatch(matched);
+        Cost subject = expression(matched.subject(), locals);
+        long tests = plus(2, subject.steps()); // dispatch + single scalar store
+        long worstArm = 0;
+        int depth = subject.depth();
+        for (int i = 0; i < matched.arms().size(); i++) {
+            if (i + 1 < matched.arms().size()) tests = plus(tests, 3); // read + literal + compare
+            Cost arm = expression(matched.arms().get(i).value(), locals);
+            worstArm = Math.max(worstArm, arm.steps());
+            depth = Math.max(depth, arm.depth());
+        }
+        return new Cost(plus(tests, worstArm), depth);
+    }
+
+    private static Cost combined(long own, Cost first, Cost second) {
+        return new Cost(plus(plus(own, first.steps()), second.steps()),
+                Math.max(first.depth(), second.depth()));
+    }
+    private static Cost added(long own, Cost inner) {
+        return new Cost(plus(own, inner.steps()), inner.depth());
+    }
+    private static long plus(long a, long b) {
+        try { return Math.addExact(a, b); }
+        catch (ArithmeticException overflow) { throw invalid("resource bound overflow"); }
+    }
+    private static String key(String name, int arity) { return name + "/" + arity; }
+
+    private static boolean primitive(Ast.TypeRef t) {
+        return t != null && t.arguments().isEmpty() && !t.inferArguments()
+                && (t.name().equals("i32") || t.name().equals("bool"));
+    }
+    private static String javaType(Ast.TypeRef t) {
+        if (!primitive(t)) throw invalid("reference/non-i32 type cannot pass the primitive boundary");
+        return t.name().equals("bool") ? "boolean" : "int";
+    }
+    private static void validateIdentifier(String name) {
+        if (name == null || !name.matches("[A-Za-z_][A-Za-z_0-9]*")
+                || SourceVersion.isKeyword(name) || Set.of("var", "record", "yield", "_").contains(name)) {
+            throw invalid("invalid portable Java identifier: " + name);
+        }
+    }
+    private static void validateFunction(Ast.FunctionDecl fn) {
+        validateIdentifier(fn.name());
+        if (fn.async() || fn.suspends() || fn.generator() || fn.structural()
+                || fn.nonLexical() || fn.trapped() || fn.actorKind() != Ast.ActorKind.NONE
+                || !fn.genericParameters().isEmpty() || !fn.annotations().isEmpty()) {
+            throw invalid("only synchronous, nongeneric, non-actor free functions are admitted");
+        }
+        javaType(fn.returnType());
+        if (fn.parameters().size() > MAX_PARAMS) throw invalid("too many parameters");
+        for (Ast.Param param : fn.parameters()) {
+            validateIdentifier(param.name());
+            javaType(param.type());
+            if (param.mutable() || param.structural()) throw invalid("mutable/structural params forbidden");
+        }
+    }
+
+    private String javaSource() {
+        StringBuilder out = new StringBuilder("final class ").append(CLASS_NAME).append(" {\n");
+        for (String id : reachable) {
+            Ast.FunctionDecl fn = functions.get(id);
+            out.append("  static ").append(javaType(fn.returnType())).append(" ")
+                    .append(fn.name()).append("(");
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param p = fn.parameters().get(i);
+                if (i > 0) out.append(",");
+                out.append(javaType(p.type())).append(" ").append(p.name());
+            }
+            out.append(") {\n");
+            // Declare only primitive scratch slots, not their initializers,
+            // before statements. Their assignments remain at the original
+            // expression position (including short-circuit branches).
+            matchExpressionSlots = 0;
+            StringBuilder body = new StringBuilder();
+            emitStatements(body, fn.body(), "    ");
+            for (int i = 0; i < matchExpressionSlots; i++) {
+                out.append("    int $matchExpr").append(i).append(";\n");
+            }
+            out.append(body);
+            out.append("  }\n");
+        }
+        return out.append("}\n").toString();
+    }
+
+    private void emitStatements(StringBuilder out, List<Ast.Stmt> body, String indent) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt ret) {
+                if (ret.value() instanceof Ast.MatchExpr matched && matched.arms().size() > 2) {
+                    emitMultiArmMatchReturn(out, matched, indent);
+                } else {
+                    out.append(indent).append("return ").append(emitExpr(ret.value())).append(";\n");
+                }
+            } else if (stmt instanceof Ast.BindingStmt bind) {
+                out.append(indent).append(javaType(bind.declaredType())).append(" ")
+                        .append(bind.name()).append(" = ").append(emitExpr(bind.initializer()))
+                        .append(";\n");
+            } else if (stmt instanceof Ast.IfStmt branch) {
+                for (int i = 0; i < branch.branches().size(); i++) {
+                    Ast.IfBranch arm = branch.branches().get(i);
+                    out.append(indent).append(i == 0 ? "if (" : "else if (")
+                            .append(emitExpr(arm.condition())).append(") {\n");
+                    emitStatements(out, arm.body(), indent + "  ");
+                    out.append(indent).append("} ");
+                }
+                if (branch.elseBody().isEmpty()) out.append("\n");
+                else {
+                    out.append("else {\n");
+                    emitStatements(out, branch.elseBody(), indent + "  ");
+                    out.append(indent).append("}\n");
+                }
+            } else {
+                throw invalid("internal error: admitted statement was not lowered");
+            }
+        }
+    }
+
+    private void emitMultiArmMatchReturn(StringBuilder out, Ast.MatchExpr matched, String indent) {
+        validateMultiArmMatch(matched);
+        // Compiler scratch names use a dollar prefix that is forbidden in guest identifiers.
+        // The explicit block limits the temporary's lexical scope.
+        String subject = "$matchSubject";
+        out.append(indent).append("{\n");
+        String inner = indent + "  ";
+        out.append(inner).append("final int ").append(subject).append(" = ")
+                .append(emitExpr(matched.subject())).append(";\n");
+        for (int i = 0; i < matched.arms().size(); i++) {
+            Ast.MatchValueArm arm = matched.arms().get(i);
+            if (i + 1 == matched.arms().size()) {
+                out.append(inner).append("else {\n");
+            } else {
+                Ast.LiteralPattern literal = (Ast.LiteralPattern) arm.pattern();
+                out.append(inner).append(i == 0 ? "if (" : "else if (")
+                        .append(subject).append(" == ").append(literal.value()).append(") {\n");
+            }
+            out.append(inner).append("  return ").append(emitExpr(arm.value())).append(";\n");
+            out.append(inner).append("}\n");
+        }
+        out.append(indent).append("}\n");
+    }
+
+    private String emitMultiArmMatchExpression(Ast.MatchExpr matched) {
+        validateMultiArmMatch(matched);
+        if (matchExpressionSlots >= MAX_MATCH_EXPRESSION_SLOTS) {
+            throw invalid("too many primitive match expression scratch slots");
+        }
+        // Compiler scratch names cannot collide with admitted guest identifiers.
+        String slot = "$matchExpr" + matchExpressionSlots++;
+        StringBuilder expr = new StringBuilder("(");
+        for (int i = 0; i + 1 < matched.arms().size(); i++) {
+            Ast.MatchValueArm arm = matched.arms().get(i);
+            Ast.LiteralPattern literal = (Ast.LiteralPattern) arm.pattern();
+            String subject = i == 0
+                    ? "(" + slot + " = " + emitExpr(matched.subject()) + ")"
+                    : slot;
+            expr.append("(").append(subject).append(" == ").append(literal.value())
+                    .append(") ? ").append(emitExpr(arm.value())).append(" : ");
+        }
+        expr.append(emitExpr(matched.arms().getLast().value())).append(")");
+        return expr.toString();
+    }
+
+    private String emitExpr(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr lit) return String.valueOf(lit.value());
+        if (expr instanceof Ast.NameExpr name) return name.name();
+        if (expr instanceof Ast.BinaryExpr b) {
+            // Checked source equality is normalized by Parser to eq/neq.
+            // Java source is only an intermediate build artifact; translate
+            // at emission, never accept an interpreter or dynamic dispatch.
+            String operator = switch (b.operator()) {
+                case "eq", "==" -> "==";
+                case "neq", "!=" -> "!=";
+                default -> b.operator();
+            };
+            return "(" + emitExpr(b.left()) + " " + operator + " " + emitExpr(b.right()) + ")";
+        }
+        if (expr instanceof Ast.UnaryExpr u) return "(" + u.operator() + emitExpr(u.operand()) + ")";
+        if (expr instanceof Ast.MatchExpr matched) {
+            if (matched.arms().size() > 2) return emitMultiArmMatchExpression(matched);
+            return emitExpr(lowerPrimitiveMatch(matched));
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            // Primitive Java conditional bytecode uses forward branches and
+            // evaluates only the selected arm. No boxing or fallback evaluator.
+            return "(" + emitExpr(conditional.condition()) + " ? "
+                    + emitExpr(conditional.whenTrue()) + " : "
+                    + emitExpr(conditional.whenFalse()) + ")";
+        }
+        if (expr instanceof Ast.CallExpr c && c.callee() instanceof Ast.NameExpr name) {
+            List<String> args = new ArrayList<>();
+            for (Ast.Expr arg : c.arguments()) args.add(emitExpr(arg));
+            return name.name() + "(" + String.join(", ", args) + ")";
+        }
+        throw invalid("internal error: admitted expression was not lowered");
+    }
+    private static String sha256(byte[] bytes) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
+        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+    private static IllegalArgumentException invalid(String text) {
+        return new IllegalArgumentException("RT-PRIMITIVE: " + text);
+    }
+}

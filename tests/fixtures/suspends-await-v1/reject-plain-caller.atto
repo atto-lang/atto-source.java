@@ -1,0 +1,9 @@
+// Negative: an ordinary fnc cannot erase a suspension effect.
+suspends fnc leaf(): int {
+  let Future<int> pending = task { return 7; };
+  return await pending;
+}
+
+fnc invalid(): int {
+  return leaf();
+}

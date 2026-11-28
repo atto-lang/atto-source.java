@@ -1,0 +1,5 @@
+define class Box as
+ pub let int value = 7;
+end
+define class Worker as pub static suspends fnc read_blocking(borrow Box b): int { return b.value; } end
+async fnc bad(): void { val Box box = new Box(); Worker.read_blocking(rt borrow box); return; }

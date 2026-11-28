@@ -13,6 +13,16 @@ import static org.junit.jupiter.api.Assertions.*;
 final class MainExitStatusTest {
     @TempDir Path temp;
 
+    @Test void canonicalAttoAndLegacyOresSourcesCheckAndRun() throws Exception {
+        String text = "pub routine main(): void { return; }";
+        for (String suffix : new String[] {".atto", ".ores"}) {
+            Path path = temp.resolve("canonical" + suffix);
+            Files.writeString(path, text);
+            assertEquals(0, OresMain.exitStatusForArgs(new String[] {"--check", path.toString()}));
+            assertEquals(0, OresMain.exitStatusForArgs(new String[] {path.toString()}));
+        }
+    }
+
     private int exit(String source) throws Exception {
         Path path = temp.resolve("main.ores");
         Files.writeString(path, source);
@@ -53,6 +63,33 @@ final class MainExitStatusTest {
         Files.writeString(path, "pub routine helper(): void { }");
         assertEquals(1, OresMain.exitStatusForArgs(new String[] {path.toString()}),
                 "a missing main must never produce a successful process status");
+    }
+
+    @Test void cliCoreLoggingLevelHasStrictAdmissionAndExplicitOverride() throws Exception {
+        Path path = temp.resolve("logging-cli.ores");
+        Files.writeString(path, "pub routine main(): void { }");
+        try {
+            assertEquals(2, OresMain.exitStatusForArgs(
+                    new String[] {"--core-log-level=verbose", "--check", path.toString()}));
+            assertEquals(2, OresMain.exitStatusForArgs(
+                    new String[] {"--core-log-level=", "--check", path.toString()}));
+            assertEquals(2, OresMain.exitStatusForArgs(
+                    new String[] {"--core-log-level", "--check", path.toString()}));
+            assertEquals(0, OresMain.exitStatusForArgs(
+                    new String[] {"--core-log-level=debug", "--check", path.toString()}));
+            assertEquals(dev.oreslang.runtime.CoreLog.Level.DEBUG,
+                    dev.oreslang.runtime.CoreLog.currentLevel());
+            assertEquals(0, OresMain.exitStatusForArgs(
+                    new String[] {"--core-log-level=trace", "--no-core-log", "--check", path.toString()}));
+            assertEquals(dev.oreslang.runtime.CoreLog.Level.OFF,
+                    dev.oreslang.runtime.CoreLog.currentLevel());
+            assertEquals(0, OresMain.exitStatusForArgs(
+                    new String[] {"--no-core-log", "--core-log-level=warn", "--check", path.toString()}));
+            assertEquals(dev.oreslang.runtime.CoreLog.Level.WARN,
+                    dev.oreslang.runtime.CoreLog.currentLevel());
+        } finally {
+            dev.oreslang.runtime.CoreLog.configure(dev.oreslang.runtime.CoreLog.Level.OFF);
+        }
     }
 
     @Test void integerMainReturnsZero() throws Exception {

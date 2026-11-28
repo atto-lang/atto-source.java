@@ -1,0 +1,31 @@
+// Host-neutral dense32 LOGICAL index codec extracted from
+// ManagedReferencePolicy.java; byte representation and ref-table authority
+// remain owned by each runtime. 0 is reserved; -1 denotes decoded absence.
+define module dense_index as
+  pub fnc valid_index(int index): bool {
+    return index >= 0 && index <= 4294967294;
+  }
+
+  pub fnc valid_word(int unsigned_word): bool {
+    return unsigned_word >= 0 && unsigned_word <= 4294967295;
+  }
+
+  pub fnc encode32(int index): Result<int, String> {
+    if !valid_index(index); do
+      return Err("dense32: logical index outside unsigned range");
+    fi
+    return Ok(index + 1);
+  }
+
+  pub fnc decode32(int unsigned_word): Result<int, String> {
+    if !valid_word(unsigned_word); do
+      return Err("dense32: invalid unsigned storage word");
+    fi
+    if unsigned_word == 0; do return Ok(-1); fi
+    return Ok(unsigned_word - 1);
+  }
+
+  pub fnc is_null_word(int unsigned_word): bool {
+    return unsigned_word == 0;
+  }
+end

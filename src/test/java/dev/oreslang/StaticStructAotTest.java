@@ -160,7 +160,7 @@ final class StaticStructAotTest {
                   return;
                 }
                 """);
-        assertEquals("infer struct{first=1, second=2, third=3}", output);
+        assertEquals("{first=1, second=2, third=3}", output);
     }
 
     @Test
@@ -173,18 +173,13 @@ final class StaticStructAotTest {
                 }
                 """));
 
-        IllegalArgumentException mutation = assertThrows(
-                IllegalArgumentException.class,
-                () -> check("""
-                        fnc bad(): void {
-                          const mut value = infer struct{foo: "bar"};
-                          value.foo = "baz";
-                          return;
-                        }
-                        """));
-        assertTrue(mutation.getMessage().contains("readonly")
-                        || mutation.getMessage().contains("infer struct"),
-                mutation.getMessage());
+        assertDoesNotThrow(() -> check("""
+                fnc ok(): string {
+                  const mut value = infer struct{foo: "bar"};
+                  value.foo = "baz";
+                  return value.foo;
+                }
+                """));
     }
 
     private static dev.oreslang.ast.Ast.Program check(String source) {

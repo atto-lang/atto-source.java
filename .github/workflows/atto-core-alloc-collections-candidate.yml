@@ -1,0 +1,68 @@
+name: Atto core noalloc and collection borrow compiler admission (NO guest parity)
+on:
+  pull_request:
+    paths:
+      - 'stdlib/core/**'
+      - 'stdlib/alloc/text_*.atto'
+      - 'stdlib/std/collections.atto'
+      - 'tests/core_alloc_collections_source_only.test.mjs'
+      - 'tests/fixtures/core-alloc-ownership/**'
+      - 'src/test/java/dev/oreslang/AttoCoreAllocCollectionsBorrowAdmissionTest.java'
+      - '.github/workflows/atto-core-alloc-collections-candidate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-compiler-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR head without persisted token
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Authenticate source SHA, root tree and file blobs
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          printf 'SHA=%s\nTREE=%s\n' "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')"
+          for path in stdlib/core/convert.atto stdlib/core/fmt.atto \
+            stdlib/alloc/text_convert.atto stdlib/alloc/text_fmt.atto \
+            stdlib/std/collections.atto; do
+            test "$(git rev-parse "HEAD:$path")" = "$(git hash-object --no-filters "$path")"
+          done
+      - name: Set up Node 22 for source-only admission
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - name: Source-only core purity and borrow fixture manifest
+        run: node --test tests/core_alloc_collections_source_only.test.mjs
+      - name: Set up GraalVM Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Execute real parser and semantic ownership JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp '-P!native-thread-unix' \
+            -Dtest=AttoCoreAllocCollectionsBorrowAdmissionTest \
+            -Dsurefire.failIfNoSpecifiedTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.AttoCoreAllocCollectionsBorrowAdmissionTest.xml
+          echo 'EVIDENCE=JAVA_PARSER_AND_TYPECHECK_ONLY GUEST_RUNTIME=NOT_EXECUTED AOT=NOT_EXECUTED'
+      - name: Preserve JUnit results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: core-alloc-borrow-admission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/surefire-reports/TEST-dev.oreslang.AttoCoreAllocCollectionsBorrowAdmissionTest.xml
+          if-no-files-found: warn
+          retention-days: 7

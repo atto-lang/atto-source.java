@@ -1,0 +1,205 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Deterministic retirement state machine tests requiring no Graal image. */
+final class VerifiedCloseFenceTest {
+    @Test
+    void twoConcurrentClosersWaitForOnePhysicalTeardown() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger closes = new AtomicInteger();
+        VerifiedCloseFence fence = new VerifiedCloseFence(() -> {
+            closes.incrementAndGet();
+            entered.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test release timeout");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("test interrupted");
+            }
+        });
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> first = executor.submit(() ->
+                    fence.awaitConfirmedClose("test Context"));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            CountDownLatch secondEntered = new CountDownLatch(1);
+            Future<?> second = executor.submit(() -> {
+                secondEntered.countDown();
+                fence.awaitConfirmedClose("test Context");
+            });
+            assertTrue(secondEntered.await(5, TimeUnit.SECONDS));
+            assertEquals(1, closes.get());
+            assertFalse(first.isDone(), "physical close has not returned");
+            assertFalse(second.isDone(), "concurrent close must await confirmation");
+            release.countDown();
+            first.get(5, TimeUnit.SECONDS);
+            second.get(5, TimeUnit.SECONDS);
+            fence.awaitConfirmedClose("test Context");
+            assertEquals(1, closes.get(), "never close twice");
+        } finally {
+            release.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void failedTeardownNeverReportsSuccessOrRetriesAllocation() {
+        AtomicInteger calls = new AtomicInteger();
+        VerifiedCloseFence fence = new VerifiedCloseFence(() -> {
+            calls.incrementAndGet();
+            throw new IllegalArgumentException("untrusted guest internal secret");
+        });
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var error = assertThrows(IllegalStateException.class,
+                    () -> fence.awaitConfirmedClose("isolated Context"));
+            assertTrue(error.getMessage().contains("capacity remains reserved"));
+            assertFalse(error.getMessage().contains("secret"));
+            assertNull(error.getCause(), "guest failure must not leak via cause chain");
+        }
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    void interruptionCannotTurnAStillClosingContextIntoAConfirmedClose()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        VerifiedCloseFence fence = new VerifiedCloseFence(() -> {
+            entered.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("timeout");
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("closer interrupted");
+            }
+        });
+        Thread physical = new Thread(() -> fence.awaitConfirmedClose("Context"));
+        physical.start();
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        AtomicInteger refused = new AtomicInteger();
+        Thread other = new Thread(() -> {
+            Thread.currentThread().interrupt();
+            try {
+                fence.awaitConfirmedClose("Context");
+            } catch (IllegalStateException error) {
+                if (Thread.currentThread().isInterrupted()
+                        && error.getMessage().contains("interrupted")) {
+                    refused.incrementAndGet();
+                }
+            }
+        });
+        try {
+            other.start();
+            other.join(5000);
+            assertFalse(other.isAlive());
+            assertEquals(1, refused.get());
+            assertTrue(physical.isAlive());
+        } finally {
+            release.countDown();
+            physical.join(5000);
+            other.join(5000);
+        }
+        assertFalse(physical.isAlive());
+        fence.awaitConfirmedClose("Context");
+    }
+
+    @Test
+    void vmFatalFromRetireSurvivesFutureTaskAndAllSubsequentCloseCalls() {
+        AtomicInteger physicalCalls = new AtomicInteger();
+        LinkageError fatal = new LinkageError("host VM linker failure");
+        VerifiedCloseFence fence = new VerifiedCloseFence(() -> {
+            physicalCalls.incrementAndGet();
+            throw fatal;
+        });
+        for (int i = 0; i < 3; i++) {
+            assertSame(fatal, assertThrows(LinkageError.class,
+                    () -> fence.awaitConfirmedClose("untrusted Engine")),
+                    "VM-fatal identity must not be hidden by the close fence");
+        }
+        assertEquals(1, physicalCalls.get(), "retirement remains exactly once");
+    }
+
+    @Test
+    void nonFatalErrorCannotLeakGuestDetailsAcrossHostFence() {
+        VerifiedCloseFence fence = new VerifiedCloseFence(() -> {
+            throw new AssertionError("private guest contents");
+        });
+        IllegalStateException report = assertThrows(IllegalStateException.class,
+                () -> fence.awaitConfirmedClose("untrusted Context"));
+        assertTrue(report.getMessage().contains("capacity remains reserved"));
+        assertFalse(report.getMessage().contains("guest"));
+        assertNull(report.getCause(), "nonfatal guest errors must be sanitized");
+        assertEquals(0, report.getSuppressed().length);
+    }
+
+    @Test
+    void fatalRetirementFailureBeatsOrdinarySiblingFailureWithoutLosingEvidence() {
+        IllegalStateException ordinary = new IllegalStateException("sanitized context failure");
+        LinkageError vmFatal = new LinkageError("vm fatal");
+        Throwable failure = VerifiedCloseFence.mergeRetirementFailure(null, ordinary);
+        failure = VerifiedCloseFence.mergeRetirementFailure(failure, vmFatal);
+        assertSame(vmFatal, failure);
+        assertArrayEquals(new Throwable[]{ordinary}, vmFatal.getSuppressed());
+        RuntimeException sibling = new IllegalStateException("other closed context failed");
+        failure = VerifiedCloseFence.mergeRetirementFailure(failure, sibling);
+        assertSame(vmFatal, failure);
+        assertEquals(2, vmFatal.getSuppressed().length);
+        assertSame(sibling, vmFatal.getSuppressed()[1]);
+        Throwable finalFailure = failure;
+        assertSame(vmFatal, assertThrows(LinkageError.class,
+                () -> VerifiedCloseFence.rethrowRetirementFailure(finalFailure)));
+        assertSame(vmFatal, VerifiedCloseFence.mergeRetirementFailure(vmFatal, vmFatal),
+                "self merge must not create a throwable suppression cycle");
+        assertFalse(VerifiedCloseFence.isVmFatal(new AssertionError("ordinary nonfatal")));
+        assertTrue(VerifiedCloseFence.isVmFatal(vmFatal));
+    }
+    @Test
+    void fatalFailedSpawnTeardownTakesPrecedenceWithoutGuestExceptionLeakage() {
+        var guest = new IllegalStateException("guest source: private tenant implementation");
+        var fatal = new LinkageError("host native isolate close failed");
+        Throwable chosen = VerifiedCloseFence.preferFatalSpawnCleanup(guest, fatal);
+        assertSame(fatal, chosen, "fatal Engine/Context retirement must stay VM-fatal");
+        assertEquals(1, chosen.getSuppressed().length);
+        assertNotSame(guest, chosen.getSuppressed()[0],
+                "do not attach raw guest throwable to host fatal error");
+        assertFalse(chosen.getSuppressed()[0].getMessage().contains("private tenant"));
+        assertNull(chosen.getSuppressed()[0].getCause());
+        assertSame(fatal, assertThrows(LinkageError.class,
+                () -> VerifiedCloseFence.rethrowRetirementFailure(chosen)));
+    }
+
+    @Test
+    void ordinaryFailedSpawnTeardownStaysSanitizedAndReservesSlot() {
+        var rejectedGuest = new IllegalArgumentException("untrusted guest data");
+        var cleanup = new IllegalStateException("guest leaked cleanup details");
+        Throwable chosen = VerifiedCloseFence.preferFatalSpawnCleanup(rejectedGuest, cleanup);
+        assertSame(rejectedGuest, chosen, "original admission failure remains primary");
+        assertEquals(1, chosen.getSuppressed().length);
+        assertNotSame(cleanup, chosen.getSuppressed()[0]);
+        assertTrue(chosen.getSuppressed()[0].getMessage().contains("reservation retained"));
+        assertNull(chosen.getSuppressed()[0].getCause());
+    }
+
+    @Test
+    void alreadyFatalSpawnFailureCannotBeDemotedByCleanup() {
+        var admission = new OutOfMemoryError("VM failure during admission");
+        var later = new LinkageError("VM failure during close");
+        assertSame(admission,
+                VerifiedCloseFence.preferFatalSpawnCleanup(admission, later));
+        assertEquals(1, admission.getSuppressed().length);
+        assertNotSame(later, admission.getSuppressed()[0]);
+    }
+
+}

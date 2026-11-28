@@ -1,0 +1,9 @@
+// Internal materialization proof cannot be supplied by guest code.
+import class IntHashSet from "atto.alloc/set";
+pub fnc main(): int {
+  let mut IntHashSet a = new IntHashSet(4);
+  let mut IntHashSet b = new IntHashSet(4);
+  a.insert(-1);
+  let mut IntHashSet result = a.materialize_xor(rt borrow b, 4, 0);
+  return result.len();
+}

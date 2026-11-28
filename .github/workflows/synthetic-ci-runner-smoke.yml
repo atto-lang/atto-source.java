@@ -1,0 +1,41 @@
+name: Synthetic CI runner smoke
+
+on:
+  push:
+    branches:
+      - ci/synthetic-policy-smoke-20261020
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Source-free admission proof. No checkout, credentials, or security-test claims.
+permissions: {}
+
+jobs:
+  synthetic-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Prove actual runner allocation and command execution
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test -n "${RUNNER_NAME:-}"
+          test -n "${RUNNER_OS:-}"
+          [[ "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EXPECTED_REPOSITORY_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EXPECTED_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EXPECTED_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]
+          test "${GITHUB_REPOSITORY}" = "${EXPECTED_REPOSITORY}"
+          test "${GITHUB_RUN_ID}" = "${EXPECTED_RUN_ID}"
+          test "${GITHUB_RUN_ATTEMPT}" = "${EXPECTED_RUN_ATTEMPT}"
+          printf 'SOURCE_FREE_RUNNER_STEP_EXECUTED repo=%s sha=%s run=%s attempt=%s runner=%s os=%s\n' \
+            "${EXPECTED_REPOSITORY}" "${GITHUB_SHA}" "${EXPECTED_RUN_ID}" \
+            "${EXPECTED_RUN_ATTEMPT}" "${RUNNER_NAME}" "${RUNNER_OS}"
+          echo 'Only runner admission is proved; compiler, policy, ownership, and AOT tests remain separate.'

@@ -1,0 +1,49 @@
+name: Native Atto std WebSocket QUIC compute Java JIT guest
+on:
+  pull_request:
+    paths:
+      - 'stdlib/std/**'
+      - 'tests/stdlib/**'
+      - 'src/test/java/dev/oreslang/AttoStdWebsocketQuicComputeGuestTest.java'
+      - '.github/workflows/std-java-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  atto-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Prove exact immutable compiler and guest head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "ATTO_STD_JAVA_GUEST_HEAD=$EXPECTED_HEAD"
+          git rev-parse 'HEAD^{tree}'
+      - name: Check Atto source contract and negative mutations (not guest proof)
+        run: node --test tests/stdlib/source_contract.test.mjs
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Compile and execute genuine 37+109 Atto JIT guests with fault injection
+        run: >-
+          mvn -B -ntp
+          -Dtest=AttoStdWebsocketQuicComputeGuestTest
+          -DfailIfNoTests=true
+          clean test
+      - name: Require 5 actual non-skipped JUnit cases
+        run: |
+          set -euo pipefail
+          report=target/surefire-reports/TEST-dev.oreslang.AttoStdWebsocketQuicComputeGuestTest.xml
+          test -s "$report"
+          test "$(grep -c '<testcase ' "$report")" -eq 5
+          if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then exit 1; fi
+          echo "ATTO_STD_JAVA_GUEST_EXECUTED=head=$(git rev-parse HEAD) tests=5 guest_checks=146"

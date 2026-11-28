@@ -51,6 +51,8 @@ final class ActorContinuationCapacityTest {
                     () -> new AssertionError("1025th control reservation must be rejected"));
             assertTrue(failure.getMessage().contains("continuation queue overflow"),
                     () -> "unexpected failure: " + failure);
+            assertTrue(failure.getMessage().contains("source task cleanup"),
+                    "source Task admission must retain its distinct control-lane diagnostic");
             assertEquals(1025, attempted.get(), "the exact 1025th reservation is the failing boundary");
             assertEquals(0, taskBodies.get(), "no queued source task may run after fail-stop");
         }

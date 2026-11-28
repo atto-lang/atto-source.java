@@ -1,0 +1,355 @@
+{
+  "schema_version": "1.0.0-design",
+  "created": "2026-10-18",
+  "status": "DESIGN_ONLY_NOT_EXECUTABLE",
+  "canonical_doc": "docs/HTTP_RESPONSE_FETCH_API_V1.md",
+  "source_backends": [
+    "java-graalvm",
+    "llvm-native"
+  ],
+  "evidence_note": "These are target cases and were not executed against either Oreslang backend. Linting this JSON is not a compiler or transport conformance result.",
+  "cases": [
+    {
+      "id": "HTTP-RSP-001",
+      "expected": "accept",
+      "description": "construct empty 200 with zero-argument constructor",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-002",
+      "expected": "accept",
+      "description": "construct UTF-8 string body with automatic text/plain Content-Type",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-003",
+      "expected": "accept",
+      "description": "set status 201 and explicit case-insensitive response headers",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-004",
+      "expected": "accept",
+      "description": "return HttpResponse.json using a statically checked codec",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-005",
+      "expected": "accept",
+      "description": "return HttpResponse.redirect with valid redirect status and Location",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-006",
+      "expected": "accept",
+      "description": "return owned readable byte stream without awaiting its EOF",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-007",
+      "expected": "accept",
+      "description": "announce Content-Digest and emit it as a trailing field after EOF",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-008",
+      "expected": "accept",
+      "description": "preserve distinct Set-Cookie headers without comma folding",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-009",
+      "expected": "accept",
+      "description": "HEAD preserves metadata but suppresses and cancels body delivery",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-010",
+      "expected": "accept",
+      "description": "construct empty 204 using HttpResponse.empty(init)",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-011",
+      "expected": "accept",
+      "description": "construct empty 205 using HttpResponse.empty(init)",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-012",
+      "expected": "accept",
+      "description": "construct empty 304 using HttpResponse.empty(init)",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-013",
+      "expected": "accept",
+      "description": "valid body producer remains request-supervised after run returns",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-014",
+      "expected": "accept",
+      "description": "separate data-only unary scalar reply still uses versioned JSON codec",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-015",
+      "expected": "accept",
+      "description": "one terminal response completion closes admission and trace once",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-016",
+      "expected": "reject",
+      "description": "constructor rejects HTTP status below 200 or above 599",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-017",
+      "expected": "reject",
+      "description": "constructor rejects even an empty string body for 204",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-018",
+      "expected": "reject",
+      "description": "constructor rejects body for 205 and 304",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-019",
+      "expected": "reject",
+      "description": "guest injects Transfer-Encoding or Content-Length framing headers",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-020",
+      "expected": "reject",
+      "description": "header value with CR LF or NUL control character",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-021",
+      "expected": "reject",
+      "description": "invalid HTTP header field-name token or pseudo-header",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-022",
+      "expected": "reject",
+      "description": "trailer future without declared trailerNames",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-023",
+      "expected": "reject",
+      "description": "trailer name not previously announced in trailerNames",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-024",
+      "expected": "reject",
+      "description": "trailer field used for routing/authentication or forbidden framing",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-025",
+      "expected": "abort",
+      "description": "trailer future rejects or times out after headers commit",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-026",
+      "expected": "abort",
+      "description": "client disconnect cancels stream and trailer producer once",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-027",
+      "expected": "reject",
+      "description": "response stream or HttpMessage stored in actor persistent state",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-028",
+      "expected": "reject",
+      "description": "returned HttpResponse sent through ordinary ActorMail as transferable payload",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-029",
+      "expected": "reject",
+      "description": "actor writes a response then returns a second HttpResponse",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-030",
+      "expected": "reject",
+      "description": "post-handoff response header/status mutation",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-031",
+      "expected": "reject",
+      "description": "same-arity overloaded HttpResponse constructors with different argument types",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-032",
+      "expected": "reject",
+      "description": "untrusted actor attempts to return raw host stream or socket capability",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-033",
+      "expected": "abort",
+      "description": "actor panic after commit aborts the stream without second status line",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-034",
+      "expected": "reject",
+      "description": "unsupervised background producer outlives request lease",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-035",
+      "expected": "reject",
+      "description": "HTTP/1.1 trailers requested without support or client allowance under fail-closed policy",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-036",
+      "expected": "accept",
+      "description": "slow client byte credits bound body pulling and buffered memory",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-037",
+      "expected": "reject",
+      "description": "204 response constructor with stream body despite expected zero bytes",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    },
+    {
+      "id": "HTTP-RSP-038",
+      "expected": "reject",
+      "description": "trailer with forbidden case-insensitive duplicate field name",
+      "backend_status": {
+        "java-graalvm": "not_verified",
+        "llvm-native": "not_verified"
+      }
+    }
+  ]
+}

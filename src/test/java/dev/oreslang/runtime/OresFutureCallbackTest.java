@@ -11,6 +11,30 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresFutureCallbackTest {
 
     @Test
+    void failedCancellationHookRetainsFailureWithoutSuppressingSubscribers() {
+        IllegalStateException revocationFailure =
+                new IllegalStateException("physical revocation did not complete");
+        java.util.concurrent.atomic.AtomicInteger observed = new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = new OresFuture<>(() -> {
+            throw revocationFailure;
+        });
+        future.whenCompleteRuntime((value, failure) -> {
+            assertNull(value);
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            observed.incrementAndGet();
+        });
+        assertTrue(future.cancel(false));
+        assertTrue(future.isCancelled(),
+                "terminal cancellation remains authoritative despite failing hook");
+        assertSame(revocationFailure, future.cancellationHookFailureFromRuntime(),
+                "the actor must be able to quarantine a failed physical revoker");
+        assertEquals(1, observed.get(),
+                "failing revoker must not suppress independent terminal subscribers");
+        assertFalse(future.cancel(false), "revocation hook and failure receipt are single shot");
+        assertSame(revocationFailure, future.cancellationHookFailureFromRuntime());
+    }
+
+    @Test
     void fromCallbackMaySettleSynchronouslyButRemainsSingleShot() throws Exception {
         AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
 

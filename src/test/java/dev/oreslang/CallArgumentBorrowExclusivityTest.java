@@ -61,7 +61,7 @@ final class CallArgumentBorrowExclusivityTest {
         rejectsAsConflictingLoan("""
                 fnc bad(): int {
                   val Cell cell = new Cell();
-                  return writePair(rt borrow mut cell, rt borrow mut cell);
+                  return writePair(rt mut borrow cell, rt mut borrow cell);
                 }
                 """);
     }
@@ -71,7 +71,7 @@ final class CallArgumentBorrowExclusivityTest {
         rejectsAsConflictingLoan("""
                 fnc bad(): int {
                   val Cell cell = new Cell();
-                  return readWritePair(rt borrow cell, rt borrow mut cell);
+                  return readWritePair(rt borrow cell, rt mut borrow cell);
                 }
                 """);
     }
@@ -91,8 +91,8 @@ final class CallArgumentBorrowExclusivityTest {
                 fnc good(): int {
                   val Cell left = new Cell();
                   val Cell right = new Cell();
-                  val first = writePair(rt borrow mut left, rt borrow mut right);
-                  val second = writePair(rt borrow mut left, rt borrow mut right);
+                  val first = writePair(rt mut borrow left, rt mut borrow right);
+                  val second = writePair(rt mut borrow left, rt mut borrow right);
                   return first + second;
                 }
                 """);
@@ -105,7 +105,7 @@ final class CallArgumentBorrowExclusivityTest {
                   val Cell cell = new Cell();
                   val result = readPair(rt borrow cell, rt borrow cell);
                   val other = new Cell();
-                  return writePair(rt borrow mut cell, rt borrow mut other) + result;
+                  return writePair(rt mut borrow cell, rt mut borrow other) + result;
                 }
                 """);
     }

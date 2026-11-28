@@ -1,6 +1,9 @@
 # Native-first Oreslang core implementation
 
-Oreslang's core implementation is **Oreslang-first**.
+AttoLang's core implementation is **AttoLang-first**.
+New core and standard-library semantics should be authored in canonical `.atto`
+source. Legacy `.ores` remains a compatibility input while migration proceeds.
+The extension alone does not prove compiled guest execution.
 
 The host JVM and Graal/Truffle remain implementation substrates for parsing, AST/Truffle nodes,
 embedding, compilation, context management, and bootstrapping. They are not the preferred place to
@@ -9,7 +12,7 @@ implement Oreslang standard-library semantics.
 ## Layering
 
 1. **Oreslang source owns language/library semantics**
-   - canonical source files live under repository-root `stdlib/**/*.ores` and are imported as `std/*`;
+   - canonical source files live under repository-root `stdlib/**/*.{atto,ores}` and are imported as `std/*`;
    - functions, collections algorithms, streams, protocol logic, networking state machines, file APIs,
      synchronization APIs, and user-visible behavior should be written in Oreslang where the language
      can express them safely;
@@ -59,7 +62,7 @@ for a missing primitive only when it:
 ## Built-in core modules
 
 `LinkedProgramRunner` resolves imports beginning with `std/` from compiler-owned Oreslang source
-resources. The canonical editable sources are `stdlib/**/*.ores`; Maven packages them under the
+resources. The canonical editable sources are `stdlib/**/*.{atto,ores}`; Maven packages them under the
 collision-resistant classpath prefix `dev/oreslang/std/`. These modules are parsed, type-checked, linked, tree-shaken, and executed like ordinary
 Oreslang units.
 
@@ -78,7 +81,7 @@ This makes "native-first" mechanically enforceable rather than a style recommend
 Every new user-visible runtime/library feature should answer these questions before adding Java:
 
 1. Is this parser/type/effect/lowering, scheduler/isolate/GC, capability enforcement, or a native-handle adapter?
-2. Can the same behavior be expressed safely as an Oreslang `stdlib/**/*.ores` module?
+2. Can the same behavior be expressed safely as an Oreslang `stdlib/**/*.{atto,ores}` module?
 3. If Java is required, is the Java surface smaller than the user-visible feature?
 4. If JNI/native code is required, are descriptors, pointers and device handles hidden behind opaque generation-safe values?
 5. Do JIT, AOT, hybrid and isolate modes execute the same Oreslang stdlib semantics?
@@ -88,8 +91,8 @@ If (2) is yes, the behavior belongs in Oreslang first. Java convenience librarie
 The intended layering is:
 
 ```text
-application .ores
-  -> std/*.ores
+application .atto
+  -> std/*.{atto,ores}
   -> narrow runtime intrinsic
   -> Java/Truffle host kernel
   -> JNI/native OS or device primitive when required
@@ -118,3 +121,13 @@ cannot invent a new `std/*` import. When adding a standard-library module,
 update the loader registry together with the native Oreslang source.
 The JUnit source/registry equality test rejects both forgotten registration
 and stale registry entries.
+
+
+## Canonical AttoLang stdlib slice (2026-11-04)
+
+`stdlib/bounds.atto` owns integer interval checking, overlap and checked
+clamping policy without Java host behavior. Extensionless `std/bounds` and
+`ores.std/bounds` resolve to the canonical source; explicit `.ores` remains
+an authoritative suffix and cannot silently select an `.atto` module.
+The stdlib boundary audit scans both source extensions and rejects duplicate
+module stems. Compiled guest and cross-backend parity remain separate gates.

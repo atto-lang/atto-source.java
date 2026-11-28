@@ -1,0 +1,22 @@
+fnc option_value(Option<bool> value): int {
+    match value over
+        on Some(true) -> { return 1; }
+        on Some(false) -> { return 2; }
+        on None -> { return 0; }
+    end
+}
+fnc result_value(Result<bool, bool> value): int {
+    match value over
+        on Ok(true) -> { return 3; }
+        on Ok(false) -> { return 4; }
+        on Err(true) -> { return 5; }
+        on Err(false) -> { return 6; }
+    end
+}
+pub fnc main(): void {
+    stdio.println(option_value(Some(true)));
+    stdio.println(option_value(None));
+    stdio.println(result_value(Ok(true)));
+    stdio.println(result_value(Err(false)));
+    return;
+}

@@ -21,6 +21,31 @@ rejects `--mode=jit` and `--mode=hybrid`; a hybrid image accepts `--mode=hybrid`
 supports it. JVM execution profiles remain available for policy testing, but do
 not turn the JVM process into a native executable.
 
+## Fail-closed guest-AOT and guest-memory admission
+
+`--build-info` now reports independent Boolean certifications:
+`full_guest_aot_proven`, `zero_guest_tracing_gc_proven`, and
+`zero_process_gc_proven`. **All three are currently false** in JVM,
+native-aot and native-hybrid. The host binary mode, 32-bit compressed
+Java references, `--gc=epsilon`, an interpreter without a JIT and an
+off-heap actor region are not substitute witnesses.
+
+For a deployment requiring compiler-produced native guest machine code,
+pass `--require-full-guest-aot`. For a deployment that must have proved
+compiler-directed source allocations/drops without guest tracing GC, pass
+`--require-zero-guest-tracing-gc`. These optional requirements **currently
+fail with usage status 2 before guest source is opened or executed**, even
+if a host-only Native Image build succeeds. They are explicit admission
+contracts, not switches to magically enable unsupported capabilities.
+
+Future promotion needs immutable compiler-generated code identity and
+artifact linkage, complete owned-object/continuation/FFI-drop semantics,
+actual native guest execution, long-lived actor churn/allocation measurements
+and independent exact-head evidence. No runtime property or CLI option can
+override the proof status. Near-zero *process* GC is a quantitative benchmark
+goal; process zero-GC must not be inferred from Epsilon's zero collections
+because its managed allocations are not reclaimed.
+
 AOT-only uses Truffle's fallback runtime: the interpreter and reachable Java
 runtime libraries are native code, without a guest JIT. **This does not lower
 all Oreslang handlers to application-specific machine code at build time.**

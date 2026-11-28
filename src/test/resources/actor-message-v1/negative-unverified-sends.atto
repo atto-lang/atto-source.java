@@ -1,0 +1,4 @@
+// Until transitive effects are implemented, explicit sends is fail-closed.
+define actor Router receives String sends int as
+  receive(ActorMail<String> mail): void { return; }
+end
