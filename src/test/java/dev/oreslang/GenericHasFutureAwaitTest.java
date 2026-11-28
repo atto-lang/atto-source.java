@@ -200,6 +200,40 @@ final class GenericHasFutureAwaitTest {
     }
 
     @Test
+    void scheduledExplicitFutureMethodPreservesSingleFuturePayload() throws Exception {
+        String source = """
+                async fnc answer(): int { return 42; }
+                define class Provider as
+                    pub get_future(): Future<int> {
+                        stdio.stdout.write("M");
+                        return answer();
+                    }
+                    pub static fnc supply(): Future<int> {
+                        stdio.stdout.write("S");
+                        return answer();
+                    }
+                end
+                pub fnc main(): void {
+                    let Provider p = new Provider();
+                    val Future<int> first = p.get_future();
+                    val int a = await first;
+                    val Future<int> second = Provider.supply();
+                    val int b = await second;
+                    stdio.stdout.write(a + b);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "method-future-envelope.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("MS84", stdout.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void allowsRepeatedAwaitOfNamedCapabilityWithoutMovingItsReceiver() throws Exception {
         String source = """
                 define trait HasFuture<T> as
