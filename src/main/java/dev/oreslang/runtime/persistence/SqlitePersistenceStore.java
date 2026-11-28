@@ -145,8 +145,9 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
     }
     /**
      * Called only by the trusted batch writer after commit(). The receipt
-     * alone never authorizes state publication. Both the current epoch fence
-     * and the exact durable operation record are read in one SQLite snapshot.
+     * alone never authorizes state publication. A short SQLite IMMEDIATE
+     * transaction serializes the current epoch fence and durable operation
+     * record against competing epoch grants and writes.
      */
     @Override public synchronized boolean verifyDurableCommit(Write write, Result receipt)
             throws SQLException {
@@ -163,7 +164,8 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
                 || !receipt.operationId().equals(write.operationId())
                 || write.expectedVersion() == Long.MAX_VALUE
                 || receipt.version() != write.expectedVersion() + 1L) return false;
-        execute("BEGIN");
+        // The JDBC blocking path is restricted to the trusted storage worker.
+        begin();
         try {
             boolean valid = false;
             if (epoch(id) == write.epoch()) {
@@ -195,17 +197,17 @@ public final class SqlitePersistenceStore implements Store, AutoCloseable {
         }
     }
     /**
-     * Activation-scoped restore. Fence lookup and all recovered data reads
-     * share one SQLite read snapshot, so another connection cannot change the
-     * epoch between the authorization check and subsequent state queries.
-     * A trusted host may still call load() for migration or inspection;
-     * actor reactivation must use this fenced entry point instead.
+     * Activation-scoped restore. A short SQLite IMMEDIATE transaction
+     * serializes fence validation and recovered state reads against competing
+     * writers; no connection can rotate epoch between the fence and journal
+     * reads. A trusted host may still use load() for inspection; actor
+     * reactivation must use this fenced entry point instead.
      */
     public synchronized Recovery loadFenced(Identity id, long trustedEpoch) throws SQLException {
         checkOpen();
         Objects.requireNonNull(id);
         if (trustedEpoch <= 0) throw new IllegalArgumentException("invalid restore epoch");
-        execute("BEGIN");
+        begin();
         try {
             if (epoch(id) != trustedEpoch) throw new SecurityException("STALE_EPOCH");
             Recovery restored = readRestoreWithinCurrentTransaction(id);

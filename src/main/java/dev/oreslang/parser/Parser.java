@@ -9386,7 +9386,18 @@ public final class Parser {
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
         // '_' discards one argument slot; two underscores are independent,
-        // never a duplicate lexical binding. Private '
+        // never a duplicate lexical binding. Private '$' names cannot be
+        // written by source users and preserve positional call ABI/arity.
+        // Leave named parameters unchanged so existing duplicate rejection
+        // and contextual type inference retain their behavior.
+        for (int i = 0; i < params.size(); i++) {
+            Ast.Param param = params.get(i);
+            if (param.name().equals("_")) {
+                params.set(i, new Ast.Param(param.type(),
+                        "$ignored_lambda_" + i, param.structural(), param.mutable()));
+            }
+        }
+        // Both |params| -> void { ... } and |params| : void -> { ... }
         // declare the same result. Do not reinterpret ':' as a parameter
         // delimiter after the closing pipe, or silently drop the result.
         if (match(COLON)) {
@@ -9481,7 +9492,7 @@ public final class Parser {
             Token.Type first = tokens.get(current + 1).type();
             if (first == NB || first == AWAIT || first == READCH
                     || first == WRITECH || first == RT || first == TRAP
-                    || first == TRY || first == SELECT || first == BANG || first == UNICODE_NOT) {
+                    || first == TRY || first == SELECT || first == BANG) {
                 return false;
             }
         }
@@ -9495,144 +9506,6 @@ public final class Parser {
             }
         }
         return false;
-    }
-
-    // Candidate recursive-product-v1: token-local Record dispatch. Do not use
-    // expression assignment or expected types to classify a field.
-    private boolean startsParenthesizedRecordItem() {
-        return ((check(IDENT) || check(STRING)) && checkNext(EQUAL))
-                || (check(IDENT) && checkNext(COLON))
-                || (check(COLON) && checkNext(IDENT));
-    }
-
-    private boolean startsInlinePairRecordItem() {
-        return check(IDENT) && checkNext(COLON_ASSIGN);
-    }
-
-    private boolean pairPrefixHasNamedRecordItem() {
-        int depth = 0;
-        boolean start = true;
-        for (int i = current; i < tokens.size(); i++) {
-            Token.Type t = tokens.get(i).type();
-            if (depth == 0 && start) {
-                Token.Type next = i + 1 < tokens.size() ? tokens.get(i + 1).type() : EOF;
-                if ((t == IDENT && (next == EQUAL || next == COLON))
-                        || (t == STRING && next == EQUAL) || (t == COLON && next == IDENT))
-                    return true;
-                start = false;
-            }
-            if (t == LPAREN || t == LBRACE || t == LBRACKET) depth++;
-            else if (t == RPAREN || t == RBRACE || t == RBRACKET) {
-                if (depth == 0) return false;
-                depth--;
-            } else if (t == EOF) return false;
-            else if (t == COMMA && depth == 0) start = true;
-        }
-        return false;
-    }
-
-    private String checkedQuotedRecordLabel(Token label) {
-        if (label.stringQuote() != '"')
-            throw error(label, "E_RECORD_LABEL: expected ordinary double-quoted identifier label");
-        List<Token> decoded;
-        try {
-            decoded = new Lexer(label.lexeme()).scan();
-        } catch (IllegalArgumentException invalid) {
-            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
-        }
-        if (decoded.size() != 2 || decoded.getFirst().type() != IDENT
-                || !decoded.getFirst().lexeme().equals(label.lexeme())
-                || label.lexeme().codePoints().anyMatch(Character::isISOControl))
-            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
-        return label.lexeme();
-    }
-
-    private Ast.Expr parseRecordFieldValue() {
-        // An ungrouped second '=' cannot be a hidden assignment expression.
-        Ast.Expr value = parsePipeline();
-        if (check(EQUAL))
-            throw error(peek(), "E_RECORD_FIELD: assignment is not a Record field value");
-        return value;
-    }
-
-    private Ast.ObjectExpr parseParenthesizedRecord() {
-        List<Ast.ObjectField> fields = new ArrayList<>();
-        java.util.Set<String> names = new java.util.LinkedHashSet<>();
-        while (!check(RPAREN)) {
-            if (!startsParenthesizedRecordItem() && !startsInlinePairRecordItem())
-                throw error(peek(), "E_LITERAL_KIND: mixed Record and Tuple items");
-            Token label = peek();
-            String name;
-            Ast.Expr value;
-            if (match(COLON)) {
-                label = consume(IDENT, "expected identifier after Record capture ':'");
-                name = label.lexeme();
-                value = new Ast.NameExpr(name);
-            } else {
-                advance();
-                name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
-                if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
-                else if (!match(EQUAL, COLON, COLON_ASSIGN)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
-                value = parseRecordFieldValue();
-            }
-            if (!names.add(name))
-                throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
-            fields.add(Ast.ObjectField.named(name, value));
-            if (fields.size() > 4096)
-                throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
-            if (!match(COMMA)) break;
-        }
-        consume(RPAREN, "expected ')' after Record literal");
-        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
-    }
-
-    // Bounded canonical Record slice. Inline identifier-key := entries are
-    // consumed as named fields; standalone Pair expression ABI is separate.
-    // Braced quoted-colon Map syntax and empty literal classification remain
-    // separate, unsupported in this slice, rather than silently misclassified.
-    private Ast.ObjectExpr parseAnonymousRecord() {
-        consume(LBRACE, "expected '{' before Record");
-        List<Ast.ObjectField> fields = new ArrayList<>();
-        java.util.Set<String> names = new java.util.LinkedHashSet<>();
-        if (check(RBRACE)) throw error(peek(), "E_LITERAL_KIND: empty anonymous braces require explicit Record syntax");
-        do {
-            Token label = peek();
-            boolean pairEntry = false;
-            if (match(ELLIPSIS)) {
-                fields.add(Ast.ObjectField.spreading(parseRecordFieldValue()));
-            } else {
-                String name;
-                if (match(COLON)) {
-                    label = consume(IDENT, "expected identifier after Record capture ':'");
-                    name = label.lexeme();
-                    if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
-                    fields.add(Ast.ObjectField.named(name, new Ast.NameExpr(name)));
-                } else {
-                    if (!check(IDENT) && !check(STRING))
-                        throw error(label, "E_LITERAL_KIND: expected named Record field or spread");
-                    advance();
-                    name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
-                    if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
-                    else if (match(COLON_ASSIGN)) pairEntry = true;
-                    else if (!match(EQUAL, COLON)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
-                    if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
-                    fields.add(Ast.ObjectField.named(name, parseRecordFieldValue()));
-                }
-            }
-            if (fields.size() > 4096) throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
-            if (!match(COMMA)) {
-                // Lexer string/template tokens retain their start line. Refuse
-                // inferred separation after decoded multiline tokens unless a
-                // comma is explicit, rather than guessing an end line.
-                Token last = previous();
-                boolean multiline = (last.type() == STRING || last.type() == TEMPLATE_LITERAL)
-                        && (last.lexeme().contains("\n") || last.lexeme().contains("\r"));
-                if (pairEntry && !multiline && check(IDENT) && peek().line() > last.line()) continue;
-                break;
-            }
-        } while (!check(RBRACE));
-        consume(RBRACE, "expected '}' after Record literal (fields require commas)");
-        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
     }
 
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
@@ -9650,90 +9523,22 @@ public final class Parser {
                 args.add(new Ast.SpreadExpr(parseExpression()));
                 continue;
             }
-            if (check(IDENT) && (checkNext(COLON) || (canonicalAttoSource && checkNext(EQUAL)))) {
+            if (check(IDENT) && checkNext(COLON)) {
                 namedStarted = true;
                 String name = advance().lexeme();
-                advance(); // ':' or '=' in canonical Atto
+                consume(COLON, "expected ':' after named argument");
                 if (!seenLabels.add(name)) {
                     throw error(previous(), "duplicate named argument '" + name + "'");
                 }
-                args.add(new Ast.NamedArgExpr(name, canonicalAttoSource ? parseRecordFieldValue() : parseExpression()));
+                args.add(new Ast.NamedArgExpr(name, parseExpression()));
                 continue;
             }
             if (namedStarted) {
                 throw error(peek(), "positional arguments cannot follow named arguments");
             }
-            if (canonicalAttoSource && check(STRING) && checkNext(EQUAL)) {
-                Token label = advance();
-                String name = checkedQuotedRecordLabel(label);
-                consume(EQUAL, "expected '=' after quoted Record field");
-                Ast.Expr value = parseRecordFieldValue();
-                args.add(new Ast.ObjectExpr(List.of(Ast.ObjectField.named(name, value)),
-                        Ast.ObjectKind.RECORD, List.of()));
-            } else {
-                args.add(parseExpression());
-            }
+            args.add(parseExpression());
         } while (match(COMMA));
         return List.copyOf(args);
-    }
-
-    // Closed syntax-only shape: cannot enter executable Ast.Expr visitors.
-    private GroupedSpawnOptions<Ast.Expr> parseGroupedSpawnOptions() {
-        advance();
-        consume(LBRACE, "expected '{' after spawn with");
-        List<GroupedSpawnOptions.Group<Ast.Expr>> sections = new ArrayList<>();
-        var seenSections = java.util.EnumSet.noneOf(GroupedSpawnOptions.Section.class);
-        while (!check(RBRACE) && !check(EOF)) {
-            Token section = consume(IDENT, "expected spawn option section");
-            var kind = switch (section.lexeme()) {
-                case "schedule" -> GroupedSpawnOptions.Section.SCHEDULE;
-                case "resources" -> GroupedSpawnOptions.Section.RESOURCES;
-                case "init" -> GroupedSpawnOptions.Section.INIT;
-                default -> throw error(section, "E_SPAWN_OPTION_SECTION: unknown section " + section.lexeme());
-            };
-            if (!seenSections.add(kind))
-                throw error(section, "E_SPAWN_OPTION_DUPLICATE: duplicate section " + section.lexeme());
-            consume(LBRACE, "expected '{' after spawn option section");
-            List<GroupedSpawnOptions.Entry<Ast.Expr>> entries = new ArrayList<>();
-            java.util.Set<String> seenKeys = new java.util.HashSet<>();
-            while (!check(RBRACE) && !check(EOF)) {
-                if (entries.size() >= 256)
-                    throw error(peek(), "E_SPAWN_OPTION_LIMIT: at most 256 entries per section in this parser profile");
-                Token key = consume(IDENT, "expected spawn option key");
-                String field = key.lexeme();
-                if (!seenKeys.add(field))
-                    throw error(key, "E_SPAWN_OPTION_DUPLICATE: duplicate key " + field);
-                GroupedSpawnOptions.ScheduleKey scheduleKey = null;
-                GroupedSpawnOptions.ResourceKey resourceKey = null;
-                switch (kind) {
-                    case SCHEDULE -> scheduleKey = switch (field) {
-                        case "max_parallelism" -> GroupedSpawnOptions.ScheduleKey.MAX_PARALLELISM;
-                        case "affinity" -> GroupedSpawnOptions.ScheduleKey.AFFINITY;
-                        case "pool" -> GroupedSpawnOptions.ScheduleKey.POOL;
-                        default -> throw error(key, "E_SPAWN_OPTION_KEY: unknown schedule key " + field);
-                    };
-                    case RESOURCES -> resourceKey = switch (field) {
-                        case "heap_size" -> GroupedSpawnOptions.ResourceKey.HEAP_SIZE;
-                        case "stack_size" -> GroupedSpawnOptions.ResourceKey.STACK_SIZE;
-                        case "mailbox_capacity" -> GroupedSpawnOptions.ResourceKey.MAILBOX_CAPACITY;
-                        default -> throw error(key, "E_SPAWN_OPTION_KEY: unknown resources key " + field);
-                    };
-                    case INIT -> { }
-                }
-                consume(EQUAL, "expected '=' after spawn option key");
-                Ast.Expr value = parseExpression();
-                entries.add(switch (kind) {
-                    case SCHEDULE -> new GroupedSpawnOptions.ScheduleEntry<>(scheduleKey, value);
-                    case RESOURCES -> new GroupedSpawnOptions.ResourceEntry<>(resourceKey, value);
-                    case INIT -> new GroupedSpawnOptions.InitEntry<>(field, value);
-                });
-                consume(SEMICOLON, "expected ';' after spawn option value");
-            }
-            consume(RBRACE, "expected '}' after spawn option entries");
-            sections.add(new GroupedSpawnOptions.Group<>(kind, entries));
-        }
-        consume(RBRACE, "expected '}' after grouped spawn options");
-        return new GroupedSpawnOptions<>(sections);
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
@@ -10180,4 +9985,203 @@ public final class Parser {
     }
 
     private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean generatorStarred, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
+
+    // ---- restored from the #477 merge splice (they had landed after the class end) ----
+    // Candidate recursive-product-v1: token-local Record dispatch. Do not use
+    // expression assignment or expected types to classify a field.
+    private boolean startsParenthesizedRecordItem() {
+        return ((check(IDENT) || check(STRING)) && checkNext(EQUAL))
+                || (check(IDENT) && checkNext(COLON))
+                || (check(COLON) && checkNext(IDENT));
+    }
+
+    private boolean startsInlinePairRecordItem() {
+        return check(IDENT) && checkNext(COLON_ASSIGN);
+    }
+
+    private boolean pairPrefixHasNamedRecordItem() {
+        int depth = 0;
+        boolean start = true;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type t = tokens.get(i).type();
+            if (depth == 0 && start) {
+                Token.Type next = i + 1 < tokens.size() ? tokens.get(i + 1).type() : EOF;
+                if ((t == IDENT && (next == EQUAL || next == COLON))
+                        || (t == STRING && next == EQUAL) || (t == COLON && next == IDENT))
+                    return true;
+                start = false;
+            }
+            if (t == LPAREN || t == LBRACE || t == LBRACKET) depth++;
+            else if (t == RPAREN || t == RBRACE || t == RBRACKET) {
+                if (depth == 0) return false;
+                depth--;
+            } else if (t == EOF) return false;
+            else if (t == COMMA && depth == 0) start = true;
+        }
+        return false;
+    }
+
+    private String checkedQuotedRecordLabel(Token label) {
+        if (label.stringQuote() != '"')
+            throw error(label, "E_RECORD_LABEL: expected ordinary double-quoted identifier label");
+        List<Token> decoded;
+        try {
+            decoded = new Lexer(label.lexeme()).scan();
+        } catch (IllegalArgumentException invalid) {
+            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
+        }
+        if (decoded.size() != 2 || decoded.getFirst().type() != IDENT
+                || !decoded.getFirst().lexeme().equals(label.lexeme())
+                || label.lexeme().codePoints().anyMatch(Character::isISOControl))
+            throw error(label, "E_RECORD_LABEL: invalid decoded identifier");
+        return label.lexeme();
+    }
+
+    private Ast.Expr parseRecordFieldValue() {
+        // An ungrouped second '=' cannot be a hidden assignment expression.
+        Ast.Expr value = parsePipeline();
+        if (check(EQUAL))
+            throw error(peek(), "E_RECORD_FIELD: assignment is not a Record field value");
+        return value;
+    }
+
+    private Ast.ObjectExpr parseParenthesizedRecord() {
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        while (!check(RPAREN)) {
+            if (!startsParenthesizedRecordItem() && !startsInlinePairRecordItem())
+                throw error(peek(), "E_LITERAL_KIND: mixed Record and Tuple items");
+            Token label = peek();
+            String name;
+            Ast.Expr value;
+            if (match(COLON)) {
+                label = consume(IDENT, "expected identifier after Record capture ':'");
+                name = label.lexeme();
+                value = new Ast.NameExpr(name);
+            } else {
+                advance();
+                name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
+                if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
+                else if (!match(EQUAL, COLON, COLON_ASSIGN)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
+                value = parseRecordFieldValue();
+            }
+            if (!names.add(name))
+                throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+            fields.add(Ast.ObjectField.named(name, value));
+            if (fields.size() > 4096)
+                throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
+            if (!match(COMMA)) break;
+        }
+        consume(RPAREN, "expected ')' after Record literal");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+    }
+
+    // Bounded canonical Record slice. Inline identifier-key := entries are
+    // consumed as named fields; standalone Pair expression ABI is separate.
+    // Braced quoted-colon Map syntax and empty literal classification remain
+    // separate, unsupported in this slice, rather than silently misclassified.
+    private Ast.ObjectExpr parseAnonymousRecord() {
+        consume(LBRACE, "expected '{' before Record");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        if (check(RBRACE)) throw error(peek(), "E_LITERAL_KIND: empty anonymous braces require explicit Record syntax");
+        do {
+            Token label = peek();
+            boolean pairEntry = false;
+            if (match(ELLIPSIS)) {
+                fields.add(Ast.ObjectField.spreading(parseRecordFieldValue()));
+            } else {
+                String name;
+                if (match(COLON)) {
+                    label = consume(IDENT, "expected identifier after Record capture ':'");
+                    name = label.lexeme();
+                    if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+                    fields.add(Ast.ObjectField.named(name, new Ast.NameExpr(name)));
+                } else {
+                    if (!check(IDENT) && !check(STRING))
+                        throw error(label, "E_LITERAL_KIND: expected named Record field or spread");
+                    advance();
+                    name = label.type() == STRING ? checkedQuotedRecordLabel(label) : label.lexeme();
+                    if (label.type() == STRING) consume(EQUAL, "expected '=' after quoted Record field name");
+                    else if (match(COLON_ASSIGN)) pairEntry = true;
+                    else if (!match(EQUAL, COLON)) throw error(peek(), "expected '=', ':' or ':=' after Record field name");
+                    if (!names.add(name)) throw error(label, "E_DUPLICATE: duplicate Record field '" + name + "'");
+                    fields.add(Ast.ObjectField.named(name, parseRecordFieldValue()));
+                }
+            }
+            if (fields.size() > 4096) throw error(label, "E_SOURCE_LIMIT: Record exceeds 4096 fields");
+            if (!match(COMMA)) {
+                // Lexer string/template tokens retain their start line. Refuse
+                // inferred separation after decoded multiline tokens unless a
+                // comma is explicit, rather than guessing an end line.
+                Token last = previous();
+                boolean multiline = (last.type() == STRING || last.type() == TEMPLATE_LITERAL)
+                        && (last.lexeme().contains("\n") || last.lexeme().contains("\r"));
+                if (pairEntry && !multiline && check(IDENT) && peek().line() > last.line()) continue;
+                break;
+            }
+        } while (!check(RBRACE));
+        consume(RBRACE, "expected '}' after Record literal (fields require commas)");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+    }
+
+    // Closed syntax-only shape: cannot enter executable Ast.Expr visitors.
+    private GroupedSpawnOptions<Ast.Expr> parseGroupedSpawnOptions() {
+        advance();
+        consume(LBRACE, "expected '{' after spawn with");
+        List<GroupedSpawnOptions.Group<Ast.Expr>> sections = new ArrayList<>();
+        var seenSections = java.util.EnumSet.noneOf(GroupedSpawnOptions.Section.class);
+        while (!check(RBRACE) && !check(EOF)) {
+            Token section = consume(IDENT, "expected spawn option section");
+            var kind = switch (section.lexeme()) {
+                case "schedule" -> GroupedSpawnOptions.Section.SCHEDULE;
+                case "resources" -> GroupedSpawnOptions.Section.RESOURCES;
+                case "init" -> GroupedSpawnOptions.Section.INIT;
+                default -> throw error(section, "E_SPAWN_OPTION_SECTION: unknown section " + section.lexeme());
+            };
+            if (!seenSections.add(kind))
+                throw error(section, "E_SPAWN_OPTION_DUPLICATE: duplicate section " + section.lexeme());
+            consume(LBRACE, "expected '{' after spawn option section");
+            List<GroupedSpawnOptions.Entry<Ast.Expr>> entries = new ArrayList<>();
+            java.util.Set<String> seenKeys = new java.util.HashSet<>();
+            while (!check(RBRACE) && !check(EOF)) {
+                if (entries.size() >= 256)
+                    throw error(peek(), "E_SPAWN_OPTION_LIMIT: at most 256 entries per section in this parser profile");
+                Token key = consume(IDENT, "expected spawn option key");
+                String field = key.lexeme();
+                if (!seenKeys.add(field))
+                    throw error(key, "E_SPAWN_OPTION_DUPLICATE: duplicate key " + field);
+                GroupedSpawnOptions.ScheduleKey scheduleKey = null;
+                GroupedSpawnOptions.ResourceKey resourceKey = null;
+                switch (kind) {
+                    case SCHEDULE -> scheduleKey = switch (field) {
+                        case "max_parallelism" -> GroupedSpawnOptions.ScheduleKey.MAX_PARALLELISM;
+                        case "affinity" -> GroupedSpawnOptions.ScheduleKey.AFFINITY;
+                        case "pool" -> GroupedSpawnOptions.ScheduleKey.POOL;
+                        default -> throw error(key, "E_SPAWN_OPTION_KEY: unknown schedule key " + field);
+                    };
+                    case RESOURCES -> resourceKey = switch (field) {
+                        case "heap_size" -> GroupedSpawnOptions.ResourceKey.HEAP_SIZE;
+                        case "stack_size" -> GroupedSpawnOptions.ResourceKey.STACK_SIZE;
+                        case "mailbox_capacity" -> GroupedSpawnOptions.ResourceKey.MAILBOX_CAPACITY;
+                        default -> throw error(key, "E_SPAWN_OPTION_KEY: unknown resources key " + field);
+                    };
+                    case INIT -> { }
+                }
+                consume(EQUAL, "expected '=' after spawn option key");
+                Ast.Expr value = parseExpression();
+                entries.add(switch (kind) {
+                    case SCHEDULE -> new GroupedSpawnOptions.ScheduleEntry<>(scheduleKey, value);
+                    case RESOURCES -> new GroupedSpawnOptions.ResourceEntry<>(resourceKey, value);
+                    case INIT -> new GroupedSpawnOptions.InitEntry<>(field, value);
+                });
+                consume(SEMICOLON, "expected ';' after spawn option value");
+            }
+            consume(RBRACE, "expected '}' after spawn option entries");
+            sections.add(new GroupedSpawnOptions.Group<>(kind, entries));
+        }
+        consume(RBRACE, "expected '}' after grouped spawn options");
+        return new GroupedSpawnOptions<>(sections);
+    }
+
 }

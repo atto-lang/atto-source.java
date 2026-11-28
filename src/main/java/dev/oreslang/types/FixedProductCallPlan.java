@@ -21,6 +21,9 @@ import java.util.Set;
  * every input before consuming this mapping.</p>
  */
 public final class FixedProductCallPlan {
+    // Tuple-v2 proof is bounded to 64 scalar positions. Larger, general
+    // records require a separate verified binding/lowering contract.
+    private static final int MAX_PRODUCT_SLOTS = 64;
     private final List<BoundSlot> sourceOrder;
     private final List<Integer> abiToSource;
 
@@ -116,11 +119,20 @@ public final class FixedProductCallPlan {
      * callable's stable parameter names. All inputs are fixed/closed products.
      */
     public static FixedProductCallPlan bind(List<String> parameterNames, List<InputSlot> inputs) {
-        // Freeze the caller's collections before arity checks and slot binding.
-        // Otherwise a mutable/custom List can change between the name-map and
-        // source-slot traversals, producing a plan for no coherent call shape.
-        parameterNames = List.copyOf(Objects.requireNonNull(parameterNames, "parameterNames"));
-        inputs = List.copyOf(Objects.requireNonNull(inputs, "inputs"));
+        Objects.requireNonNull(parameterNames, "parameterNames");
+        Objects.requireNonNull(inputs, "inputs");
+        if (parameterNames.size() > MAX_PRODUCT_SLOTS || inputs.size() > MAX_PRODUCT_SLOTS) {
+            throw new IllegalArgumentException("fixed product exceeds 64 scalar slots");
+        }
+        // Freeze the caller's collections before mapping: no dynamic list
+        // changes may influence the checked ABI permutation.
+        parameterNames = List.copyOf(parameterNames);
+        inputs = List.copyOf(inputs);
+        // Recheck after the snapshots: a concurrently mutated or custom list
+        // cannot expand the proof beyond the bound between size() and copyOf().
+        if (parameterNames.size() > MAX_PRODUCT_SLOTS || inputs.size() > MAX_PRODUCT_SLOTS) {
+            throw new IllegalArgumentException("fixed product exceeds 64 scalar slots");
+        }
         Map<String, Integer> parameterIndexByName = new HashMap<>();
         for (int i = 0; i < parameterNames.size(); i++) {
             String name = Objects.requireNonNull(parameterNames.get(i), "parameter name");
