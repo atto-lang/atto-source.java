@@ -1633,6 +1633,7 @@ public final class Parser {
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
         Ast.ConstructorDecl constructor = null;
+        java.util.Set<String> deferredFinals = new java.util.LinkedHashSet<>();
 
         while (!check(classTerminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
@@ -1689,7 +1690,9 @@ public final class Parser {
             if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT)))
                     || looksLikeTypeFirstClassField()) {
                 validateClassFieldModifiers(mods);
-                fields.add(parseTypeFirstClassField(annotations, mods.visibility));
+                Ast.FieldDecl field = parseTypeFirstClassField(annotations, mods.visibility);
+                if (field.initializer() == null) deferredFinals.add(field.name());
+                fields.add(field);
                 continue;
             }
 
@@ -1739,6 +1742,31 @@ public final class Parser {
                 braceStyle
                         ? "expected '}' to close class " + name
                         : "expected 'end' to close class " + name);
+        // Newly admitted explicit deferred-final syntax is restricted to a
+        // definite, straight-line initialization prefix. Do not mistake a
+        // conditional/loop/deferred write or early return for initialization.
+        if (!deferredFinals.isEmpty()) {
+            if (constructor == null) throw error(previous(), "E_INIT: deferred final fields require an explicit constructor");
+            java.util.Set<String> pending = new java.util.LinkedHashSet<>(deferredFinals);
+            java.util.Set<String> parameters = new java.util.HashSet<>();
+            for (Ast.Param param : constructor.parameters()) parameters.add(param.name());
+            for (Ast.Stmt statement : constructor.body()) {
+                if (pending.isEmpty()) break;
+                if (!(statement instanceof Ast.ExprStmt expr
+                        && expr.expression() instanceof Ast.AssignExpr assignment
+                        && assignment.target() instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr receiver
+                        && receiver.name().equals("self")
+                        && pending.contains(member.member())
+                        && (assignment.value() instanceof Ast.NameExpr value
+                            && parameters.contains(value.name()) && !value.name().equals("self")
+                            || assignment.value() instanceof Ast.LiteralExpr))) {
+                    throw error(previous(), "E_INIT: deferred final fields require direct parameter or literal initialization before other statements: " + pending);
+                }
+                pending.remove(member.member());
+            }
+            if (!pending.isEmpty()) throw error(previous(), "E_INIT: constructor may complete without initializing final fields " + pending);
+        }
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
                 parents, interfaces, fields, constructor, methods,
@@ -2857,6 +2885,13 @@ public final class Parser {
         boolean mutableReferent = match(MUT);
         Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
         String name = consume(IDENT, "expected class field name after type").lexeme();
+        // Explicit final fields may defer initialization to the constructor,
+        // using the same immutable storage and initialization checks as val.
+        // A literal semicolon is required; no implicit newline admission.
+        if (isFinal && match(SEMICOLON)) {
+            return new Ast.FieldDecl(name, visibility, Ast.BindingKind.VAL, type,
+                    annotations, null, mutableReferent);
+        }
         if (!match(COLON, EQUAL)) {
             throw error(peek(), "class field initializer requires ':' or '='");
         }
