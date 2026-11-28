@@ -60,6 +60,34 @@ public final class OresBytes {
         return input.length == 0 ? EMPTY : new OresBytes(input, false);
     }
 
+    /**
+     * Package-private trusted NIO completion ownership transfer. This avoids
+     * cloning the completed allocation a second time. Callers must never
+     * retain or mutate the array after passing it here.
+     */
+    static OresBytes fromCompletedNioRead(byte[] exclusiveBacking) {
+        Objects.requireNonNull(exclusiveBacking, "completed NIO bytes");
+        return exclusiveBacking.length == 0
+                ? EMPTY : new OresBytes(exclusiveBacking, true);
+    }
+
+    /** Trusted transport obtains a read-only view; no public mutable alias. */
+    ByteBufferView nioReadOnlyView() {
+        return new ByteBufferView(bytes);
+    }
+
+    static final class ByteBufferView {
+        private final byte[] exclusiveReadOnlyBytes;
+
+        private ByteBufferView(byte[] bytes) {
+            exclusiveReadOnlyBytes = bytes;
+        }
+
+        java.nio.ByteBuffer asReadOnlyBuffer() {
+            return java.nio.ByteBuffer.wrap(exclusiveReadOnlyBytes).asReadOnlyBuffer();
+        }
+    }
+
     /** Exact integer byte vectors, never floating values or narrowing casts. */
     public static OresBytes fromList(List<?> input) {
         Objects.requireNonNull(input, "Bytes input");
