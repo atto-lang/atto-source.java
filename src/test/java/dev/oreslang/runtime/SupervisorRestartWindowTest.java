@@ -205,4 +205,43 @@ final class SupervisorRestartWindowTest {
         assertTrue(first >= 0 && first <= 1_000);
     }
 
+    @Test
+    void exhaustedDecisionSequenceDoesNotAdvanceClockOrExpireAdmissions() throws Exception {
+        var gate = new SupervisorRestartWindow(1, 100);
+        assertTrue(gate.tryAcquire(0).allowed());
+
+        var sequence = SupervisorRestartWindow.class.getDeclaredField("decisionSequence");
+        sequence.setAccessible(true);
+        sequence.setLong(gate, Long.MAX_VALUE);
+        assertThrows(IllegalStateException.class, () -> gate.tryAcquire(1_000));
+        assertEquals(1, gate.currentAdmissions());
+
+        // A failed attempt at a later timestamp must not commit the clock.
+        // Reset the injected exhaustion to verify the original timestamp is valid.
+        sequence.setLong(gate, 1L);
+        assertFalse(gate.tryAcquire(1).allowed());
+        assertEquals(99L, gate.lastRetryAfterNanos());
+        assertEquals(1, gate.currentAdmissions());
+    }
+
+
+    @Test
+    void elapsedOverflowDoesNotCommitRejectedRawTimestamp() throws Exception {
+        var gate = new SupervisorRestartWindow(1, 100);
+        // Reach a coherent near-overflow state via public admission, rather
+        // than changing elapsed time without updating the timestamp ring.
+        assertEquals(0, gate.advance(0));
+        assertTrue(gate.tryAcquire(Long.MAX_VALUE - 2).allowed());
+        var elapsed = SupervisorRestartWindow.class.getDeclaredField("elapsedNanos");
+        elapsed.setAccessible(true);
+
+        assertThrows(IllegalStateException.class, () -> gate.advance(Long.MIN_VALUE));
+        assertEquals(1, gate.currentAdmissions());
+        // A rejected sample must not commit its raw clock origin.
+        assertEquals(1, gate.advance(Long.MAX_VALUE - 1));
+        assertEquals(Long.MAX_VALUE - 1, elapsed.getLong(gate));
+        assertEquals(1, gate.currentAdmissions());
+    }
+
+
 }

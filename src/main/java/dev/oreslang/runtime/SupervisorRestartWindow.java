@@ -105,6 +105,12 @@ public final class SupervisorRestartWindow {
     }
 
     private boolean apply(long nowNanos) {
+        // Reject exhausted decisions before changing clock or ring state.
+        // Otherwise a failed admission could still expire timestamps or
+        // advance the observed clock, violating fail-atomicity.
+        if (decisionSequence == Long.MAX_VALUE) {
+            throw new IllegalStateException("restart decision sequence exhausted");
+        }
         long now = observeMonotonic(nowNanos);
         expire(now);
         nextSequence();
@@ -240,13 +246,16 @@ public final class SupervisorRestartWindow {
         if (delta < 0) {
             throw new IllegalArgumentException("monotonic clock moved backwards");
         }
-        lastRawNanos = rawNowNanos;
+        final long nextElapsed;
         try {
-            elapsedNanos = Math.addExact(elapsedNanos, delta);
+            nextElapsed = Math.addExact(elapsedNanos, delta);
         } catch (ArithmeticException exhausted) {
+            // A rejected clock sample must not commit its raw origin.
             throw new IllegalStateException("restart elapsed-time sequence exhausted", exhausted);
         }
-        return elapsedNanos;
+        lastRawNanos = rawNowNanos;
+        elapsedNanos = nextElapsed;
+        return nextElapsed;
     }
 
     private void expire(long nowNanos) {
