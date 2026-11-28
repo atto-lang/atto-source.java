@@ -435,6 +435,31 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void newableWitnessDoesNotGrantAwaitOrRuntimeInterfaceAdmission() {
+        String declarations = """
+                define pub class Cart implements Newable[Cart] as
+                  val int quantity = 42;
+                  pub fnc new(): Cart { return new Cart(); }
+                end
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(declarations));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(declarations + """
+                        fnc bad(Cart cart): int { return await cart; }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(declarations + """
+                        fnc bad(Newable[Cart] witness): void { return; }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define pub class Cart implements Newable[Cart] as
+                          val int quantity = 42;
+                        end
+                        """));
+    }
+
+    @Test
     void actorsRejectClassConstructors() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
