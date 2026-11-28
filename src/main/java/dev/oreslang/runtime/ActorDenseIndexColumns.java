@@ -90,6 +90,7 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
     @Override
     void revokeBackingFromLease() {
         int[] old = storage;
+        storage = null; // retained wrappers lose backing before scrub begins
         storage = null; // detach before scrubbing so retained wrappers lose backing immediately
         if (old != null) {
             java.util.Arrays.fill(old, 0);

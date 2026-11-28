@@ -114,5 +114,82 @@ exit 0
         self.run_fixture('not-a-real-git-subcommand', expected=0)
 
 
+class RawWorktreeSecurityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='ores-nio-raw-fixture-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'repo'
+        self.root.mkdir()
+        (self.root / 'scripts').mkdir()
+        shutil.copy2(SRC / 'nio_verify_raw_worktree.py',
+                     self.root / 'scripts' / 'nio_verify_raw_worktree.py')
+        (self.root / 'source.txt').write_text('trusted source\n')
+        (self.root / 'nested').mkdir()
+        (self.root / 'nested' / 'source.txt').write_text('nested trusted source\n')
+        (self.root / 'linkdir').mkdir()
+        (self.root / 'linkdir' / 'tracked-link').symlink_to('../source.txt')
+        for argv in (['git', 'init', '-q'],
+                     ['git', 'config', 'user.email', 'fixture@example.invalid'],
+                     ['git', 'config', 'user.name', 'Source-free CI'],
+                     ['git', 'add', '.'], ['git', 'commit', '-qm', 'fixture']):
+            subprocess.run(argv, cwd=self.root, check=True, capture_output=True)
+        self.sha = call(['git', 'rev-parse', 'HEAD'], cwd=self.root).stdout.strip()
+        self.tree = call(['git', 'rev-parse', 'HEAD^{tree}'], cwd=self.root).stdout.strip()
+
+    def gate(self):
+        return call(['python3', '-I', '-B', 'scripts/nio_verify_raw_worktree.py',
+                     self.sha, self.tree], cwd=self.root)
+
+    def test_clean_raw_worktree_passes(self):
+        result = self.gate()
+        self.assertEqual(0, result.returncode, result.stderr + result.stdout)
+
+    def test_fifo_substitution_fails_without_parking(self):
+        tracked = self.root / 'source.txt'
+        tracked.unlink()
+        os.mkfifo(tracked)
+        result = self.gate()
+        self.assertEqual(77, result.returncode, result.stderr + result.stdout)
+        self.assertIn('tracked input is not regular', result.stderr)
+
+    def test_hardlinked_tracked_input_is_rejected(self):
+        external = Path(self.tmp.name) / 'external-source-alias.txt'
+        os.link(self.root / 'source.txt', external)
+        status = call(['git', 'status', '--porcelain=v1'], cwd=self.root)
+        self.assertEqual('', status.stdout, status.stderr)
+        result = self.gate()
+        self.assertEqual(77, result.returncode, result.stderr + result.stdout)
+        self.assertIn('multiply-linked tracked input', result.stderr)
+
+    def test_hardlink_removal_restores_admission(self):
+        external = Path(self.tmp.name) / 'temporary-source-alias.txt'
+        os.link(self.root / 'source.txt', external)
+        self.assertEqual(77, self.gate().returncode)
+        external.unlink()
+        result = self.gate()
+        self.assertEqual(0, result.returncode, result.stderr + result.stdout)
+
+
+    def test_parent_directory_symlink_is_rejected(self):
+        original = self.root / 'nested'
+        external = Path(self.tmp.name) / 'external-nested'
+        original.rename(external)
+        original.symlink_to(external, target_is_directory=True)
+        # The tracked leaf bytes remain reachable through the symlink. Git
+        # porcelain also notices this topology change, but the raw verifier
+        # must independently reject it without relying on porcelain status.
+        result = self.gate()
+        self.assertEqual(77, result.returncode, result.stderr + result.stdout)
+
+
+    def test_tracked_symlink_parent_directory_symlink_is_rejected(self):
+        original = self.root / 'linkdir'
+        external = Path(self.tmp.name) / 'external-linkdir'
+        original.rename(external)
+        original.symlink_to(external, target_is_directory=True)
+        result = self.gate()
+        self.assertEqual(77, result.returncode, result.stderr + result.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()

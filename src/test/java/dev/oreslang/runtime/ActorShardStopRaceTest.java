@@ -101,6 +101,35 @@ final class ActorShardStopRaceTest {
     }
 
     @Test
+    void shardOwnershipUsesExactActorRefNotActorIdOnly() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch allocated = new CountDownLatch(1);
+            AtomicReference<ActorShardColumns> retained = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> owner = runtime.spawnSharedTrusted(
+                    ctx -> (message, turn) -> {
+                        retained.set(new ActorShardColumns(
+                                ActorShardColumns.Layout.SOA, 8, 1, 1));
+                        allocated.countDown();
+                    });
+            ActorRuntime.ActorRef<Integer> foreign = runtime.spawnSharedTrusted(
+                    ctx -> (message, turn) -> { });
+
+            owner.send(1);
+            assertTrue(allocated.await(5, TimeUnit.SECONDS));
+            owner.drain().get(5, TimeUnit.SECONDS);
+            ActorShardColumns shard = retained.get();
+            assertNotNull(shard);
+            assertTrue(shard.ownedBy(runtime, owner),
+                    "lease ownership must retain the exact actor incarnation");
+            assertFalse(shard.ownedBy(runtime, foreign),
+                    "another ActorRef in the same runtime must not authorize the shard");
+
+            owner.gracefulStop().get(5, TimeUnit.SECONDS);
+            foreign.gracefulStop().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void accountingCorruptionCannotStrandFinalizationAfterShardRevocation() throws Exception {
         Field backing = ActorShardColumns.class.getDeclaredField("storage");
         backing.setAccessible(true);

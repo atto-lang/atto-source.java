@@ -267,6 +267,29 @@ public final class Ast {
         }
     }
 
+    /** Immutable, category-distinct declarations; effects are may-sets, not handlers. */
+    public record EffectSpec(List<TypeRef> throwsTypes, List<TypeRef> raisesTypes,
+                             List<TypeRef> panicsTypes) {
+        public EffectSpec {
+            throwsTypes = List.copyOf(throwsTypes);
+            raisesTypes = List.copyOf(raisesTypes);
+            panicsTypes = List.copyOf(panicsTypes);
+            if (new HashSet<>(throwsTypes).size() != throwsTypes.size()
+                    || new HashSet<>(raisesTypes).size() != raisesTypes.size()
+                    || new HashSet<>(panicsTypes).size() != panicsTypes.size()) {
+                throw new IllegalArgumentException("duplicate declared checked effect type");
+            }
+        }
+
+        public static EffectSpec none() {
+            return new EffectSpec(List.of(), List.of(), List.of());
+        }
+
+        public boolean isEmpty() {
+            return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
+        }
+    }
+
     public record FunctionDecl(
             String name,
             CallableKind kind,
@@ -283,7 +306,20 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body,
-            List<GenericParameter> genericSpecs) implements Decl {
+            List<GenericParameter> genericSpecs,
+            EffectSpec effects) implements Decl {
+        /** Keep the existing generic-default-aware AST constructor ABI. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean suspends, boolean generator, boolean structural,
+                            boolean nonLexical, boolean trapped, ActorKind actorKind,
+                            List<String> genericParameters, List<Param> parameters,
+                            TypeRef returnType, List<Annotation> annotations,
+                            List<Stmt> body, List<GenericParameter> genericSpecs) {
+            this(name, kind, visibility, async, suspends, generator, structural,
+                    nonLexical, trapped, actorKind, genericParameters, parameters,
+                    returnType, annotations, body, genericSpecs, EffectSpec.none());
+        }
+
         /** Preserve the pre-default FunctionDecl constructor ABI. */
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             boolean suspends, boolean generator, boolean structural,
@@ -319,6 +355,7 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+            java.util.Objects.requireNonNull(effects, "function checked effects");
         }
 
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
@@ -509,10 +546,18 @@ public final class Ast {
             boolean structural,
             List<String> genericParameters,
             List<Param> parameters,
-            TypeRef returnType) implements InterfaceMember {
+            TypeRef returnType,
+            EffectSpec effects) implements InterfaceMember {
         public InterfaceFunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
+            java.util.Objects.requireNonNull(effects, "interface checked effects");
+        }
+
+        public InterfaceFunctionDecl(String name, boolean structural,
+                                     List<String> genericParameters,
+                                     List<Param> parameters, TypeRef returnType) {
+            this(name, structural, genericParameters, parameters, returnType, EffectSpec.none());
         }
 
         /** Compatibility constructor for nominal interface callable contracts. */
@@ -590,7 +635,20 @@ public final class Ast {
             List<Param> parameters,
             TypeRef returnType,
             List<Annotation> annotations,
-            List<Stmt> body) {
+            List<Stmt> body,
+            EffectSpec effects) {
+        /** Existing methods retain empty effects until declared by source. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean suspends,
+                          boolean structural, TypeRef explicitReceiverType,
+                          List<String> genericParameters, List<Param> parameters,
+                          TypeRef returnType, List<Annotation> annotations,
+                          List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, suspends, structural,
+                    explicitReceiverType, genericParameters, parameters,
+                    returnType, annotations, body, EffectSpec.none());
+        }
+
         /** Preserve all existing AST construction sites without an explicit effect. */
         public MethodDecl(String name, Visibility visibility, boolean isStatic,
                           boolean isAbstract, boolean async, boolean structural,
@@ -606,6 +664,7 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+            java.util.Objects.requireNonNull(effects, "method checked effects");
         }
 
         /** Compatibility constructor for methods that do not use declaration-level structural matching. */
@@ -659,7 +718,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            TerminalEffectStmt, BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            TerminalEffectStmt, BlockStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
 
     public enum TerminalEffectKind { THROW, RAISE, PANIC }
@@ -758,6 +817,23 @@ public final class Ast {
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
+    }
+    /**
+     * Scoped transport/resource loan syntax. Keeping it as a distinct AST node
+     * prevents a generic call/block rewrite from accidentally extending a
+     * borrow lifetime across returns, exceptions or suspension.
+     *
+     * The execution and ownership admission gates remain CLOSED until
+     * authenticated transport handles, loan fencing, and unwind cleanup are
+     * implemented across all applicable backends.
+     */
+    public record UsingBorrowStmt(Expr resource, String binding, List<Stmt> body) implements Stmt {
+        public UsingBorrowStmt {
+            if (resource == null || binding == null || binding.isBlank() || body == null) {
+                throw new IllegalArgumentException("using borrowed scope needs resource, alias and body");
+            }
+            body = List.copyOf(body);
+        }
     }
     public record BreakStmt() implements Stmt { }
     public record ContinueStmt() implements Stmt { }
@@ -1062,23 +1138,56 @@ public final class Ast {
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
 
+    /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
+    public enum CallOrigin {
+        DIRECT,
+        /** The upstream value occupies argument zero: value |> stage(args). */
+        VALUE_PIPE_ARGUMENT,
+        /** Option/Result namespace combinators use the upstream as receiver. */
+        VALUE_PIPE_RECEIVER
+    }
+
     public record CallExpr(
             Expr callee,
             List<TypeRef> typeArguments,
             boolean typeArgumentsPresent,
-            List<Expr> arguments) implements Expr {
+            List<Expr> arguments,
+            CallOrigin origin) implements Expr {
         public CallExpr {
+            java.util.Objects.requireNonNull(callee, "call callee");
             typeArguments = List.copyOf(typeArguments);
             arguments = List.copyOf(arguments);
+            java.util.Objects.requireNonNull(origin, "call origin");
+            if (origin == CallOrigin.VALUE_PIPE_ARGUMENT && arguments.isEmpty()) {
+                throw new IllegalArgumentException("value pipeline requires an upstream argument");
+            }
+            if (origin == CallOrigin.VALUE_PIPE_RECEIVER && !(callee instanceof MemberExpr)) {
+                throw new IllegalArgumentException("receiver pipeline requires a member callee");
+            }
             if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
                 throw new IllegalArgumentException("call type arguments require an explicit <...> marker");
             }
+        }
+        public CallExpr(Expr callee, List<TypeRef> typeArguments,
+                        boolean typeArgumentsPresent, List<Expr> arguments) {
+            this(callee, typeArguments, typeArgumentsPresent, arguments, CallOrigin.DIRECT);
         }
         public CallExpr(Expr callee, List<Expr> arguments) {
             this(callee, List.of(), false, arguments);
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+
+        /**
+         * Rebuild a call without erasing syntax origin. The replacement must
+         * be checked again: identity-bound type/ownership proofs do not follow
+         * arbitrary changes to its callee or arguments.
+         */
+        public CallExpr rewrite(Expr newCallee, List<TypeRef> newTypeArguments,
+                                boolean newTypeArgumentsPresent, List<Expr> newArguments) {
+            return new CallExpr(newCallee, newTypeArguments,
+                    newTypeArgumentsPresent, newArguments, origin);
         }
     }
 
@@ -1347,6 +1456,11 @@ public final class Ast {
     public static void copyCheckedMetadata(Expr source, Expr target) {
         java.util.Objects.requireNonNull(source, "source expression");
         java.util.Objects.requireNonNull(target, "target expression");
+        if (source instanceof CallExpr sourceCall && target instanceof CallExpr targetCall
+                && sourceCall.origin() != targetCall.origin()) {
+            throw new IllegalArgumentException(
+                    "call rewrites must preserve syntax origin; use CallExpr.rewrite");
+        }
         for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
             transfer.copy(source, target);
         }
@@ -1556,3 +1670,4 @@ public final class Ast {
         }
     }
 }
+

@@ -37,6 +37,69 @@ def raw_digest(fd: int, size: int) -> bytes:
     return digest.hexdigest().encode('ascii')
 
 
+def open_tracked_leaf(path: bytes, nofollow: int, nonblock: int) -> int:
+    """Open a tracked leaf beneath cwd without following any path symlink."""
+    parts = path.split(b'/')
+    if not parts or any(part in (b'', b'.', b'..') for part in parts):
+        raise ValueError('invalid tracked path: ' + repr(path[:120]))
+    directory_flag = getattr(os, 'O_DIRECTORY', None)
+    if (not isinstance(directory_flag, int) or isinstance(directory_flag, bool)
+            or directory_flag <= 0
+            or (directory_flag & nofollow) != 0
+            or (directory_flag & nonblock) != 0):
+        raise ValueError('platform cannot safely traverse tracked source paths')
+    dir_fd = os.open(b'.', os.O_RDONLY | directory_flag | nofollow)
+    try:
+        for component in parts[:-1]:
+            next_fd = os.open(component,
+                              os.O_RDONLY | directory_flag | nofollow,
+                              dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        return os.open(parts[-1], os.O_RDONLY | nofollow | nonblock,
+                       dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def read_tracked_symlink(path: bytes, nofollow: int) -> bytes:
+    """Read a tracked symlink through no-follow parent directory descriptors."""
+    parts = path.split(b'/')
+    if not parts or any(part in (b'', b'.', b'..') for part in parts):
+        raise ValueError('invalid tracked path: ' + repr(path[:120]))
+    directory_flag = getattr(os, 'O_DIRECTORY', None)
+    if (not isinstance(directory_flag, int) or isinstance(directory_flag, bool)
+            or directory_flag <= 0 or (directory_flag & nofollow) != 0):
+        raise ValueError('platform cannot safely traverse tracked symlink paths')
+    dir_fd = os.open(b'.', os.O_RDONLY | directory_flag | nofollow)
+    try:
+        for component in parts[:-1]:
+            next_fd = os.open(component,
+                              os.O_RDONLY | directory_flag | nofollow,
+                              dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        leaf = parts[-1]
+        before = os.stat(leaf, dir_fd=dir_fd, follow_symlinks=False)
+        if not stat.S_ISLNK(before.st_mode):
+            raise ValueError('tracked symbolic link changed type: ' + repr(path[:120]))
+        if before.st_nlink != 1:
+            raise ValueError('multiply-linked tracked symbolic link: ' + repr(path[:120]))
+        target = os.readlink(leaf, dir_fd=dir_fd)
+        if isinstance(target, str):
+            target = os.fsencode(target)
+        after = os.stat(leaf, dir_fd=dir_fd, follow_symlinks=False)
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns,
+                before.st_ino, before.st_dev, before.st_nlink) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns,
+                after.st_ino, after.st_dev, after.st_nlink):
+            raise ValueError('tracked symbolic link changed during verification: '
+                             + repr(path[:120]))
+        return target
+    finally:
+        os.close(dir_fd)
+
+
 def verify(commit: str, tree: str) -> int:
     if not SHA1.fullmatch(commit) or not SHA1.fullmatch(tree):
         raise ValueError('expected commit/tree must be canonical SHA-1')
@@ -76,27 +139,42 @@ def verify(commit: str, tree: str) -> int:
         if head_entries.pop(path, None) != (mode, expected_blob):
             raise ValueError('staged index differs from HEAD tree: ' + repr(path[:120]))
         if mode in (b'100644', b'100755'):
-            # Open actual worktree bytes without following the final symlink.
-            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+            # Production qualification requires non-following, nonblocking leaf
+            # opens. A tracked FIFO substitution must fail immediately instead
+            # of parking the runner, and a symlink must never redirect the read.
+            nofollow = getattr(os, 'O_NOFOLLOW', None)
+            nonblock = getattr(os, 'O_NONBLOCK', None)
+            if (not isinstance(nofollow, int) or isinstance(nofollow, bool)
+                    or nofollow <= 0 or not isinstance(nonblock, int)
+                    or isinstance(nonblock, bool) or nonblock <= 0
+                    or (nofollow & nonblock) != 0):
+                raise ValueError('platform cannot safely inspect tracked source files')
+            fd = open_tracked_leaf(path, nofollow, nonblock)
             try:
                 st = os.fstat(fd)
                 if not stat.S_ISREG(st.st_mode):
                     raise ValueError('tracked input is not regular: ' + repr(path[:120]))
+                # A hardlink outside the checkout can mutate this inode after
+                # verification while HEAD/index identity remains unchanged.
+                if st.st_nlink != 1:
+                    raise ValueError('multiply-linked tracked input: ' + repr(path[:120]))
                 if bool(st.st_mode & 0o111) != (mode == b'100755'):
                     raise ValueError('tracked mode differs: ' + repr(path[:120]))
                 actual_blob = raw_digest(fd, st.st_size)
                 after = os.fstat(fd)
-                if (st.st_size, st.st_mtime_ns, st.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                if (st.st_size, st.st_mtime_ns, st.st_ctime_ns,
+                        st.st_ino, st.st_dev, st.st_nlink) != (
+                        after.st_size, after.st_mtime_ns, after.st_ctime_ns,
+                        after.st_ino, after.st_dev, after.st_nlink):
                     raise ValueError('tracked source changed during hashing: ' + repr(path[:120]))
             finally:
                 os.close(fd)
         elif mode == b'120000':
-            st = os.lstat(path)
-            if not stat.S_ISLNK(st.st_mode):
-                raise ValueError('tracked symbolic link changed type: ' + repr(path[:120]))
-            target = os.readlink(path)
-            if isinstance(target, str):
-                target = os.fsencode(target)
+            nofollow = getattr(os, 'O_NOFOLLOW', None)
+            if (not isinstance(nofollow, int) or isinstance(nofollow, bool)
+                    or nofollow <= 0):
+                raise ValueError('platform cannot safely inspect tracked symbolic links')
+            target = read_tracked_symlink(path, nofollow)
             actual_blob = hashlib.sha1(b'blob ' + str(len(target)).encode('ascii')
                                        + b'\0' + target).hexdigest().encode('ascii')
         else:
