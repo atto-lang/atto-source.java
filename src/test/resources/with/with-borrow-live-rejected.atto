@@ -1,0 +1,11 @@
+define class Counter as
+    pub final int x: 1;
+end
+
+pub routine main(): void {
+    const Counter original = new Counter();
+    const loan = rt borrow original;
+    const Counter updated = (rt take original) with {x => 2};
+    stdio.stdout.write(loan.x);
+    return;
+}

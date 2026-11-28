@@ -3,12 +3,16 @@ on:
   pull_request:
     paths:
       - 'stdlib/**'
+      - 'src/main/resources/dev/oreslang/core/**'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'tools/stdlib-boundary-audit/**'
       - '.github/workflows/stdlib-boundary.yml'
   push:
     branches: [main]
     paths:
       - 'stdlib/**'
+      - 'src/main/resources/dev/oreslang/core/**'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
       - 'tools/stdlib-boundary-audit/**'
       - '.github/workflows/stdlib-boundary.yml'
 jobs:
@@ -24,4 +28,4 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --manifest-path tools/stdlib-boundary-audit/Cargo.toml --all-targets -- -D warnings
       - name: Native stdlib boundary check
-        run: cargo run --locked --manifest-path tools/stdlib-boundary-audit/Cargo.toml -- stdlib
+        run: cargo run --locked --manifest-path tools/stdlib-boundary-audit/Cargo.toml -- stdlib src/main/resources/dev/oreslang/core

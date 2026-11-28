@@ -1,0 +1,18 @@
+// Negative: shared helper code does not grant a private actor the helper's
+// shared-memory capabilities. Static transitive capability checking must deny.
+fnc allocate_shared(): void {
+  val shared = SharedMutex.new(1);
+  stdio.println(shared);
+  return;
+}
+
+define isoactor PrivateWorker as
+  pub fnc run(): void {
+    allocate_shared();
+    return;
+  }
+end
+
+pub fnc main(): void {
+  return;
+}

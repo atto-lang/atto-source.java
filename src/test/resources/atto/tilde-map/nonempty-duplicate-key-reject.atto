@@ -1,0 +1,8 @@
+pub fnc main(): void {
+    const duplicate = Map.of<string, int>(
+        "same" => 1,
+        "same" => 2
+    );
+    stdio.println(duplicate.size);
+    return;
+}

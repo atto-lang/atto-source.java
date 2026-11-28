@@ -94,13 +94,23 @@ public final class RuntimePermissions {
             IsolatePolicy isolatePolicy) {
         Builder builder = new Builder();
         boolean sawPermissionArgument = false;
+        boolean sawExplicitMarker = false;
+        Set<String> seenSerializedRules = new LinkedHashSet<>();
 
         for (String arg : args) {
             if (!arg.startsWith(ARG_PREFIX) || arg.startsWith("--ores-permission-check=")) continue;
             sawPermissionArgument = true;
-            // Even a deny-all policy has zero grant rules. Preserve its explicit
-            // presence or fromCapabilities() would silently grant broad I/O.
-            if (arg.equals(ARG_PREFIX + "explicit=true")) continue;
+            // Even deny-all must stay explicit. Duplicated markers and exact
+            // rule arguments are ambiguous/corrupted serialized policies,
+            // not an opportunity to silently reinterpret caller authority.
+            if (arg.equals(ARG_PREFIX + "explicit=true")) {
+                if (sawExplicitMarker)
+                    throw new IllegalArgumentException("duplicate Oreslang permission marker");
+                sawExplicitMarker = true;
+                continue;
+            }
+            if (!seenSerializedRules.add(arg))
+                throw new IllegalArgumentException("duplicate Oreslang permission argument");
             String remainder = arg.substring(ARG_PREFIX.length());
             int equals = remainder.indexOf('=');
             if (equals <= 0) {
@@ -194,10 +204,69 @@ public final class RuntimePermissions {
         }
     }
 
+    /**
+     * Check the raw lexical path without consulting filesystem metadata. This is
+     * a *preflight* only, never a substitute for the canonical resolved-path
+     * permission check at the actual I/O boundary.
+     *
+     * Allowed/denied path scopes are canonicalized once when the policy is
+     * constructed. The candidate is normalized lexically (no toRealPath,
+     * Files.exists or isSymbolicLink) so a forbidden target is not probed before
+     * a scoped grant is established.
+     */
+    public void requireLexicalFilesystemPath(
+            Permission permission, String resource, String api) {
+        if (permission != Permission.READ && permission != Permission.WRITE) {
+            throw new IllegalArgumentException("lexical filesystem preflight requires READ or WRITE");
+        }
+        Rule rule = rules.get(permission);
+        boolean allowed = false;
+        if (rule != null && !rule.denyAll() && safeScope(resource)) {
+            String path = Path.of(resource).toAbsolutePath().normalize().toString();
+            allowed = !matchesLexicalPath(path, rule.denied())
+                    && (rule.allowAll() || matchesLexicalPath(path, rule.allowed()));
+        }
+        if (!allowed) {
+            // Never echo control bytes or malformed Unicode into host diagnostics.
+            String rendered = safeScope(resource) ? resource : "<invalid>";
+            throw new SecurityException(
+                    "Oreslang permission denied: " + permission.cliName()
+                            + " access to '" + rendered + "' required by " + api);
+        }
+    }
+
+    private static boolean matchesLexicalPath(String resource, Set<String> scopes) {
+        for (String scope : scopes) {
+            if (resource.equals(scope)) return true;
+            String separator = java.io.File.separator;
+            if (resource.startsWith(scope.endsWith(separator) ? scope : scope + separator)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean allows(Permission permission, String resource) {
         Rule rule = rules.get(permission);
-        if (rule == null) return false;
+        if (rule == null || !safeScope(resource)) return false;
 
+        // Invalid endpoint spellings must not match a broad network grant.
+        if (permission == Permission.NET) {
+            NetworkScope endpoint = parseNetworkScope(resource, false);
+            if (endpoint == null) return false;
+            if (endpoint.port() == null) {
+                // A portless authorization request cannot prove it excludes
+                // a denied port on the same host. Do not let a broad allow
+                // turn this missing detail into an authorization bypass.
+                for (String denied : rule.denied()) {
+                    NetworkScope blocked = parseNetworkScope(denied, true);
+                    if (blocked != null && blocked.port() != null
+                            && networkHostMatches(endpoint, blocked)) {
+                        return false;
+                    }
+                }
+            }
+        }
         String normalized = normalize(permission, resource);
         if (rule.denyAll() || matchesAny(permission, normalized, rule.denied())) return false;
         return rule.allowAll() || matchesAny(permission, normalized, rule.allowed());
@@ -242,32 +311,150 @@ public final class RuntimePermissions {
         };
     }
 
+    /**
+     * Compare normalized host and port independently. Comparing a wildcard
+     * hostname against the whole "host:port" string previously made
+     * --deny-net=*.example.com:443 a no-op against --allow-net=*.
+     */
     private static boolean networkMatches(String resource, String scope) {
-        String target = resource.toLowerCase(Locale.ROOT);
-        String rule = scope.toLowerCase(Locale.ROOT);
-        if (target.equals(rule)) return true;
+        NetworkScope target = parseNetworkScope(resource, false);
+        NetworkScope rule = parseNetworkScope(scope, true);
+        if (target == null || rule == null) return false;
+        if (rule.port() != null && !rule.port().equals(target.port())) return false;
+        return networkHostMatches(target, rule);
+    }
 
-        // A host-only rule permits every port on that host.
-        if (!rule.contains(":")) {
-            int targetColon = target.lastIndexOf(':');
-            String targetHost = targetColon > 0 ? target.substring(0, targetColon) : target;
-            if (targetHost.equals(rule)) return true;
+    private static boolean networkHostMatches(NetworkScope target, NetworkScope rule) {
+        if (rule.host().startsWith("*.")) {
+            String suffix = rule.host().substring(1);
+            return target.host().endsWith(suffix)
+                    && target.host().length() > suffix.length();
         }
+        return rule.host().equals(target.host());
+    }
 
-        // "*.example.com" includes subdomains but not the bare parent.
-        if (rule.startsWith("*.")) {
-            String suffix = rule.substring(1);
-            int targetColon = target.lastIndexOf(':');
-            String targetHost = targetColon > 0 ? target.substring(0, targetColon) : target;
-            return targetHost.endsWith(suffix) && targetHost.length() > suffix.length();
+    private record NetworkScope(String host, Integer port) {
+        String canonical() {
+            return port == null ? host : host + ":" + port;
         }
-        return false;
+    }
+
+    /**
+     * Host[:port] or [IPv6][:port]; no DNS lookup, unbracketed IPv6,
+     * credentials, URL path, partial port, or additional colon is accepted.
+     * Canonicalize the final DNS dot so a deny cannot be bypassed with an
+     * equivalent fully-qualified DNS hostname.
+     */
+    private static NetworkScope parseNetworkScope(String input, boolean allowWildcard) {
+        if (input == null || input.isBlank()) return null;
+        String text = input.trim().toLowerCase(Locale.ROOT);
+        String host;
+        String portText = null;
+        if (text.startsWith("[")) {
+            int closing = text.indexOf(']');
+            if (closing < 3 || text.indexOf('[', 1) >= 0) return null;
+            String literal = text.substring(1, closing);
+            // Compare IPv6 *addresses*, not textual spellings: [::1] and
+            // [0:0:0:0:0:0:0:1] must share the same allow/deny identity.
+            // Only numeric literals are admitted here (never hostnames or
+            // zone identifiers), and IPv4-mapped forms are rejected instead
+            // of silently crossing the IPv4/IPv6 permission boundary.
+            if (!literal.contains(":") || !literal.matches("[0-9a-f:.]+")) return null;
+            try {
+                java.net.InetAddress address = java.net.InetAddress.getByName(literal);
+                if (!(address instanceof java.net.Inet6Address)) return null;
+                byte[] bytes = address.getAddress();
+                StringBuilder canonical = new StringBuilder("[");
+                for (int i = 0; i < bytes.length; i += 2) {
+                    if (i != 0) canonical.append(':');
+                    canonical.append(Integer.toHexString(
+                            ((bytes[i] & 0xff) << 8) | (bytes[i + 1] & 0xff)));
+                }
+                host = canonical.append(']').toString();
+            } catch (java.net.UnknownHostException invalid) {
+                return null;
+            }
+            if (closing + 1 < text.length()) {
+                if (text.charAt(closing + 1) != ':') return null;
+                portText = text.substring(closing + 2);
+            }
+        } else {
+            int colon = text.indexOf(':');
+            if (colon < 0) {
+                host = text;
+            } else {
+                if (text.indexOf(':', colon + 1) >= 0) return null;
+                host = text.substring(0, colon);
+                portText = text.substring(colon + 1);
+            }
+            if (host.endsWith(".")) {
+                host = host.substring(0, host.length() - 1);
+            }
+            // Only one DNS root dot is valid. Reject an additional dot here:
+            // policy construction and matching both normalize endpoints, so
+            // accepting it would otherwise strip one dot on each pass.
+            if (host.isEmpty() || host.startsWith(".") || host.endsWith(".")
+                    || host.contains("..") || !host.matches("[a-z0-9*._-]+")) {
+                return null;
+            }
+            if (host.contains("*") && !(allowWildcard && host.startsWith("*.")
+                    && host.indexOf('*', 1) < 0)) return null;
+            // Numeric IPv4 aliases (127.1, 2130706433, leading-zero octets)
+            // may resolve to a denied dotted-quad on some hosts. Reject them
+            // before an unrestricted network grant can mask the denied IP.
+            // The actual socket layer must still check the resolved address.
+            if (host.matches("[0-9.]+")) {
+                String[] octets = host.split("\\.", -1);
+                if (octets.length != 4) return null;
+                for (String octet : octets) {
+                    if (octet.isEmpty() || octet.length() > 3
+                            || (octet.length() > 1 && octet.charAt(0) == '0')
+                            || !octet.matches("[0-9]+")
+                            || Integer.parseInt(octet) > 255) return null;
+                }
+            }
+        }
+        Integer port = null;
+        if (portText != null) {
+            if (portText.isEmpty() || !portText.matches("[0-9]{1,5}")) return null;
+            try {
+                port = Integer.parseInt(portText);
+            } catch (NumberFormatException invalid) {
+                return null;
+            }
+            // Port zero is a valid requested local bind: http.listen asks
+            // the OS for an ephemeral port. Keep it distinct from every
+            // concrete port, rather than treating it as a wildcard.
+            if (port < 0 || port > 65535) {
+                return null;
+            }
+        }
+        return new NetworkScope(host, port);
     }
 
     private static boolean tokenMatches(String resource, String scope) {
         if (resource.equals(scope)) return true;
         return scope.endsWith("*")
                 && resource.startsWith(scope.substring(0, scope.length() - 1));
+    }
+
+    /** Avoid treating malformed host resources as all-access requests.
+     * POSIX filenames may contain control bytes, but they are deliberately
+     * unsupported permission scope/resource spellings across VM backends.
+     */
+    private static boolean safeScope(String value) {
+        if (value == null || value.isBlank()) return false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (Character.isISOControl(c)) return false;
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= value.length() || !Character.isLowSurrogate(value.charAt(i)))
+                    return false;
+            } else if (Character.isLowSurrogate(c)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static String normalize(Permission permission, String value) {
@@ -277,7 +464,13 @@ public final class RuntimePermissions {
 
         return switch (permission) {
             case READ, WRITE, FFI, IMPORT -> normalizePath(trimmed);
-            case NET -> trimmed.toLowerCase(Locale.ROOT);
+            case NET -> {
+                NetworkScope scope = parseNetworkScope(trimmed, true);
+                if (scope == null) {
+                    throw new IllegalArgumentException("invalid network permission scope '" + trimmed + "'");
+                }
+                yield scope.canonical();
+            }
             case ENV, RUN, SYS -> trimmed;
         };
     }
@@ -344,8 +537,8 @@ public final class RuntimePermissions {
             // Empty filesystem scopes previously normalized to "" and matched
             // EVERY absolute Unix path via resource.startsWith("/").
             // A missing scope must never become a root-wide capability.
-            if (scope == null || scope.isBlank())
-                throw new IllegalArgumentException("empty allow scope for " + permission);
+            if (!safeScope(scope))
+                throw new IllegalArgumentException("invalid allow scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
             if ("*".equals(scope.trim())) rule.allowAll = true;
             else rule.allowed.add(normalize(permission, scope));
@@ -353,11 +546,9 @@ public final class RuntimePermissions {
         }
 
         public Builder allowCsv(Permission permission, String scopes) {
-            if (scopes == null || scopes.isBlank()) return this;
-            Arrays.stream(scopes.split(","))
-                    .map(String::trim)
-                    .filter(value -> !value.isEmpty())
-                    .forEach(value -> allow(permission, value));
+            for (String scope : requireCsvScopes(permission, scopes)) {
+                allow(permission, scope);
+            }
             return this;
         }
 
@@ -370,8 +561,8 @@ public final class RuntimePermissions {
         public Builder deny(Permission permission, String scope) {
             // Denials must not accept an ambiguous empty resource either;
             // malformed serialized arguments should fail, not be reinterpreted.
-            if (scope == null || scope.isBlank())
-                throw new IllegalArgumentException("empty deny scope for " + permission);
+            if (!safeScope(scope))
+                throw new IllegalArgumentException("invalid deny scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
             if ("*".equals(scope.trim())) rule.denyAll = true;
             else rule.denied.add(normalize(permission, scope));
@@ -379,12 +570,31 @@ public final class RuntimePermissions {
         }
 
         public Builder denyCsv(Permission permission, String scopes) {
-            if (scopes == null || scopes.isBlank()) return this;
-            Arrays.stream(scopes.split(","))
-                    .map(String::trim)
-                    .filter(value -> !value.isEmpty())
-                    .forEach(value -> deny(permission, value));
+            for (String scope : requireCsvScopes(permission, scopes)) {
+                deny(permission, scope);
+            }
             return this;
+        }
+
+        // Strictly reject empty CSV fields. Silently dropping empty deny
+        // entries makes a policy appear stronger than it actually is.
+        private static List<String> requireCsvScopes(Permission permission, String scopes) {
+            if (scopes == null || scopes.isBlank())
+                throw new IllegalArgumentException("empty permission scope list for " + permission);
+            List<String> values = Arrays.stream(scopes.split(",", -1))
+                    .map(String::trim)
+                    .toList();
+            if (values.stream().anyMatch(String::isEmpty))
+                throw new IllegalArgumentException("empty permission scope element for " + permission);
+            // Validate the *entire* CSV before mutating the builder. A later
+            // malformed scope must not leave earlier grants installed if an
+            // embedding caller catches the exception and reuses this builder.
+            for (String scope : values) {
+                if (!safeScope(scope))
+                    throw new IllegalArgumentException("invalid permission scope for " + permission);
+                normalize(permission, scope);
+            }
+            return values;
         }
 
         public RuntimePermissions build() {

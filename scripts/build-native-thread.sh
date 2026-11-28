@@ -51,6 +51,7 @@ mkdir -p target/native
   -I"$JAVA_HOME/include" \
   -I"$JAVA_HOME/include/$jni_os" \
   src/main/c/oresthread.c \
+  src/main/c/oresarena.c \
   -o "$output"
 
 echo "built $output"

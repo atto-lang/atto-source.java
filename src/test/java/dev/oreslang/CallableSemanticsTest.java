@@ -468,7 +468,7 @@ final class CallableSemanticsTest {
         String output = run("""
                 pub routine main(): void {
                   val Fnc<int, {value: int}> wrap =
-                    |value| -> struct{value: int}{value: value * 2};
+                    |value| -> record{value: value * 2};
                   val wrapped = wrap(4);
                   stdio.stdout.write(wrapped.value);
                   return;

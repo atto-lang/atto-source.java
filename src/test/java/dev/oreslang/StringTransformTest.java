@@ -48,6 +48,96 @@ final class StringTransformTest {
     }
 
     @Test
+    void embeddedNulIsDataAcrossConcatReplaceAndStdout() {
+        String nul = String.valueOf((char) 0);
+        assertEquals("A" + nul + "B|AXB|A" + nul + "BC" + nul + "D", run("""
+                pub routine main(): void {
+                  val string value = "A\\u0000B";
+                  stdio.stdout.write(value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(value.replace_literal("\\u0000", "X"));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(value + "C\\u0000D");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void decodedUnpairedSurrogatesAreRejectedBeforeUtf8Boundary() {
+        String high = "\\uD800";
+        String low = "\\uDC00";
+        for (String escaped : new String[] {high, low}) {
+            IllegalArgumentException quoted = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("pub routine main(): void { val string value = \"" + escaped
+                            + "\"; return; }"));
+            assertTrue(quoted.getMessage().contains("unpaired Unicode surrogate"));
+
+            IllegalArgumentException template = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("pub routine main(): void { val string value = `" + escaped
+                            + "`; return; }"));
+            assertTrue(template.getMessage().contains("unpaired Unicode surrogate"));
+        }
+
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub routine main(): void { val string value = \"\\uD83D\\uDE00\"; return; }"));
+    }
+
+    @Test
+    void strictUtf8RoundTripKeepsUnsignedBytesAndEmbeddedNul() {
+        assertEquals("A" + (char) 0 + "B|é😀|6|195|128", run("""
+                pub routine main(): void {
+                  val List<int> first = [65, 0, 66];
+                  val List<int> second = "é😀".utf8_bytes();
+                  stdio.stdout.write(first.utf8_string());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.utf8_string());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.size.to_string());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.get(0).to_string());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.get(5).to_string());
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void strictUtf8RejectsMalformedAndOutOfRangeByteSequences() {
+        for (String bytes : java.util.List.of(
+                "[192, 175]", "[237, 160, 128]", "[244, 144, 128, 128]",
+                "[240, 159, 152]", "[128]", "[256]", "[-1]")) {
+            PolyglotException failure = assertThrows(PolyglotException.class, () -> run("""
+                    pub routine main(): void {
+                      val List<int> bytes = %s;
+                      stdio.stdout.write(bytes.utf8_string());
+                      return;
+                    }
+                    """.formatted(bytes)));
+            assertTrue(failure.getMessage().contains("UTF-8")
+                    || failure.getMessage().contains("0..255"), failure.getMessage());
+        }
+    }
+
+    @Test
+    void strictUtf8OperationsHaveCheckedSignatures() {
+        for (String expression : java.util.List.of(
+                "\"abc\".utf8_bytes(1)", "bytes.utf8_string(1)",
+                "wrong.utf8_string()")) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          val List<int> bytes = [65];
+                          val List<string> wrong = ["a"];
+                          val result = %s;
+                          return;
+                        }
+                        """.formatted(expression))));
+        }
+    }
+
+    @Test
     void emptyNeedleIsRejected() {
         PolyglotException error = assertThrows(PolyglotException.class,
                 () -> run("""

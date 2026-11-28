@@ -1,0 +1,70 @@
+// Compiled-guest coverage matrix, not a host/reference-model substitute.
+// Every branch must stay reachable: 64-bit, signed and unsigned admission boundaries.
+import * as ctypes from "../../../library/policy/core/types.atto";
+
+pub fnc main() -> int {
+  if ctypes.fits_i8(-129); do return 1; fi
+  if !ctypes.fits_i8(-128); do return 2; fi
+  if !ctypes.fits_i8(-1); do return 3; fi
+  if !ctypes.fits_i8(0); do return 4; fi
+  if !ctypes.fits_i8(127); do return 5; fi
+  if ctypes.fits_i8(128); do return 6; fi
+  if ctypes.fits_i8(ctypes.int_min_value()); do return 7; fi
+  if ctypes.fits_i8(ctypes.int_max_value()); do return 8; fi
+  if ctypes.fits_i16(-32769); do return 9; fi
+  if !ctypes.fits_i16(-32768); do return 10; fi
+  if !ctypes.fits_i16(-129); do return 11; fi
+  if !ctypes.fits_i16(-1); do return 12; fi
+  if !ctypes.fits_i16(0); do return 13; fi
+  if !ctypes.fits_i16(127); do return 14; fi
+  if !ctypes.fits_i16(32767); do return 15; fi
+  if ctypes.fits_i16(32768); do return 16; fi
+  if ctypes.fits_i16(ctypes.int_min_value()); do return 17; fi
+  if ctypes.fits_i16(ctypes.int_max_value()); do return 18; fi
+  if ctypes.fits_i32(-2147483649); do return 19; fi
+  if !ctypes.fits_i32(-2147483648); do return 20; fi
+  if !ctypes.fits_i32(-32769); do return 21; fi
+  if !ctypes.fits_i32(0); do return 22; fi
+  if !ctypes.fits_i32(1); do return 23; fi
+  if !ctypes.fits_i32(2147483647); do return 24; fi
+  if ctypes.fits_i32(2147483648); do return 25; fi
+  if ctypes.fits_i32(ctypes.int_min_value()); do return 26; fi
+  if ctypes.fits_i32(ctypes.int_max_value()); do return 27; fi
+  if !ctypes.fits_i64(ctypes.int_min_value()); do return 28; fi
+  if !ctypes.fits_i64(ctypes.int_min_value() + 1); do return 29; fi
+  if !ctypes.fits_i64(0); do return 30; fi
+  if !ctypes.fits_i64(ctypes.int_max_value() - 1); do return 31; fi
+  if !ctypes.fits_i64(ctypes.int_max_value()); do return 32; fi
+  if ctypes.fits_u8(ctypes.int_min_value()); do return 33; fi
+  if ctypes.fits_u8(-1); do return 34; fi
+  if !ctypes.fits_u8(0); do return 35; fi
+  if !ctypes.fits_u8(1); do return 36; fi
+  if !ctypes.fits_u8(255); do return 37; fi
+  if ctypes.fits_u8(256); do return 38; fi
+  if ctypes.fits_u8(ctypes.int_max_value()); do return 39; fi
+  if ctypes.fits_u16(ctypes.int_min_value()); do return 40; fi
+  if ctypes.fits_u16(-1); do return 41; fi
+  if !ctypes.fits_u16(0); do return 42; fi
+  if !ctypes.fits_u16(255); do return 43; fi
+  if !ctypes.fits_u16(256); do return 44; fi
+  if !ctypes.fits_u16(65535); do return 45; fi
+  if ctypes.fits_u16(65536); do return 46; fi
+  if ctypes.fits_u16(ctypes.int_max_value()); do return 47; fi
+  if ctypes.fits_u32(ctypes.int_min_value()); do return 48; fi
+  if ctypes.fits_u32(-1); do return 49; fi
+  if !ctypes.fits_u32(0); do return 50; fi
+  if !ctypes.fits_u32(65535); do return 51; fi
+  if !ctypes.fits_u32(65536); do return 52; fi
+  if !ctypes.fits_u32(4294967295); do return 53; fi
+  if ctypes.fits_u32(4294967296); do return 54; fi
+  if ctypes.fits_u32(ctypes.int_max_value()); do return 55; fi
+  if ctypes.fits_u32(9007199254740993); do return 56; fi
+  if ctypes.fits_u64(ctypes.int_min_value()); do return 57; fi
+  if ctypes.fits_u64(-1); do return 58; fi
+  if !ctypes.fits_u64(0); do return 59; fi
+  if !ctypes.fits_u64(1); do return 60; fi
+  if !ctypes.fits_u64(4294967295); do return 61; fi
+  if !ctypes.fits_u64(ctypes.int_max_value()); do return 62; fi
+  if !ctypes.fits_u64(9007199254740993); do return 63; fi
+  return 0;
+}

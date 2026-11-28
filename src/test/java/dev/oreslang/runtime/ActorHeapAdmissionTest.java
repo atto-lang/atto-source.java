@@ -59,6 +59,27 @@ final class ActorHeapAdmissionTest {
     }
 
     @Test
+    void unsupportedPhysicalTenantModesRejectBeforeActorSchedulerConstruction() {
+        final String key = "ores.runtime.tenant.isolation";
+        String previous = System.getProperty(key);
+        try {
+            assertDoesNotThrow(() ->
+                    ActorHeapAdmission.requireSupportedTenantIsolationMode("trusted-inprocess"));
+            for (String mode : new String[] {
+                    "vm-isolate", "dedicated-graalvm-isolate", "sandboxed-process", "wasmtime"}) {
+                System.setProperty(key, mode);
+                assertThrows(IllegalStateException.class, () -> OresVM.create(Runnable::run));
+                assertThrows(IllegalStateException.class, ActorRuntime::new);
+            }
+            assertThrows(IllegalArgumentException.class, () ->
+                    ActorHeapAdmission.requireSupportedTenantIsolationMode("unknown"));
+        } finally {
+            if (previous == null) System.clearProperty(key);
+            else System.setProperty(key, previous);
+        }
+    }
+
+    @Test
     void strictJVMModeIsRejectedBeforeVmControlCarrierStartup() {
         final String key = "ores.runtime.gc.mode";
         String old = System.getProperty(key);

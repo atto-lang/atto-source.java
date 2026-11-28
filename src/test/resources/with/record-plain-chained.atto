@@ -1,0 +1,8 @@
+pub routine main(): void {
+    const point = record{x: 10, y: 20};
+    const next = point with {x => 42} with {y => 37};
+    stdio.stdout.write(point.x);
+    stdio.stdout.write(next.x);
+    stdio.stdout.write(next.y);
+    return;
+}

@@ -1,0 +1,11 @@
+fnc seed(int divisor): int {
+    stdio.println("factory");
+    return Integer.rem(1, divisor);
+}
+
+pub fnc main(): int {
+    defer stdio.println("older");
+    defer (|int value| -> || -> { stdio.println("INVALID"); })(seed(0));
+    stdio.println("INVALID-body");
+    return 42;
+}

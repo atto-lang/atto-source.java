@@ -1,0 +1,1 @@
+pub fnc main(): int { const Map<String,int> x = ~(); return 42; }

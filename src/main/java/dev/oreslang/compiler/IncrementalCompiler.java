@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
@@ -28,6 +29,28 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    // Never reuse a legacy-checked unit as strict-AOT source admission evidence.
+    private final Map<String, CompiledUnit> strictAttoCache = new LinkedHashMap<>();
+    // Parsing is separate from type/borrow admission. Cached expanded syntax
+    // may be reused, but checked units must still honor current import ABI.
+    // Strict-Atto and legacy parsing must never share cache entries.
+    private final Map<String, ParsedUnit> parsedCache = new LinkedHashMap<>();
+    private final Map<String, ParsedUnit> strictAttoParsedCache = new LinkedHashMap<>();
+    // Include the imported declaration identity, not only resolved source IDs:
+    // swapping {left} for {right} within the same provider also invalidates
+    // re-exports and all downstream typed assumptions.
+    private final Map<String, List<ImportBinding>> importBindingCache = new LinkedHashMap<>();
+    private final Map<String, List<ImportBinding>> strictAttoImportBindingCache = new LinkedHashMap<>();
+    private record ImportBinding(Ast.ImportDecl declaration, String resolvedTarget) { }
+    private PackageLayout legacyLayout = PackageLayout.NONE;
+    private PackageLayout strictLayout = PackageLayout.NONE;
+
+    // Raw AST is the input to semantic analysis (which expands annotations
+    // itself). The expanded AST is used for graph linking and ABI indexing.
+    // Both are immutable source-derived facts, never checked/borrow-authority.
+    private record ParsedUnit(
+            String sourceDigest, String abiDigest,
+            Ast.Program rawProgram, Ast.Program program) { }
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -36,12 +59,79 @@ public final class IncrementalCompiler {
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
+        return compileWithProfile(sources, importResolutions, false, PackageLayout.NONE);
+    }
+
+    /**
+     * Package-aware build: units under a package root share that package's
+     * identity, and a unit without a namespace header takes its folder-path
+     * namespace (see {@link PackageLayout}).
+     */
+    public synchronized BuildResult compile(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            PackageLayout packageLayout) {
+        return compileWithProfile(sources, importResolutions, false, packageLayout);
+    }
+
+    /**
+     * Full-graph strict AttoLang front-end admission, not machine-code emission.
+     * Every supplied unit is parsed under the same profile. Imported external
+     * units with no supplied strict source are rejected, not trusted by name.
+     */
+    public synchronized BuildResult compileStrictAtto(Map<String, String> sources) {
+        return compileStrictAtto(sources, Map.of());
+    }
+
+    public synchronized BuildResult compileStrictAtto(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions) {
+        return compileWithProfile(sources, importResolutions, true, PackageLayout.NONE);
+    }
+
+    /** Strict package-aware admission uses an explicit layout, never ambient legacy state. */
+    public synchronized BuildResult compileStrictAtto(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            PackageLayout packageLayout) {
+        return compileWithProfile(sources, importResolutions, true, packageLayout);
+    }
+
+    private BuildResult compileWithProfile(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            boolean strictAtto,
+            PackageLayout layout) {
+        if (layout == null) throw new IllegalArgumentException("package layout cannot be null");
+        if (sources == null) throw new IllegalArgumentException("sources cannot be null");
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
-        if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
+        Map<String, CompiledUnit> selectedCache = strictAtto ? strictAttoCache : cache;
+        Map<String, ParsedUnit> selectedParsedCache =
+                strictAtto ? strictAttoParsedCache : parsedCache;
+        Map<String, List<ImportBinding>> selectedBindingCache =
+                strictAtto ? strictAttoImportBindingCache : importBindingCache;
+        boolean sameLayout = layout.equals(strictAtto ? strictLayout : legacyLayout);
+        // Layout changes cannot reuse old ASTs or checked units, but retain the
+        // committed snapshot until the new layout passes all admission checks.
+        Map<String, Map<String, String>> normalizedImportResolutions =
+                normalizeImportResolutions(importResolutions);
+        if (sources.isEmpty()) {
+            if (!normalizedImportResolutions.isEmpty())
+                throw new IllegalArgumentException("import resolutions require a nonempty source inventory");
+            // The input map is a complete source snapshot, including removals.
+            // A later re-add must not reuse a checked result for deleted files.
+            selectedCache.clear();
+            selectedParsedCache.clear();
+            selectedBindingCache.clear();
+            if (strictAtto) strictLayout = layout; else legacyLayout = layout;
+            return new BuildResult(Map.of(), Set.of(), Set.of(), List.of(), Set.of());
+        }
 
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
             String id = normalizeUnitId(entry.getKey());
+            if (entry.getValue() == null)
+                throw new IllegalArgumentException("source unit cannot be null: '" + id + "'");
             if (normalized.putIfAbsent(id, entry.getValue()) != null) {
                 throw new IllegalArgumentException("duplicate source unit '" + id + "'");
             }
@@ -50,32 +140,105 @@ public final class IncrementalCompiler {
         Map<String, String> hashes = new LinkedHashMap<>();
         Map<String, String> abiHashes = new LinkedHashMap<>();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
+        Map<String, ParsedUnit> stagedParsed = new LinkedHashMap<>();
+        LinkedHashSet<String> reparsed = new LinkedHashSet<>();
 
-        // Parse the complete source set before resolving imports. This is the
-        // first half of cycle tolerance: A may name B while B names A because
-        // neither unit is recursively compiled while discovering the other.
+        // Parse all *changed* inputs before resolving the complete graph.
+        // This is in-memory only: AST keys include strict-vs-legacy parser
+        // mode via separate maps. Never treat parse reuse as type validation.
         for (Map.Entry<String, String> entry : normalized.entrySet()) {
-            hashes.put(entry.getKey(), digest(entry.getValue()));
-            Ast.Program program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
-            parsed.put(entry.getKey(), program);
-            abiHashes.put(entry.getKey(), abiDigest(program));
+            String id = entry.getKey();
+            String sourceDigest = digest(entry.getValue());
+            hashes.put(id, sourceDigest);
+            ParsedUnit previous = sameLayout ? selectedParsedCache.get(id) : null;
+            ParsedUnit unit;
+            if (previous != null && previous.sourceDigest().equals(sourceDigest)) {
+                unit = previous;
+            } else {
+                final Ast.Program rawProgram;
+                final Ast.Program expandedProgram;
+                try {
+                    rawProgram = layout.withEffectiveNamespace(id, strictAtto
+                            ? Parser.parseStrictAtto(entry.getValue())
+                            : Parser.parse(entry.getValue()));
+                    expandedProgram = AnnotationExpander.expand(rawProgram);
+                } catch (IllegalArgumentException invalid) {
+                    throw new SourceUnitDiagnosticException(id, "", "", invalid);
+                }
+                unit = new ParsedUnit(
+                        sourceDigest, abiDigest(expandedProgram), rawProgram, expandedProgram);
+                reparsed.add(id);
+            }
+            stagedParsed.put(id, unit);
+            parsed.put(id, unit.program());
+            abiHashes.put(id, unit.abiDigest());
         }
 
-        Map<String, Map<String, String>> normalizedImportResolutions =
-                normalizeImportResolutions(importResolutions);
+        if (strictAtto) {
+            for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+                String unitId = entry.getKey();
+                for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                    final String target;
+                    try {
+                        target = ImportGraph.resolveImportUnitId(
+                                unitId, imported, parsed.keySet(), normalizedImportResolutions);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new SourceUnitDiagnosticException(unitId, "", "", invalid);
+                    }
+                    if (target == null) {
+                        throw new SourceUnitDiagnosticException(unitId, "", "",
+                                new IllegalArgumentException(
+                                        "ATTO_STRICT_IMPORT_GRAPH_UNVERIFIED: unresolved import '"
+                                        + imported.path() + "' needs a supplied strict-profile source unit"));
+                    }
+                }
+            }
+        }
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
         Map<String, Set<String>> dependencies =
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
 
+        // A dependency SET is not sufficient: swapping the binding of two
+        // imports can retain exactly the same set of target source IDs.
+        // Resolve every declaration again against this complete snapshot.
+        Map<String, List<ImportBinding>> resolvedBindings = new LinkedHashMap<>();
+        LinkedHashSet<String> unversioned = new LinkedHashSet<>();
+        for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+            String id = entry.getKey();
+            ArrayList<ImportBinding> targets = new ArrayList<>();
+            for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                String target = ImportGraph.resolveImportUnitId(
+                        id, imported, parsed.keySet(), normalizedImportResolutions);
+                if (target == null) {
+                    // Unknown host/package interface: never keep an unchecked
+                    // cached type result across builds without version proof.
+                    unversioned.add(id);
+                    targets.add(new ImportBinding(imported, null));
+                } else {
+                    targets.add(new ImportBinding(imported, target));
+                }
+            }
+            resolvedBindings.put(id, List.copyOf(targets));
+        }
+
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
-            CompiledUnit previous = cache.get(id);
+            CompiledUnit previous = sameLayout ? selectedCache.get(id) : null;
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
-            if (sourceChanged || depsChanged) dirty.add(id);
-            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
+            boolean bindingsChanged = previous == null
+                    || !resolvedBindings.get(id).equals(selectedBindingCache.get(id));
+            if (sourceChanged || depsChanged || bindingsChanged || unversioned.contains(id)) {
+                dirty.add(id);
+            }
+            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))
+                    || bindingsChanged || unversioned.contains(id)) {
+                // Binding changes may alter exposed identities even when the
+                // raw public declaration text is unchanged.
+                abiChanged.add(id);
+            }
         }
 
         /*
@@ -100,8 +263,8 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> reused = new LinkedHashSet<>();
 
         for (String id : normalized.keySet()) {
-            if (!dirty.contains(id) && cache.containsKey(id)) {
-                next.put(id, cache.get(id));
+            if (sameLayout && !dirty.contains(id) && selectedCache.containsKey(id)) {
+                next.put(id, selectedCache.get(id));
                 reused.add(id);
                 continue;
             }
@@ -109,23 +272,40 @@ public final class IncrementalCompiler {
             Ast.Program checked;
             LinkedClasses linked = linkedPublicClasses(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
-            if (linked.classes().isEmpty()) {
-                checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
-            } else {
-                try {
-                    // Foreign layouts are used for type and ownership proofs;
-                    // their declarations are never executed in the importer.
-                    checked = TypeChecker.checkTypesWithImportedClasses(
-                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
-                    OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
-                } catch (IllegalArgumentException invalid) {
+            LinkedHashMap<String, Ast.InterfaceDecl> contracts = new LinkedHashMap<>(
+                    linkedImportedContracts(id, parsed.get(id), parsed, normalizedImportResolutions));
+            for (Map.Entry<String, Ast.InterfaceDecl> trait : linkedImportedTraits(
+                    id, parsed.get(id), parsed, normalizedImportResolutions).entrySet()) {
+                Ast.InterfaceDecl previous = contracts.putIfAbsent(
+                        trait.getKey(), trait.getValue());
+                if (previous != null && previous != trait.getValue()) {
                     throw new IllegalArgumentException(
-                            "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
+                            "ambiguous imported contract/trait nominal name '" + trait.getKey() + "'");
                 }
+            }
+            try {
+                TypeChecker.TypeCheckResult analysis =
+                        TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                                stagedParsed.get(id).rawProgram(),
+                                linked.classes(), linked.aliases(), contracts,
+                                linkedImportedModules(id, parsed.get(id), parsed,
+                                        normalizedImportResolutions),
+                                linkedImportedFunctions(id, parsed.get(id), parsed,
+                                        normalizedImportResolutions),
+                                strictAtto, dev.oreslang.runtime.AttoCheckedI64Profile.select(normalized.get(id), id));
+                checked = analysis.program();
+                OwnershipChecker.checkWithImportedClasses(
+                        checked, linked.ownershipClasses(), analysis.shortInferredAliases());
+            } catch (IllegalArgumentException invalid) {
+                Ast.Program sourceProgram = parsed.get(id);
+                String moduleName = sourceProgram.modules().size() == 1
+                        ? sourceProgram.modules().get(0).name() : "";
+                throw new SourceUnitDiagnosticException(
+                        id, moduleName, sourceProgram.namespace(), invalid);
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
-                    packageId(id, checked),
+                    layout.packageId(id),
                     checked.namespace(),
                     hashes.get(id),
                     abiHashes.get(id),
@@ -136,18 +316,105 @@ public final class IncrementalCompiler {
             rebuilt.add(id);
         }
 
-        cache.keySet().retainAll(normalized.keySet());
-        cache.putAll(next);
+        // Publish syntax, imported bindings and checked units together ONLY
+        // after all graph validation, type/ownership checks have succeeded.
+        selectedCache.clear();
+        selectedCache.putAll(next);
+        selectedParsedCache.clear();
+        selectedParsedCache.putAll(stagedParsed);
+        selectedBindingCache.clear();
+        selectedBindingCache.putAll(resolvedBindings);
+        if (strictAtto) strictLayout = layout; else legacyLayout = layout;
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
-                initializationGroups);
+                initializationGroups,
+                Set.copyOf(reparsed));
+    }
+
+    /** Imported source modules by local alias, from their resolved units. */
+    private static Map<String, Ast.ModuleDecl> linkedImportedModules(
+            String id, Ast.Program program, Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.ModuleDecl> result = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.wildcard() && imported.namespace() != null
+                    && !ImportRules.isJavaPath(imported.path())) {
+                // `import * as alias from "./file.atto"`: the target's
+                // file-root public declarations, linked under the alias.
+                String targetId = ImportGraph.resolveImportUnitId(
+                        id, imported, parsed.keySet(), importResolutions);
+                Ast.Program target = targetId == null ? null : parsed.get(targetId);
+                if (target == null) continue;
+                for (Ast.ModuleDecl module : target.modules()) {
+                    if (!module.name().equals(Parser.ROOT_MODULE)) continue;
+                    Ast.ModuleDecl qualified = ForeignModuleQualifier.qualify(imported.namespace(), module);
+                    if (result.putIfAbsent(imported.namespace(), new Ast.ModuleDecl(imported.namespace(),
+                            qualified.annotations(), qualified.contracts(), qualified.declarations())) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate imported module binding '" + imported.namespace() + "'");
+                    }
+                }
+                continue;
+            }
+            if (imported.kind() != Ast.ImportKind.MODULE || imported.wildcard()) continue;
+            // Same resolution as class linking: explicit resolver entries
+            // first, then supplied relative units (ImportGraph proves identity).
+            String targetId = ImportGraph.resolveImportUnitId(
+                    id, imported, parsed.keySet(), importResolutions);
+            Ast.Program target = targetId == null ? null : parsed.get(targetId);
+            if (target == null) continue;
+            for (String name : imported.names()) {
+                for (Ast.ModuleDecl module : target.modules()) {
+                    if (module.name().equals(name)) {
+                        String alias = dev.oreslang.imports.ImportRules.localName(imported, name);
+                        if (result.putIfAbsent(alias, ForeignModuleQualifier.qualify(alias, module)) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate imported module binding '" + alias + "'");
+                        }
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /** Declarations behind explicit `import fnc f from ...` bindings, by local name. */
+    private static Map<String, Ast.FunctionDecl> linkedImportedFunctions(
+            String id, Ast.Program program, Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.FunctionDecl> result = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.FUNCTION || imported.wildcard()) continue;
+            String targetId = ImportGraph.resolveImportUnitId(
+                    id, imported, parsed.keySet(), importResolutions);
+            Ast.Program target = targetId == null ? null : parsed.get(targetId);
+            if (target == null) continue;
+            for (String name : imported.names()) {
+                Ast.FunctionDecl match = null;
+                int matches = 0;
+                for (Ast.ModuleDecl module : target.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.FunctionDecl fn
+                                && fn.visibility() == Ast.Visibility.PUBLIC
+                                && fn.name().equals(name)) {
+                            match = fn;
+                            matches++;
+                        }
+                    }
+                }
+                // Overloads stay opaque; ImportGraph already rejects ambiguity.
+                if (matches == 1) result.putIfAbsent(ImportRules.localName(imported, name), match);
+            }
+        }
+        return result;
     }
 
     private record LinkedClasses(
             Map<String, Ast.ClassDecl> classes,
-            Map<String, Map<String, Ast.TypeAliasDecl>> aliases) { }
+            Map<String, Map<String, Ast.TypeAliasDecl>> aliases,
+            Map<String, Ast.ClassDecl> ownershipClasses) { }
 
     private static LinkedClasses linkedPublicClasses(
             String unitId,
@@ -156,14 +423,95 @@ public final class IncrementalCompiler {
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Ast.ClassDecl> linked = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
+        LinkedHashMap<String, Ast.ClassDecl> ownershipClasses = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : importer.imports()) {
-            if (imported.kind() != Ast.ImportKind.CLASS || imported.wildcard()) continue;
+            // Both classes and actors have nominal method/protocol metadata.
+            // ImportGraph already proves the requested public declaration kind;
+            // dropping ACTOR here previously let Worker.receive() fall through
+            // to the unknown-member path without checking mailbox ingress.
+            if (imported.wildcard() && imported.namespace() != null
+                    && !ImportRules.isJavaPath(imported.path())) {
+                String sourceId = ImportGraph.resolveImportUnitId(
+                        unitId, imported, parsed.keySet(), importResolutions);
+                Ast.Program source = sourceId == null ? null : parsed.get(sourceId);
+                if (source == null) continue;
+                for (Ast.ModuleDecl module : source.modules()) {
+                    if (!module.name().equals(Parser.ROOT_MODULE)) continue;
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl klass
+                                && klass.visibility() == Ast.Visibility.PUBLIC
+                                && klass.actorKind() == Ast.ActorKind.NONE) {
+                            String qualified = imported.namespace() + "." + klass.name();
+                            Ast.ClassDecl linkedClass =
+                                    ForeignModuleQualifier.qualify(imported.namespace(), module, klass);
+                            if (ownershipClasses.putIfAbsent(qualified, linkedClass) != null
+                                    || linked.putIfAbsent(qualified, linkedClass) != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous linked namespace class '" + qualified + "'");
+                            }
+                            aliases.put(qualified, Map.of());
+                        }
+                    }
+                }
+                continue;
+            }
+            if (imported.wildcard() || (imported.kind() != Ast.ImportKind.CLASS
+                    && imported.kind() != Ast.ImportKind.ACTOR
+                    && imported.kind() != Ast.ImportKind.MODULE)) continue;
             String sourceId = ImportGraph.resolveImportUnitId(
                     unitId, imported, parsed.keySet(), importResolutions);
             if (sourceId == null) continue; // external resolution remains opaque
             Ast.Program source = parsed.get(sourceId);
             if (source == null) {
                 throw new IllegalArgumentException("missing linked class source '" + sourceId + "'");
+            }
+            if (imported.kind() == Ast.ImportKind.MODULE) {
+                // The validated import graph establishes source-unit identity.
+                // Link public non-actor layouts only under the explicit module
+                // qualifier; never expose a short class name or a sibling module.
+                for (String moduleName : imported.names()) {
+                    Ast.ModuleDecl selected = null;
+                    for (Ast.ModuleDecl module : source.modules()) {
+                        if (!module.name().equals(moduleName)) continue;
+                        if (selected != null) {
+                            throw new IllegalArgumentException(
+                                    "ambiguous linked module '" + moduleName + "'");
+                        }
+                        selected = module;
+                    }
+                    if (selected == null) {
+                        throw new IllegalArgumentException(
+                                "missing linked module '" + moduleName + "'");
+                    }
+                    String moduleAlias = ImportRules.localName(imported, moduleName);
+                    String prefix = moduleAlias + ".";
+                    LinkedHashMap<String, Ast.TypeAliasDecl> moduleAliases = new LinkedHashMap<>();
+                    for (Ast.Decl companion : selected.declarations()) {
+                        if (companion instanceof Ast.TypeAliasDecl typeAlias
+                                && moduleAliases.putIfAbsent(typeAlias.name(), typeAlias) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate type alias in linked module: " + typeAlias.name());
+                        }
+                    }
+                    for (Ast.Decl declaration : selected.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl klass
+                                && klass.visibility() == Ast.Visibility.PUBLIC
+                                && klass.actorKind() == Ast.ActorKind.NONE) {
+                            String qualified = prefix + klass.name();
+                            // Signatures name sibling module classes by short
+                            // name; the importer only reaches them as alias.X.
+                            Ast.ClassDecl linkedClass =
+                                    ForeignModuleQualifier.qualify(moduleAlias, selected, klass);
+                            if (ownershipClasses.putIfAbsent(qualified, linkedClass) != null
+                                    || linked.putIfAbsent(qualified, linkedClass) != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous linked public module class '" + qualified + "'");
+                            }
+                            aliases.put(qualified, Map.copyOf(moduleAliases));
+                        }
+                    }
+                }
+                continue;
             }
             for (String name : imported.names()) {
                 Ast.ClassDecl resolved = null;
@@ -196,21 +544,256 @@ public final class IncrementalCompiler {
                                     + "' in source unit '" + unitId + "'");
                 }
                 aliases.put(name, classAliases);
+                if (ownershipClasses.putIfAbsent(name, resolved) != null) {
+                    throw new IllegalArgumentException(
+                            "ambiguous linked ownership class '" + name + "'");
+                }
             }
         }
-        return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
+        return new LinkedClasses(
+                Map.copyOf(linked), Map.copyOf(aliases), Map.copyOf(ownershipClasses));
     }
 
     public synchronized void clear() {
         cache.clear();
+        strictAttoCache.clear();
+        parsedCache.clear();
+        strictAttoParsedCache.clear();
+        importBindingCache.clear();
+        strictAttoImportBindingCache.clear();
+        legacyLayout = PackageLayout.NONE;
+        strictLayout = PackageLayout.NONE;
+    }
+
+    /**
+     * Resolves named cross-file contract imports into type-only linker metadata.
+     *
+     * This deliberately does not splice foreign declarations into the local AST.
+     * The first linked slice supports direct exported contracts. Inherited
+     * cross-file contracts fail closed until parent-type provenance/substitution
+     * is represented explicitly by the linker rather than guessed by name.
+     */
+    private static Map<String, Ast.InterfaceDecl> linkedImportedContracts(
+            String unitId,
+            Ast.Program program,
+            Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.InterfaceDecl> result = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.CONTRACT) continue;
+            if (imported.wildcard()) {
+                // Namespace-qualified contract references need a first-class
+                // qualified nominal metadata model; do not manufacture one by
+                // string concatenation.
+                continue;
+            }
+
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, programs.keySet(), importResolutions);
+            if (targetId == null) continue; // external/package resolver owns it
+            Ast.Program target = programs.get(targetId);
+
+            for (String sourceName : imported.names()) {
+                Ast.InterfaceDecl match = null;
+                for (Ast.ModuleDecl module : target.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.InterfaceDecl iface
+                                && iface.moduleContract()
+                                && iface.visibility() == Ast.Visibility.PUBLIC
+                                && iface.name().equals(sourceName)) {
+                            if (match != null) {
+                                throw new IllegalArgumentException(
+                                        "import contract '" + sourceName + "' from '" + imported.path()
+                                                + "' is ambiguous in '" + targetId + "'");
+                            }
+                            match = iface;
+                        }
+                    }
+                }
+                if (match == null) {
+                    // ImportGraph.validateLinkedImports should already diagnose
+                    // this, but keep this boundary independently fail-closed.
+                    throw new IllegalArgumentException(
+                            "import contract '" + sourceName + "' from '" + imported.path()
+                                    + "' does not resolve to an exported module contract");
+                }
+                if (!match.parents().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "imported module contract '" + sourceName
+                                    + "' extends another contract; cross-file inherited contract metadata "
+                                    + "is not yet linkable without explicit parent provenance");
+                }
+                validatePortableImportedContract(match, targetId);
+
+                String localName = ImportRules.localName(imported, sourceName);
+                Ast.InterfaceDecl previous = result.putIfAbsent(localName, match);
+                if (previous != null && previous != match) {
+                    throw new IllegalArgumentException(
+                            "duplicate imported contract metadata for local name '" + localName + "'");
+                }
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+
+    /**
+     * Imports are checked first by ImportGraph. This step carries their
+     * public nominal declarations into the type checker, including same-unit
+     * ancestor traits needed for inherited generic method obligations.
+     *
+     * Never synthesize a trait from a structural shape, an ambient filesystem
+     * path or a private/module-contract declaration. An ancestor's name is
+     * type-checker metadata, not a new runtime export.
+     */
+    private static Map<String, Ast.InterfaceDecl> linkedImportedTraits(
+            String unitId, Ast.Program program, Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.InterfaceDecl> linked = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.TRAIT
+                    && imported.kind() != Ast.ImportKind.INTERFACE) continue;
+            if (imported.wildcard()) continue; // no unchecked wildcard name grants
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, programs.keySet(), importResolutions);
+            if (targetId == null) continue;
+            Ast.Program target = programs.get(targetId);
+            if (target == null) {
+                throw new IllegalArgumentException(
+                        "missing imported trait source unit '" + targetId + "'");
+            }
+            for (String sourceName : imported.names()) {
+                collectImportedTraitAndAncestors(target, targetId, sourceName,
+                        ImportRules.localName(imported, sourceName),
+                        imported.kind(), linked, new LinkedHashSet<>(), 0);
+            }
+        }
+        return Map.copyOf(linked);
+    }
+
+    private static void collectImportedTraitAndAncestors(
+            Ast.Program target, String targetId, String sourceName,
+            String localName, Ast.ImportKind expectedKind,
+            Map<String, Ast.InterfaceDecl> linked,
+            Set<String> visiting, int depth) {
+        if (depth > 32 || !visiting.add(sourceName)) {
+            throw new IllegalArgumentException(
+                    "imported trait inheritance cycle/depth limit: " + sourceName);
+        }
+        try {
+            Ast.InterfaceDecl match = null;
+            for (Ast.ModuleDecl module : target.modules()) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.InterfaceDecl iface
+                            && !iface.moduleContract()
+                            && iface.visibility() == Ast.Visibility.PUBLIC
+                            && iface.name().equals(sourceName)) {
+                        if (match != null) {
+                            throw new IllegalArgumentException(
+                                    "ambiguous imported trait '" + sourceName
+                                            + "' in '" + targetId + "'");
+                        }
+                        match = iface;
+                    }
+                }
+            }
+            if (match == null) {
+                throw new IllegalArgumentException(
+                        "imported trait '" + sourceName
+                                + "' has no public non-contract declaration in '" + targetId + "'");
+            }
+            if ((expectedKind == Ast.ImportKind.TRAIT
+                            && match.declarationKind() != Ast.InterfaceKind.TRAIT)
+                    || (expectedKind == Ast.ImportKind.INTERFACE
+                            && match.declarationKind() != Ast.InterfaceKind.INTERFACE)) {
+                throw new IllegalArgumentException(
+                        "import " + expectedKind.name().toLowerCase()
+                                + " '" + sourceName + "' resolved to a mismatched declaration kind in '"
+                                + targetId + "'");
+            }
+            Ast.InterfaceDecl existing = linked.putIfAbsent(localName, match);
+            if (existing != null && existing != match) {
+                throw new IllegalArgumentException(
+                        "conflicting imported trait nominal '" + localName + "'");
+            }
+            for (Ast.TypeRef parent : match.parents()) {
+                // A declared parent must be resolved from the SAME authenticated
+                // imported source unit. Never look it up by arbitrary path.
+                collectImportedTraitAndAncestors(target, targetId, parent.name(),
+                        parent.name(), null, linked, visiting, depth + 1);
+            }
+        } finally {
+            visiting.remove(sourceName);
+        }
+    }
+
+    private static final Set<String> LINKABLE_CONTRACT_TYPES = Set.of(
+            "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
+            "Object", "List", "Map", "Tuple", "FixedArray", "Option", "Result", "Future",
+            "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
+            "Channel", "SelectCase", "SelectSet", "SelectResult", "Fnc");
+
+    private static void validatePortableImportedContract(
+            Ast.InterfaceDecl contract,
+            String targetId) {
+        Set<String> contractGenerics = Set.copyOf(contract.genericParameters());
+        for (Ast.InterfaceMember member : contract.members()) {
+            if (member instanceof Ast.InterfaceFieldDecl field) {
+                validatePortableContractType(
+                        field.type(), contractGenerics, targetId, contract.name() + "." + field.name());
+            } else if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                LinkedHashSet<String> generics = new LinkedHashSet<>(contractGenerics);
+                generics.addAll(fn.genericParameters());
+                for (Ast.Param param : fn.parameters()) {
+                    validatePortableContractType(
+                            param.type(), generics, targetId, contract.name() + "." + fn.name());
+                }
+                validatePortableContractType(
+                        fn.returnType(), generics, targetId, contract.name() + "." + fn.name());
+            } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                for (Ast.Param param : method.parameters()) {
+                    validatePortableContractType(param.type(), contractGenerics, targetId,
+                            contract.name() + "." + method.actorName() + "." + method.name());
+                }
+                validatePortableContractType(method.returnType(), contractGenerics, targetId,
+                        contract.name() + "." + method.actorName() + "." + method.name());
+            }
+        }
+    }
+
+    private static void validatePortableContractType(
+            Ast.TypeRef ref,
+            Set<String> generics,
+            String targetId,
+            String member) {
+        if (ref == null) {
+            throw new IllegalArgumentException(
+                    "imported module contract member '" + member + "' from '" + targetId
+                            + "' has an inferred type; linked contract ABI requires explicit types");
+        }
+        if (ref.isStringLiteral()) return;
+        String name = ref.name();
+        if (!generics.contains(name) && !LINKABLE_CONTRACT_TYPES.contains(name)) {
+            throw new IllegalArgumentException(
+                    "imported module contract member '" + member + "' from '" + targetId
+                            + "' references nominal type '" + name + "' without linker provenance; "
+                            + "imported contract conformance fails closed until nominal type identities are linked");
+        }
+        for (Ast.TypeRef argument : ref.arguments()) {
+            validatePortableContractType(argument, generics, targetId, member);
+        }
     }
 
     private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v2\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v4\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
+            for (String contract : module.contracts().stream()
+                    .map(IncrementalCompiler::typeRef).sorted().toList()) {
+                abi.append(" module-contract ").append(contract).append('\n');
+            }
             for (Ast.Annotation annotation : module.annotations()) {
                 if (annotation.name().equals("AdheresTo")) {
                     abi.append(" module-annotation AdheresTo:");
@@ -218,7 +801,16 @@ public final class IncrementalCompiler {
                     abi.append('\n');
                 }
             }
-            for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
+            // Lexical declaration order is not public ABI. Keep each
+            // declaration's internal parameter/member order and sort the
+            // complete export entries to prevent false importer invalidation.
+            List<String> declarations = new ArrayList<>();
+            for (Ast.Decl decl : module.declarations()) {
+                StringBuilder exported = new StringBuilder();
+                appendAbi(exported, decl);
+                if (!exported.isEmpty()) declarations.add(exported.toString());
+            }
+            declarations.stream().sorted().forEach(abi::append);
         }
         return digest(abi.toString());
     }
@@ -230,25 +822,73 @@ public final class IncrementalCompiler {
             if (fn.async()) abi.append("async ");
             if (fn.generator()) abi.append("generator ");
             if (fn.structural()) abi.append("structural ");
+            abi.append("suspends=").append(fn.suspends())
+                    .append(" nonlexical=").append(fn.nonLexical())
+                    .append(" trapped=").append(fn.trapped()).append(' ');
             abi.append(fn.kind()).append(" pub ").append(fn.name());
             appendGenericSpecs(abi, fn.genericSpecs());
             appendParams(abi, fn.parameters());
-            abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+            abi.append("=>").append(typeRef(fn.returnType()));
+            appendEffects(abi, fn.effects());
+            appendAnnotations(abi, fn.annotations());
+            abi.append('\n');
             return;
         }
         if (decl instanceof Ast.ClassDecl klass) {
             if (klass.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(klass.actorKind()).append(" pub class ").append(klass.name());
+            abi.append(klass.actorKind()).append(" pub class ").append(klass.name())
+                    .append(" abstract=").append(klass.isAbstract())
+                    .append(" concurrency=").append(klass.actorConcurrency().transport())
+                    .append('/').append(klass.actorConcurrency().requestConcurrency())
+                    .append('/').append(klass.actorConcurrency().messageConcurrency())
+                    .append('/').append(klass.actorConcurrency().serialReceive());
+            appendAnnotations(abi, klass.annotations());
             appendGenerics(abi, klass.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
             abi.append(" implements ");
             for (Ast.TypeRef iface : klass.interfaces()) abi.append(typeRef(iface)).append(',');
             abi.append('\n');
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                // These are capabilities and process-isolation guarantees, not
+                // implementation details. If they change, importers must never
+                // reuse a previously admitted actor send/receive type judgment.
+                Ast.ActorMessageContract contract = klass.actorMessageContract();
+                abi.append(" actor-DATA-receives=")
+                        .append(contract.receives() == null ? "<undeclared>"
+                                : typeRef(contract.receives()))
+                        .append(" sends=")
+                        .append(contract.sends() == null ? "<undeclared>"
+                                : typeRef(contract.sends()))
+                        .append('\n');
+                Ast.ActorConcurrency policy = klass.actorConcurrency();
+                abi.append(" actor-policy=")
+                        .append(policy.transport()).append(':')
+                        .append(policy.requestConcurrency()).append(':')
+                        .append(policy.messageConcurrency()).append(':')
+                        .append(policy.serialReceive()).append('\n');
+                for (Ast.ProtectedStateField state : klass.sealedStateFields()) {
+                    abi.append(" sealed-state=")
+                            .append(state.name()).append(':')
+                            .append(typeRef(state.type())).append('\n');
+                }
+            }
+            // Computed class indexing is checked against the complete instance-field
+            // domain, not only the public ABI surface. The first non-public field
+            // changes an external dynamic receiver[key] from safe to rejected, so
+            // that safety-domain transition must invalidate linked dependents.
+            if (klass.actorKind() == Ast.ActorKind.NONE) {
+                boolean hasNonPublicComputedIndexField = klass.fields().stream()
+                        .anyMatch(field -> field.visibility() != Ast.Visibility.PUBLIC);
+                abi.append(" computed-index-has-nonpublic-field=")
+                        .append(hasNonPublicComputedIndexField)
+                        .append('\n');
+            }
             if (klass.constructor() != null
                     && klass.constructor().visibility() == Ast.Visibility.PUBLIC) {
                 abi.append(" constructor");
                 appendParams(abi, klass.constructor().parameters());
+                appendAnnotations(abi, klass.constructor().annotations());
                 abi.append('\n');
             } else if (klass.constructor() == null) {
                 // Legacy synthesized constructors are externally visible when
@@ -272,7 +912,10 @@ public final class IncrementalCompiler {
                 if (field.visibility() != Ast.Visibility.PUBLIC) continue;
                 abi.append(" field ").append(field.bindingKind()).append(' ')
                         .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
-                        .append(' ').append(field.name()).append('\n');
+                        .append(' ').append(field.name()).append(" mutableReferent=")
+                        .append(field.mutableReferent());
+                appendAnnotations(abi, field.annotations());
+                abi.append('\n');
             }
             List<String> methodEntries = new ArrayList<>();
             for (Ast.MethodDecl method : klass.methods()) {
@@ -285,7 +928,9 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append("interface ").append(iface.visibility()).append(' ').append(iface.name());
+            abi.append(iface.declarationKind().name().toLowerCase()).append(' ')
+                    .append(iface.visibility()).append(' ').append(iface.name())
+                    .append(" moduleContract=").append(iface.moduleContract());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : iface.parents()) abi.append(typeRef(parent)).append(',');
@@ -294,8 +939,26 @@ public final class IncrementalCompiler {
             for (Ast.InterfaceMember member : iface.members()) {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
                     memberEntries.add(interfaceFunctionAbi(fn));
+                } else if (member instanceof Ast.InterfaceActorDecl actor) {
+                    // A required nominal actor is contract ABI even though it
+                    // contributes no ordinary module-value member.
+                    memberEntries.add(" contract-actor " + actor.name() + "\n");
+                } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                    StringBuilder signature = new StringBuilder(" contract-actor-mtd ");
+                    signature.append(method.visibility()).append(' ')
+                            .append(method.actorName()).append('.').append(method.name())
+                            .append("#arity").append(method.parameters().size());
+                    appendParams(signature, method.parameters());
+                    signature.append("=>").append(typeRef(method.returnType())).append('\n');
+                    memberEntries.add(signature.toString());
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                    memberEntries.add(" iface-field " + field.name() + ":" + typeRef(field.type()) + "\n");
+                    String requirement = iface.moduleContract()
+                            ? (field.bindingKind() == null ? "readable"
+                                    : "rebindable=" + (field.bindingKind() == Ast.BindingKind.LET)
+                                            + ",mutableReferent=" + field.mutableReferent())
+                            : "mutableReferent=" + field.mutableReferent();
+                    memberEntries.add(" iface-field " + requirement + " " + field.name()
+                            + ":" + typeRef(field.type()) + "\n");
                 }
             }
             memberEntries.stream().sorted().forEach(abi::append);
@@ -311,7 +974,10 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
             abi.append("binding ").append(field.bindingKind()).append(' ')
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
-                    .append(' ').append(field.name()).append('\n');
+                    .append(' ').append(field.name()).append(" mutableReferent=")
+                    .append(field.mutableReferent());
+            appendAnnotations(abi, field.annotations());
+            abi.append('\n');
         }
     }
 
@@ -319,12 +985,19 @@ public final class IncrementalCompiler {
         StringBuilder out = new StringBuilder();
         if (method.async()) out.append("async ");
         if (method.structural()) out.append("structural ");
+        out.append("suspends=").append(method.suspends())
+                .append(" abstract=").append(method.isAbstract())
+                .append(" critical=").append(method.critical())
+                .append(" receiver=").append(typeRef(method.explicitReceiverType()));
         out.append(method.isStatic() ? " static-fnc " : " method ")
                 .append(method.name())
                 .append("#arity").append(method.arity());
         appendGenerics(out, method.genericParameters());
         appendParams(out, method.parameters());
-        out.append("=>").append(typeRef(method.returnType())).append('\n');
+        out.append("=>").append(typeRef(method.returnType()));
+        appendEffects(out, method.effects());
+        appendAnnotations(out, method.annotations());
+        out.append('\n');
         return out.toString();
     }
 
@@ -335,7 +1008,9 @@ public final class IncrementalCompiler {
                 .append("#arity").append(fn.parameters().size());
         appendGenerics(out, fn.genericParameters());
         appendParams(out, fn.parameters());
-        out.append("=>").append(typeRef(fn.returnType())).append('\n');
+        out.append("=>").append(typeRef(fn.returnType()));
+        appendEffects(out, fn.effects());
+        out.append('\n');
         return out.toString();
     }
 
@@ -365,9 +1040,45 @@ public final class IncrementalCompiler {
             if (param.structural()) abi.append("structural ");
             abi.append(typeRef(param.type()));
             if (param.mutable()) abi.append(" mut");
+            // Named arguments make source parameter names observable API.
+            appendLengthPrefixed(abi, param.name());
             abi.append(',');
         }
         abi.append(')');
+    }
+
+    private static void appendLengthPrefixed(StringBuilder abi, String value) {
+        if (value == null) {
+            abi.append("-1:");
+        } else {
+            abi.append(value.length()).append(':').append(value);
+        }
+    }
+
+    private static void appendEffects(StringBuilder abi, Ast.EffectSpec effects) {
+        abi.append(" effects[throws=");
+        effects.throwsTypes().stream().map(IncrementalCompiler::typeRef).sorted()
+                .forEach(type -> appendLengthPrefixed(abi, type));
+        abi.append(",raises=");
+        effects.raisesTypes().stream().map(IncrementalCompiler::typeRef).sorted()
+                .forEach(type -> appendLengthPrefixed(abi, type));
+        abi.append(",panics=");
+        effects.panicsTypes().stream().map(IncrementalCompiler::typeRef).sorted()
+                .forEach(type -> appendLengthPrefixed(abi, type));
+        abi.append(']');
+    }
+
+    private static void appendAnnotations(StringBuilder abi, List<Ast.Annotation> annotations) {
+        abi.append(" annotations[");
+        for (Ast.Annotation annotation : annotations) {
+            appendLengthPrefixed(abi, annotation.name());
+            abi.append('(');
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                appendLengthPrefixed(abi, typeRef(argument));
+            }
+            abi.append(')');
+        }
+        abi.append(']');
     }
 
     private static String typeRef(Ast.TypeRef ref) {
@@ -425,7 +1136,8 @@ public final class IncrementalCompiler {
                             "conflicting resolved import '" + resolution.getKey() + "' for '" + importerId + "'");
                 }
             }
-            normalized.put(importerId, Map.copyOf(imports));
+            if (normalized.putIfAbsent(importerId, Map.copyOf(imports)) != null)
+                throw new IllegalArgumentException("duplicate normalized importer '" + importerId + "'");
         }
         return Map.copyOf(normalized);
     }
@@ -443,11 +1155,16 @@ public final class IncrementalCompiler {
         return Map.copyOf(frozen);
     }
 
-    private static String packageId(String unitId, Ast.Program program) {
-        if (program.namespace() != null) return program.namespace();
-        String id = unitId;
-        if (id.endsWith(".ores")) id = id.substring(0, id.length() - ".ores".length());
-        return id;
+    private static String packageId(String unitId) {
+        // A source namespace is a compile-time name, not ownership authority.
+        // Until a verified manifest-defined multi-file PackageInstanceId is
+        // plumbed through this compiler, every code unit owns an independent
+        // singleton package. In particular, two unrelated dependencies that
+        // both spell "namespace billing;" must NEVER share a packageId.
+        //
+        // Preserve the exact normalized source-unit identity, including the
+        // suffix, to avoid collisions between different source kinds.
+        return "file:" + normalizeUnitId(unitId);
     }
 
     private static String normalizeUnitId(String id) {
@@ -482,14 +1199,64 @@ public final class IncrementalCompiler {
             Map<String, CompiledUnit> units,
             Set<String> rebuiltUnits,
             Set<String> reusedUnits,
-            List<List<String>> initializationGroups) {
+            List<List<String>> initializationGroups,
+            Set<String> reparsedUnits) {
+        /**
+         * Interface digest per (package, namespace): the member units' ABI
+         * digests in unit order. An importer of a namespace needs re-checking
+         * only when this digest changes.
+         */
+        public Map<String, String> namespaceInterfaces() {
+            java.util.TreeMap<String, StringBuilder> grouped = new java.util.TreeMap<>();
+            for (CompiledUnit unit : new java.util.TreeMap<>(units).values()) {
+                String key = unit.packageId() + "#" + (unit.namespace() == null ? "" : unit.namespace());
+                grouped.computeIfAbsent(key, ignored -> new StringBuilder())
+                        .append(unit.unitId()).append('=').append(unit.abiDigest()).append('\n');
+            }
+            LinkedHashMap<String, String> out = new LinkedHashMap<>();
+            grouped.forEach((key, text) -> out.put(key, digest(text.toString())));
+            return Map.copyOf(out);
+        }
+
+        /** Interface digest per package, over its namespaces' interface digests. */
+        public Map<String, String> packageInterfaces() {
+            java.util.TreeMap<String, StringBuilder> grouped = new java.util.TreeMap<>();
+            for (Map.Entry<String, String> ns : new java.util.TreeMap<>(namespaceInterfaces()).entrySet()) {
+                String pkg = ns.getKey().substring(0, ns.getKey().indexOf('#'));
+                grouped.computeIfAbsent(pkg, ignored -> new StringBuilder())
+                        .append(ns.getKey()).append('=').append(ns.getValue()).append('\n');
+            }
+            LinkedHashMap<String, String> out = new LinkedHashMap<>();
+            grouped.forEach((key, text) -> out.put(key, digest(text.toString())));
+            return Map.copyOf(out);
+        }
+
+        /** (package#namespace) groups that contain a re-checked unit. */
+        public Set<String> rebuiltNamespaces() {
+            LinkedHashSet<String> out = new LinkedHashSet<>();
+            for (String id : rebuiltUnits) {
+                CompiledUnit unit = units.get(id);
+                if (unit != null) out.add(unit.packageId() + "#" + (unit.namespace() == null ? "" : unit.namespace()));
+            }
+            return Set.copyOf(out);
+        }
         public BuildResult {
             units = Map.copyOf(units);
             rebuiltUnits = Set.copyOf(rebuiltUnits);
             reusedUnits = Set.copyOf(reusedUnits);
+            reparsedUnits = Set.copyOf(reparsedUnits);
             initializationGroups = initializationGroups.stream()
                     .map(List::copyOf)
                     .toList();
+        }
+
+        /** Backward-compatible constructor for callers that track only checked units. */
+        public BuildResult(
+                Map<String, CompiledUnit> units,
+                Set<String> rebuiltUnits,
+                Set<String> reusedUnits,
+                List<List<String>> initializationGroups) {
+            this(units, rebuiltUnits, reusedUnits, initializationGroups, Set.of());
         }
 
         /** Backward-compatible constructor for callers that do not need lifecycle planning. */
@@ -497,7 +1264,7 @@ public final class IncrementalCompiler {
                 Map<String, CompiledUnit> units,
                 Set<String> rebuiltUnits,
                 Set<String> reusedUnits) {
-            this(units, rebuiltUnits, reusedUnits, List.of());
+            this(units, rebuiltUnits, reusedUnits, List.of(), Set.of());
         }
 
         public boolean rebuilt(String unitId) { return rebuiltUnits.contains(normalizeUnitId(unitId)); }

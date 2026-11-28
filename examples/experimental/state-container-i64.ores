@@ -1,0 +1,9 @@
+define state container Counter as
+  state { let int count: 0; }
+  increment(int amount) -> int ::
+    return handle_state(critical-write |s| -> {
+      s.count = s.count + amount;
+      s.count;
+    });
+  end
+end

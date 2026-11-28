@@ -99,7 +99,7 @@ final class OresFuturesTest {
     }
 
     @Test
-    void allChildCancellationCancelsSiblingsAndDetachesAllWaiters() {
+    void allChildCancellationDetachesWithoutRevokingBorrowedSiblings() {
         OresFuture<Integer> pending = new OresFuture<>();
         OresFuture<Integer> cancelled = new OresFuture<>();
 
@@ -111,8 +111,11 @@ final class OresFuturesTest {
         assertThrows(CancellationException.class, all::join);
         assertEquals(0, pending.pendingRuntimeWaiterCount());
         assertEquals(0, cancelled.pendingRuntimeWaiterCount());
-        assertTrue(pending.isCancelled(),
-                "all() owns its child set: aggregate cancellation cancels remaining siblings");
+        assertFalse(pending.isCancelled(),
+                "an observed child cancellation is not authority to revoke unrelated shared work");
+        assertTrue(pending.completeFromRuntime(23),
+                "the borrowed sibling must remain independently live after aggregate cancellation");
+        assertEquals(23, pending.join());
     }
 
     @Test
@@ -135,15 +138,44 @@ final class OresFuturesTest {
     }
 
     @Test
-    void cancellingAggregateCancelsChildren() {
+    void cancellingAggregateDetachesWithoutCancellingBorrowedChildren() {
         CompletableFuture<Integer> first = new CompletableFuture<>();
         CompletableFuture<Integer> second = new CompletableFuture<>();
 
         OresFuture<List<Integer>> all = OresFutures.all(List.of(first, second));
         assertTrue(all.cancel(true));
 
-        assertTrue(first.isCancelled());
-        assertTrue(second.isCancelled());
+        assertFalse(first.isCancelled(), "observer cancellation cannot revoke upstream host work");
+        assertFalse(second.isCancelled(), "observer cancellation cannot revoke a second producer");
+        assertTrue(first.complete(11));
+        assertTrue(second.complete(12));
+        assertTrue(all.isCancelled(), "late producer completions cannot resurrect the observer");
+    }
+
+    @Test
+    void nestedFutureResultPreservesExactlyOneLayerWithoutAdoptingInnerProducer() {
+        OresFuture<Integer> inner = new OresFuture<>();
+        OresFuture<OresFuture<Integer>> outer = OresFuture.completed(inner);
+
+        assertSame(inner, outer.join(), "outer success yields the inner Future, not its value");
+        assertSame(outer, OresFuture.from(outer),
+                "converting an OresFuture never recursively adopts a nested Future");
+        assertFalse(inner.isDone(), "outer completion must not settle or cancel an unrelated inner producer");
+        assertTrue(inner.completeFromRuntime(42));
+        assertEquals(42, inner.join());
+    }
+
+    @Test
+    void hostStageAdapterPreservesNestedFutureAndDoesNotCancelInnerOnObserverCancellation() {
+        OresFuture<Integer> inner = new OresFuture<>();
+        CompletableFuture<OresFuture<Integer>> stage = new CompletableFuture<>();
+        OresFuture<OresFuture<Integer>> adapted = OresFuture.from(stage);
+
+        assertTrue(stage.complete(inner));
+        assertSame(inner, adapted.join(), "CompletionStage adapter must preserve nested Future identity");
+        assertFalse(inner.isCancelled());
+        assertTrue(inner.completeFromRuntime(17));
+        assertEquals(17, inner.join());
     }
 
     @Test

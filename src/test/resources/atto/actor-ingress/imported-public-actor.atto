@@ -1,0 +1,5 @@
+define pub actor Worker as
+  receive(ActorMail<String> mail): void {
+    return;
+  }
+end

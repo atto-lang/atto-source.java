@@ -1,0 +1,32 @@
+name: Rust actor lifecycle bounded models
+
+on:
+  pull_request:
+    paths:
+      - 'tools/actor-lifecycle-models/**'
+      - '.github/workflows/actor-lifecycle-models-rust.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-models:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+      - name: Enforce Rust formatting
+        run: cargo fmt --manifest-path tools/actor-lifecycle-models/Cargo.toml -- --check
+      - name: Enforce Clippy warnings as errors
+        run: cargo clippy --manifest-path tools/actor-lifecycle-models/Cargo.toml --all-targets -- -D warnings
+      - name: Bounded exploration and mutation regressions
+        run: cargo test --manifest-path tools/actor-lifecycle-models/Cargo.toml
+      - name: Print deterministic source-model evidence
+        run: cargo run --manifest-path tools/actor-lifecycle-models/Cargo.toml

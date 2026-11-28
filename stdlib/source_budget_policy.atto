@@ -1,0 +1,33 @@
+// Per-import-closure bound math from SourceAdmissionBudget.java.
+// The trusted compiler must count real UTF-8 bytes and authenticated units.
+define module source_budget_policy as
+  pub fnc valid_depth(int depth): bool {
+    return depth >= 0 && depth <= 96;
+  }
+
+  pub fnc valid_state(int used_bytes, int used_units): bool {
+    return used_bytes >= 0 && used_bytes <= 67108864 &&
+           used_units >= 0 && used_units <= 1024;
+  }
+
+  // A positive result is budget metadata, NOT authority to load a file.
+  // Check with subtraction, never a potentially overflowing addition.
+  pub fnc can_admit(int used_bytes, int used_units,
+                    int actual_utf8_bytes, int depth): bool {
+    if !valid_state(used_bytes, used_units) || !valid_depth(depth) ||
+       actual_utf8_bytes < 0 || used_units >= 1024; do
+      return false;
+    fi
+    return actual_utf8_bytes <= 67108864 - used_bytes;
+  }
+
+  pub fnc bytes_remaining(int used_bytes, int used_units): int {
+    if !valid_state(used_bytes, used_units); do return -1; fi
+    return 67108864 - used_bytes;
+  }
+
+  pub fnc units_remaining(int used_bytes, int used_units): int {
+    if !valid_state(used_bytes, used_units); do return -1; fi
+    return 1024 - used_units;
+  }
+end
