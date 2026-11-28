@@ -120,7 +120,7 @@ final class SourceActorPubSubExecutionTest {
         // A receipt confirms atomic admission, not processing completion.
         assertEquals("subscribed|p-1|1",
                 run(pinnedFixture("actor-pubsub-try-publish-v1.atto",
-                        "41fda4efc19823807b56545a31230b6182de0ee1"), "actor-pubsub-try-publish-v1.atto"));
+                        "e064fa733693aa5fbd4a7d98edbe495202f2b844"), "actor-pubsub-try-publish-v1.atto"));
     }
 
     @Test
@@ -130,7 +130,7 @@ final class SourceActorPubSubExecutionTest {
         // second publication has been refused; no timing-based sleeps.
         assertEquals("ready|1|full|first|2|next",
                 run(pinnedFixture("actor-pubsub-try-publish-full-rollback.atto",
-                        "dec04036310a0d1e81700147cfff78fedd466b44"), "actor-pubsub-try-publish-full-rollback.atto"));
+                        "fc5d1e47966c92efe04322947ae6657e8ade47f3"), "actor-pubsub-try-publish-full-rollback.atto"));
     }
 
     @Test

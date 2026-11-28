@@ -36,7 +36,7 @@ pub suspends fnc main(): void {
   val Result<PublishReceipt, PublishError> receipt = topic.try_publish(share! event);
   // Snapshot just the immutable unsigned sequence before the next await;
   // an actor-affine receipt need not live across the task suspension.
-  val String sequence = receipt.unwrap().sequence;
+  const String sequence = receipt.unwrap().sequence;
 
   val received = (await subscriber.outputs.next()).value.unwrap();
   stdio.stdout.write(received.value);

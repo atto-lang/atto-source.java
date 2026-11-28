@@ -35,7 +35,7 @@ pub suspends fnc main(): void {
 
   val String first = "first";
   val Result<PublishReceipt, PublishError> accepted = topic.try_publish(share! first);
-  val String first_sequence = accepted.unwrap().sequence;
+  const String first_sequence = accepted.unwrap().sequence;
   stdio.stdout.write(first_sequence);
   stdio.stdout.write("|");
 
@@ -45,7 +45,7 @@ pub suspends fnc main(): void {
     stdio.stdout.write("full|");
   } else {
     stdio.stdout.write("unexpected-success|");
-  }
+  } fi
 
   val String signal = "release";
   await gate.publish(share! signal);
@@ -55,7 +55,7 @@ pub suspends fnc main(): void {
 
   val String next = "next";
   val Result<PublishReceipt, PublishError> next_receipt = topic.try_publish(share! next);
-  val String next_sequence = next_receipt.unwrap().sequence;
+  const String next_sequence = next_receipt.unwrap().sequence;
   stdio.stdout.write(next_sequence);
   stdio.stdout.write("|");
 

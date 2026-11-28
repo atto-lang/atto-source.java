@@ -25,9 +25,9 @@ command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 # Pin both newly added share! source fixtures before Maven/guest execution.
 test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-share-bang-v1.atto)" = "00f311e2f569cf66009ba533282b63d35571853f"
 test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-reject-unlowered-share-bang-try-publish.atto)" = "dc33b5970301f4fbb84eea001e19b9611c0a0586"
-test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-v1.atto)" = "41fda4efc19823807b56545a31230b6182de0ee1"
+test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-v1.atto)" = "e064fa733693aa5fbd4a7d98edbe495202f2b844"
 test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-policy-denied.atto)" = "5f3d79ba763a98ff6a1daf5b85d9d6ae0cec6a41"
-test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-full-rollback.atto)" = "dec04036310a0d1e81700147cfff78fedd466b44"
+test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-full-rollback.atto)" = "fc5d1e47966c92efe04322947ae6657e8ade47f3"
 
 # Clean before execution: a stale Surefire report from an earlier PR head must
 # never satisfy exact-method admission for this commit.

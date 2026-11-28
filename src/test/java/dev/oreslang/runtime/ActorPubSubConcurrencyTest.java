@@ -394,7 +394,7 @@ final class ActorPubSubConcurrencyTest {
                 assertEquals(0, first.get().pending());
                 group.leave(actor);
                 assertTrue(second.get().closed());
-                assertEquals(0L, runtime.sharedMemoryBytes());
+                assertSharedQuotaRetired(runtime);
             } finally {
                 executor.shutdownNow();
                 actor.stop();
