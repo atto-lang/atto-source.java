@@ -1,0 +1,68 @@
+// Deterministic RELIABLE capacity-one guest: a separate gate topic holds
+// the subscriber turn before it can read the event queue. No sleeps.
+define actor Subscriber as
+  suspends receive(ActorMail<String> mail): void {
+    val group = actor.group("full-rollback");
+    val events = group.topic<String>("events");
+    val gate = group.topic<String>("gate");
+    val subscription = events.subscribe();
+    val barrier = gate.subscribe();
+    self.send("ready");
+    val release = await barrier.next();
+    val first = await subscription.next();
+    self.send(first);
+    val second = await subscription.next();
+    self.send(second);
+    barrier.close();
+    subscription.close();
+    self.end();
+    return;
+  }
+end
+
+pub suspends fnc main(): void {
+  val group = actor.group("full-rollback");
+  val topic = group.topic<String>("events", "reliable", 1);
+  val gate = group.topic<String>("gate", "reliable", 1);
+  val subscriber = spawn Subscriber();
+  await subscriber.get_ready();
+  group.join(subscriber);
+  subscriber.send("start");
+
+  val ready = (await subscriber.outputs.next()).value.unwrap();
+  stdio.stdout.write(ready.value);
+  stdio.stdout.write("|");
+
+  val String first = "first";
+  val Result<PublishReceipt, PublishError> accepted = topic.try_publish(share! first);
+  val String first_sequence = accepted.unwrap().sequence;
+  stdio.stdout.write(first_sequence);
+  stdio.stdout.write("|");
+
+  val String rejected = "must-not-deliver";
+  val Result<PublishReceipt, PublishError> refused = topic.try_publish(share! rejected);
+  if refused.is_err() {
+    stdio.stdout.write("full|");
+  } else {
+    stdio.stdout.write("unexpected-success|");
+  }
+
+  val String signal = "release";
+  await gate.publish(share! signal);
+  val drained = (await subscriber.outputs.next()).value.unwrap();
+  stdio.stdout.write(drained.value);
+  stdio.stdout.write("|");
+
+  val String next = "next";
+  val Result<PublishReceipt, PublishError> next_receipt = topic.try_publish(share! next);
+  val String next_sequence = next_receipt.unwrap().sequence;
+  stdio.stdout.write(next_sequence);
+  stdio.stdout.write("|");
+
+  val received = (await subscriber.outputs.next()).value.unwrap();
+  stdio.stdout.write(received.value);
+  await subscriber.get_done();
+  group.leave(subscriber);
+  group.close();
+  return;
+}
