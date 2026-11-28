@@ -4436,6 +4436,15 @@ public final class TypeChecker {
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type sumReceiver = receiverDispatchType(deref(receiver));
+            // Direct calls have their own checked share-operand rule.
+            // Ordinary member-value inference must not return Unknown here.
+            if (sumReceiver instanceof Named topic
+                    && topic.name().equals("Topic")
+                    && member.member().equals("try_publish")) {
+                throw new IllegalArgumentException(
+                        "Topic.try_publish requires a direct checked share! call; "
+                                + "first-class extraction is unsupported");
+            }
             // Nested extraction consumes the receiver. unwrap_all also
             // requires a checked static-depth proof bound to the CallExpr's
             // identity. A first-class method value would bypass both direct
