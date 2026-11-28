@@ -281,7 +281,10 @@ final class ActorDeclarationLexicalBoundaryTest {
     }
 
     @Test
-    void actorMayUseExplicitSameFileParentButNotAmbientSiblingTypes() {
+    void storageFreeSameKindActorParentIsAllowedButIsolationKindCannotChange() {
+        // A same-kind non-serial parent with no instance storage is verified
+        // by ActorStateContract. Inherited mutable state and serial-lane
+        // inheritance remain separately forbidden.
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 shared actor Parent {
                   pub fnc inherited(): int { return 1; }

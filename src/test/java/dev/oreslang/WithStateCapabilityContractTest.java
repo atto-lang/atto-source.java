@@ -340,6 +340,33 @@ final class WithStateCapabilityContractTest {
                         "val immutableText = s.label; return s.n;"))));
     }
 
+    @Test void emptyCallbackStillRequiresMatchingWithLoanEffect() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { return 7; })",
+            "self.handle_state(critical read |s| -> { return 7; })",
+            "using state.read(|s| -> { return 7; })",
+            "using state.read(critical read |s| -> { return 7; })"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                () -> DeclaredEffectVerifier.verify(Parser.parse(actor("with state.write", callback))),
+                "READ loan requires declared state.read even without field reads: " + callback);
+            assertDoesNotThrow(() ->
+                DeclaredEffectVerifier.verify(Parser.parse(actor("with state.read", callback))));
+        }
+        for (String callback : new String[] {
+            "self.handle_state(critical |s| -> { return 7; })",
+            "self.handle_state(critical write |s| -> { return 7; })",
+            "using state.write(critical |s| -> { return 7; })",
+            "using state.write(critical write |s| -> { return 7; })"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                () -> DeclaredEffectVerifier.verify(Parser.parse(actor("with state.read", callback))),
+                "WRITE loan requires declared state.write even without field writes: " + callback);
+            assertDoesNotThrow(() ->
+                DeclaredEffectVerifier.verify(Parser.parse(actor("with state.write", callback))));
+        }
+    }
+
     @Test void readDefaultWithExplicitEffect() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(actor("with state.read", READ))));
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
@@ -379,11 +406,97 @@ final class WithStateCapabilityContractTest {
                 ActorStateContract.verify(Parser.parse(actor("with state.read",
                     "self.handle_state(|s| -> { self.handle_state(|t| -> { return t.v; }); return s.v; })"))));
     }
+    @Test void referenceBearingActorStateResultsNeedProvenDetachedSnapshot() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { return s.items; })",
+            "using state.read(|s| -> { return s.items; })",
+            "self.handle_state(critical read |s| -> { return s.items; })",
+            "using state.read(critical read |s| -> { return s.items; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; } "
+                    + "get(): List[int] with state.read { return " + callback + "; } end";
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), callback);
+            assertTrue(denied.getMessage().contains("verified detached snapshot"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void scalarCallbackResultsRemainSupported() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { return s.v; })",
+            "using state.read(|s| -> { return s.v; })",
+            "self.handle_state(critical read |s| -> { return s.v; })"
+        }) {
+            assertDoesNotThrow(() -> TypeChecker.checkTypes(
+                    Parser.parse(actor("with state.read", callback))), callback);
+        }
+    }
+
+    @Test void referenceResultThroughLocalAliasAlsoFailsClosed() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { const alias = s.items; return alias; })",
+            "using state.read(|s| -> { const alias = s.items; return alias; })"
+        }) {
+            String source = "define actor Counter as "
+                    + "state { items: List[int] = [1, 2]; } "
+                    + "get(): List[int] with state.read { return " + callback + "; } end";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), callback);
+        }
+    }
+
     @Test void actorClassStorageMustBeStateMap() {
         assertThrows(IllegalArgumentException.class, () ->
                 ActorStateContract.verify(Parser.parse(
                     "define actor A as let v: int = 0; end")));
     }
+    @Test void actorSuperclassInheritanceCannotBypassSealedStateLayout() {
+        // Preserve explicit method-only same-kind actor inheritance.
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
+                "shared actor Parent { pub fnc inherited(): int { return 1; } } "
+                + "shared actor Child extends Parent { "
+                + "pub fnc current(): int { return self.inherited(); } }")));
+
+        // Unknown or non-actor parents must never supply hidden instance
+        // storage, even when a separate type checker has not run yet.
+        Ast.Program unresolved = Parser.parse(
+                "define actor Child extends Base as ping(): int { return 1; } end");
+        var unresolvedError = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(unresolved));
+        assertTrue(unresolvedError.getMessage().contains("same-module actor"));
+
+        Ast.Program inheritedState = Parser.parse(
+                "shared actor Parent { state { v: int = 1; } } "
+                + "shared actor Child extends Parent { pub fnc current(): int { return 1; } }");
+        var storageError = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(inheritedState));
+        assertTrue(storageError.getMessage().contains("inherited storage"),
+                storageError::getMessage);
+
+        Ast.Program serial = Parser.parse(
+                "define serial actor Child extends Base as "
+                + "ping(): int { return 1; } end");
+        var serialError = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(serial));
+        assertTrue(serialError.getMessage().contains("serial actor superclass"),
+                serialError::getMessage);
+
+        Ast.Program mismatch = Parser.parse(
+                "isoactor Parent { } shared actor Child extends Parent { }");
+        var kindError = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(mismatch));
+        assertTrue(kindError.getMessage().contains("isolation kind"),
+                kindError::getMessage);
+
+        // Implemented interfaces do not contribute unchecked instance
+        // storage; they remain distinct from superclass inheritance.
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
+                "define actor Child from BaseContract as "
+                + "ping(): int { return 1; } end")));
+    }
+
     @Test void statelessActorMethodsStillReceiveSealedStateVerification() {
         assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
                 "define actor Stateless as ping(): int { return 1; } end")));
@@ -423,6 +536,38 @@ final class WithStateCapabilityContractTest {
             var usingFailure = assertThrows(IllegalArgumentException.class,
                     () -> ActorStateContract.verify(parsedUsing), op);
             assertTrue(usingFailure.getMessage().contains("state-backed"), op);
+        }
+    }
+
+    @Test void mutableBorrowCannotEscapeActorStateLoan() {
+        // Canonical source uses rt mut borrow; the frontend may still lower it
+        // to an internal UnaryExpr("&mut") marker for ownership analysis.
+        for (String borrow : new String[] {
+            "rt mut borrow s.v"
+        }) {
+            for (String callback : new String[] {
+                "self.handle_state(|s| -> { " + borrow + "; return s.v; })",
+                "using state.read(|s| -> { " + borrow + "; return s.v; })",
+                "self.handle_state(critical |s| -> { " + borrow + "; return s.v; })",
+                "using state.write(critical |s| -> { " + borrow + "; return s.v; })"
+            }) {
+                String code = actor("with state.read, state.write", callback);
+                Ast.Program program = Parser.parse(code);
+                IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(program), callback);
+                assertTrue(denied.getMessage().contains("state-backed borrow"),
+                    denied::getMessage);
+            }
+        }
+    }
+
+    @Test void scopedStateLoanDoesNotRejectUnrelatedLocalBorrow() {
+        for (String callback : new String[] {
+            "self.handle_state(|s| -> { const local = 7; rt borrow local; return s.v; })",
+            "using state.read(|s| -> { const local = 7; rt borrow local; return s.v; })"
+        }) {
+            assertDoesNotThrow(() -> ActorStateContract.verify(
+                Parser.parse(actor("with state.read", callback))), callback);
         }
     }
 

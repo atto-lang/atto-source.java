@@ -50,23 +50,80 @@ public final class ActorStateContract {
 
     public static void verify(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            // Resolve explicit same-module actor parents before checking any
+            // subclass, including forward declarations. Ambient names and
+            // imported classes do not grant hidden actor storage authority.
+            Map<String, Ast.ClassDecl> declared = new java.util.HashMap<>();
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.ClassDecl klass
-                        && klass.actorKind() != Ast.ActorKind.NONE) verifyActor(klass);
+                        && declared.putIfAbsent(klass.name(), klass) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate class/actor symbol '" + klass.name() + "'");
+                }
+            }
+            for (Ast.ClassDecl klass : declared.values()) {
+                if (klass.actorKind() != Ast.ActorKind.NONE) verifyActor(klass, declared);
             }
         }
     }
 
-    private static void verifyActor(Ast.ClassDecl klass) {
-        // This compiler branch does not yet join inherited actor state
-        // schemas or prove that a parent actor uses the same serial lane.
-        // In particular an inherited mutable field cannot silently become
-        // a second state aggregate outside the sealed handle_state contract.
+    private static void checkInheritedActorLayout(
+            Ast.ClassDecl child, Ast.TypeRef parentRef,
+            Map<String, Ast.ClassDecl> declared, Set<String> active) {
+        if (!parentRef.arguments().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "actor superclass type arguments require verified layout lowering");
+        }
+        Ast.ClassDecl parent = declared.get(parentRef.name());
+        if (parent == null || parent.actorKind() == Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "actor superclass must resolve to an explicit same-module actor");
+        }
+        if (!active.add(parent.name())) {
+            throw new IllegalArgumentException("cyclic actor superclass inheritance");
+        }
+        try {
+            if (parent.actorKind() != child.actorKind() || parent.serial() != child.serial()) {
+                throw new IllegalArgumentException(
+                        "actor superclass isolation kind or serial lane mismatch");
+            }
+            // The one state map belongs to the concrete actor. Method-only
+            // actor parents are permitted, but any inherited state map or
+            // legacy field would otherwise bypass sealed handle_state.
+            if (!parent.fields().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "actor superclass inherited storage is forbidden until "
+                        + "sealed state-layout composition is verified");
+            }
+            if (parent.parents().size() > 1) {
+                throw new IllegalArgumentException(
+                        "multiple actor superclass layouts are unsupported");
+            }
+            for (Ast.TypeRef ancestor : parent.parents()) {
+                checkInheritedActorLayout(child, ancestor, declared, active);
+            }
+        } finally {
+            active.remove(parent.name());
+        }
+    }
+
+    private static void verifyActor(
+            Ast.ClassDecl klass, Map<String, Ast.ClassDecl> declared) {
+        // Serial superclass lane ownership is not yet proven; retain the
+        // existing serial fail-closed rule. Non-serial actors may explicitly
+        // inherit methods from same-kind, storage-free actor ancestors only.
         if (klass.serial() && !klass.parents().isEmpty()) {
             throw new IllegalArgumentException(
-                    "serial actor '" + klass.name()
-                    + "' cannot extend another class until inherited state/lane "
-                    + "ownership is verified; use from/implements interfaces");
+                    "serial actor superclass lane ownership is not verified");
+        }
+        if (klass.parents().size() > 1) {
+            throw new IllegalArgumentException(
+                    "multiple actor superclass layouts are unsupported");
+        }
+        Set<String> active = new java.util.HashSet<>();
+        active.add(klass.name());
+        for (Ast.TypeRef parent : klass.parents()) {
+            checkInheritedActorLayout(klass, parent, declared, active);
         }
         Ast.FieldDecl state = stateField(klass);
         // Actors without state are legal, but their methods must still be
@@ -469,6 +526,27 @@ public final class ActorStateContract {
             visit(lambda.expressionBody(), actor, keys, nestedAccess, true, instanceMethod, accessMode);
             visit(lambda.blockBody(), actor, keys, nestedAccess, true, instanceMethod, accessMode);
             return;
+        }
+        // A live actor-state projection is not yet a compiler-proven owned
+        // snapshot. In particular, rt copy(s.field) must not silently
+        // manufacture an escaping value before typed snapshot lowering.
+        // Unrelated owned rt copy expressions remain permitted.
+        // The parser lowers both legacy '&s.field' and canonical
+        // 'rt mut borrow s.field' to UnaryExpr ("&" / "&mut").
+        // Checking only RuntimeCallExpr("borrow") would miss those paths.
+        // A live state projection is not an owned value and cannot acquire
+        // an additional escaping borrow, immutable or mutable.
+        if (node instanceof Ast.UnaryExpr borrow && activeAccess != null
+                && (borrow.operator().equals("&") || borrow.operator().equals("&mut"))
+                && referencesAccess(borrow.operand(), activeAccess)) {
+            throw new IllegalArgumentException(
+                    "actor state-backed borrow cannot escape its lexical loan");
+        }
+        if (node instanceof Ast.RuntimeCallExpr copy && activeAccess != null
+                && copy.operation().equals("copy")
+                && referencesAccess(copy.arguments(), activeAccess)) {
+            throw new IllegalArgumentException(
+                    "actor state-backed rt copy requires verified snapshot lowering");
         }
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
                 && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")

@@ -976,7 +976,9 @@ final class ParserTest {
 
 
     @Test
-    void actorInheritanceMustPreserveIsolationKind() {
+    void storageFreeSameKindActorInheritancePreservesIsolation() {
+        // Same-kind non-serial inheritance is safe only when ancestors have
+        // no fields; the separate actor-state gate denies inherited storage.
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 shared actor Parent {
                 }
