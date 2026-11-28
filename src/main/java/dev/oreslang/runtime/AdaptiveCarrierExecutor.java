@@ -367,12 +367,12 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
         if (callback != null) {
             try {
                 callback.run();
-            } catch (RuntimeException | AssertionError failure) {
+            } catch (RuntimeException | AssertionError notificationFailure) {
                 // Capacity notification is runtime bookkeeping, not authority
                 // to retire a physical carrier. Match ordinary turn failure
                 // containment so a transient/stale NIO retry cannot trigger a
                 // replacement before this worker returns its permit.
-                dispatchUncaught(failure);
+                dispatchUncaught(notificationFailure);
             } catch (Error fatal) {
                 throw fatal;
             }

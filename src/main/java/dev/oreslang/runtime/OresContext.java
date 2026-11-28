@@ -550,25 +550,29 @@ public final class OresContext implements AutoCloseable {
 
         // Every accepted NIO completion must drain while its delivery domain is
         // still alive. The VM owns this readiness group, so actor/CONTROL
-        // teardown is deliberately later.
+        // teardown is deliberately later. A drain failure is recorded rather
+        // than thrown immediately: shutdown must still retire async/actor/VM
+        // resources, then report the aggregate failure to the host.
+        RuntimeException failure = null;
         vm.nioReadiness().close();
         try {
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0 || !vm.nioReadiness().awaitStopped(
                     remaining, TimeUnit.NANOSECONDS)) {
-                throw new IllegalStateException(
+                failure = new IllegalStateException(
                         "Oreslang VM NIO completions did not quiesce before actor shutdown");
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException(
+            failure = new IllegalStateException(
                     "interrupted while draining VM NIO completions", interrupted);
+        } catch (RuntimeException nioFailure) {
+            failure = nioFailure;
         }
         synchronized (nioLifecycle) {
             vmNioListeners.removeIf(VmNioTcpListener::isTerminated);
         }
 
-        RuntimeException failure = null;
         try {
             asyncRuntime.close();
         } catch (RuntimeException asyncFailure) {
