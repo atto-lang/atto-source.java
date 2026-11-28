@@ -295,7 +295,8 @@ public final class IncrementalCompiler {
                                 strictAtto, dev.oreslang.runtime.AttoCheckedI64Profile.select(normalized.get(id), id));
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
-                        checked, linked.ownershipClasses(), analysis.shortInferredAliases());
+                        checked, linked.ownershipClasses(), analysis.shortInferredAliases(),
+                        linkedImportedModules(id, parsed.get(id), parsed, normalizedImportResolutions));
             } catch (IllegalArgumentException invalid) {
                 Ast.Program sourceProgram = parsed.get(id);
                 String moduleName = sourceProgram.modules().size() == 1
@@ -347,11 +348,23 @@ public final class IncrementalCompiler {
                         id, imported, parsed.keySet(), importResolutions);
                 Ast.Program target = targetId == null ? null : parsed.get(targetId);
                 if (target == null) continue;
+                java.util.Set<String> privateModules = new java.util.HashSet<>();
+                for (Ast.ModuleDecl module : target.modules()) {
+                    if (!module.name().equals(Parser.ROOT_MODULE)
+                            && module.visibility() != Ast.Visibility.PUBLIC) privateModules.add(module.name());
+                }
+                String leaked = ImportedMemberScan.firstReference(program, imported.namespace(), privateModules);
+                if (leaked != null) {
+                    throw new IllegalArgumentException("module '" + leaked + "' in '" + imported.path()
+                            + "' is private and is not exported through 'import * as "
+                            + imported.namespace() + "'");
+                }
                 for (Ast.ModuleDecl module : target.modules()) {
                     if (!module.name().equals(Parser.ROOT_MODULE)) continue;
                     Ast.ModuleDecl qualified = ForeignModuleQualifier.qualify(imported.namespace(), module);
                     if (result.putIfAbsent(imported.namespace(), new Ast.ModuleDecl(imported.namespace(),
-                            qualified.annotations(), qualified.contracts(), qualified.declarations())) != null) {
+                            qualified.annotations(), qualified.contracts(), qualified.declarations(),
+                            Ast.Visibility.PUBLIC)) != null) {
                         throw new IllegalArgumentException(
                                 "duplicate imported module binding '" + imported.namespace() + "'");
                     }
@@ -472,7 +485,8 @@ public final class IncrementalCompiler {
                 for (String moduleName : imported.names()) {
                     Ast.ModuleDecl selected = null;
                     for (Ast.ModuleDecl module : source.modules()) {
-                        if (!module.name().equals(moduleName)) continue;
+                        if (!module.name().equals(moduleName)
+                                || module.visibility() != Ast.Visibility.PUBLIC) continue;
                         if (selected != null) {
                             throw new IllegalArgumentException(
                                     "ambiguous linked module '" + moduleName + "'");
@@ -517,6 +531,10 @@ public final class IncrementalCompiler {
                 Ast.ClassDecl resolved = null;
                 Map<String, Ast.TypeAliasDecl> classAliases = Map.of();
                 for (Ast.ModuleDecl module : source.modules()) {
+                    // Visibility of an inner class is not a substitute for
+                    // visibility of its owning module.
+                    if (!module.name().equals(Parser.ROOT_MODULE)
+                            && module.visibility() != Ast.Visibility.PUBLIC) continue;
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.ClassDecl klass
                                 && klass.name().equals(name)
@@ -789,7 +807,8 @@ public final class IncrementalCompiler {
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
-            abi.append("module ").append(module.name()).append('\n');
+            abi.append("module ").append(module.name())
+                    .append(" visibility=").append(module.visibility()).append('\n');
             for (String contract : module.contracts().stream()
                     .map(IncrementalCompiler::typeRef).sorted().toList()) {
                 abi.append(" module-contract ").append(contract).append('\n');

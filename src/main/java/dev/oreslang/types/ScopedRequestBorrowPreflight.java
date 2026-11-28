@@ -112,7 +112,8 @@ public final class ScopedRequestBorrowPreflight {
             return condition || left || right;
         }
         if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
-                || expr instanceof Ast.DynamicSelectExpr || expr instanceof Ast.RuntimeCallExpr) {
+                || expr instanceof Ast.DynamicSelectExpr || expr instanceof Ast.SelectExpr
+                || expr instanceof Ast.RuntimeCallExpr) {
             reject("cannot suspend or perform runtime/channel operations with a live request view");
         }
         if (expr instanceof Ast.AssignExpr) {

@@ -1,0 +1,21 @@
+// expect-type-error: use of moved value
+// The source-level wrapper must never revive a value explicitly moved
+// into a channel admission attempt, even when the caller matches the
+// recoverable TryWriteResult correctly.
+import module channel from "std/channel";
+
+pub routine main(): void {
+  val Channel<Array<int>> ch = channel.bounded<Array<int>>(1);
+  val Array<int> payload = [5, 6];
+  val TryWriteResult<Array<int>> outcome =
+      channel.try_send<Array<int>>(ch, take! payload);
+  do match outcome over
+    on Accepted -> { stdio.stdout.write("accepted"); }
+    on Full(rejected) -> { stdio.stdout.write("full"); }
+    on Closed(rejected) -> { stdio.stdout.write("closed"); }
+  end
+  // This original binding is dead. Only a recovered value (if rejected)
+  // could be used by the caller, never a second alias of payload.
+  stdio.stdout.write(payload[0]);
+  return;
+}

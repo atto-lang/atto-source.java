@@ -33,10 +33,10 @@ define module collections as
         return Err("lower bound requires sorted input");
       fi
     }
-    let int low = 0;
-    let int high = values.size;
+    let mut int low = 0;
+    let mut int high = values.size;
     while low < high; do
-      val int mid = low + (high - low) / 2;
+      val int mid = low + ((high - low) >>> 1);
       if values.get(mid) < needle; do
         low = mid + 1;
       else
@@ -50,8 +50,10 @@ define module collections as
   pub fnc unique_int(borrow Array<int> values): Result<Array<int>, String> {
     if values.size > 4096; do return Err("unique_int input exceeds 4096 items"); fi
     let mut Array<int> output = new Array<int>();
-    for (const item of values) {
-      let bool found = false;
+    // Index loop: for-of does not iterate a borrowed Array on this backend.
+    for (let int index = 0; index < values.size; index = index + 1) {
+      val int item = values.get(index);
+      let mut bool found = false;
       for (let int j = 0; j < output.size; j = j + 1) {
         if output.get(j) == item; do found = true; fi
       }
@@ -84,8 +86,8 @@ define module collections as
     let mut Array<int> output = new Array<int>();
     let int left_size = left.size;
     let int right_size = right.size;
-    let int i = 0;
-    let int j = 0;
+    let mut int i = 0;
+    let mut int j = 0;
     while i < left_size && j < right_size; do
       if left.get(i) <= right.get(j); do
         output.add(left.get(i));

@@ -644,12 +644,15 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+                    if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                             || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
-                        throw error(previous(), "modules do not accept declaration modifiers");
+                        throw error(previous(), "modules accept only pub/private visibility; other declaration modifiers are forbidden");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
-                    modules.add(parseModule(annotations));
+                    // An unmarked `define module` stays a public unit (the
+                    // v1 library form); `define private module` opts out.
+                    modules.add(parseModule(annotations,
+                            modifiers.visibilitySeen ? modifiers.visibility : Ast.Visibility.PUBLIC));
                     continue;
                 }
                 if (match(CONTRACT)) {
@@ -887,6 +890,24 @@ public final class Parser {
                     namespace, packageImportPath(identity));
         }
 
+        // Canonical compact static namespace import:
+        //   import http from "std/http.atto";
+        // Equivalent to import * as http from "std/http.atto".
+        // A namespace is a checked linker binding, NEVER a runtime object,
+        // and this sugar cannot grant a host or package capability.
+        if (check(IDENT) && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == FROM) {
+            String alias = consumeImportAlias("expected import namespace alias");
+            consume(FROM, "expected 'from' in namespace import");
+            boolean packageSelector = check(IDENT) && "pkg".equals(peek().lexeme());
+            if (packageSelector) advance();
+            String path = consume(STRING, "expected quoted namespace source").lexeme();
+            if (path.isBlank()) throw error(previous(), "import path cannot be empty");
+            if (packageSelector) path = packageImportPath(path);
+            consume(SEMICOLON, "expected ';' after namespace import");
+            return new Ast.ImportDecl(Ast.ImportKind.ALL, List.of(), true, alias, path);
+        }
+
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
         boolean wildcard = false;
@@ -1001,7 +1022,7 @@ public final class Parser {
         }
     }
 
-    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectModuleCompilerAnnotations(annotations);
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (ROOT_MODULE.equals(name)) {
@@ -1029,7 +1050,7 @@ public final class Parser {
         } finally {
             moduleForwards = enclosing;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
+        return new Ast.ModuleDecl(name, annotations, contracts, declarations, visibility);
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
@@ -1750,6 +1771,11 @@ public final class Parser {
             java.util.Set<String> pending = new java.util.LinkedHashSet<>(deferredFinals);
             java.util.Set<String> parameters = new java.util.HashSet<>();
             for (Ast.Param param : constructor.parameters()) parameters.add(param.name());
+            // Permit the same narrow fresh-empty Array<int> prefix as the
+            // native LLVM profile. This is syntactic admission only; ordinary
+            // type, ownership, constructor and runtime checks remain mandatory.
+            int lastFreshArray = -1;
+            Ast.TypeRef intArray = new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false);
             for (Ast.Stmt statement : constructor.body()) {
                 if (pending.isEmpty()) break;
                 if (!(statement instanceof Ast.ExprStmt expr
@@ -1757,10 +1783,25 @@ public final class Parser {
                         && assignment.target() instanceof Ast.MemberExpr member
                         && member.receiver() instanceof Ast.NameExpr receiver
                         && receiver.name().equals("self")
-                        && pending.contains(member.member())
-                        && (assignment.value() instanceof Ast.NameExpr value
+                        && pending.contains(member.member()))) {
+                    throw error(previous(), "E_INIT: deferred final fields require definite prefix initialization: " + pending);
+                }
+                if (assignment.value() instanceof Ast.NewExpr fresh) {
+                    int index = -1;
+                    for (int i = 0; i < fields.size(); i++) {
+                        if (fields.get(i).name().equals(member.member())) { index = i; break; }
+                    }
+                    if (index < 0 || index <= lastFreshArray
+                            || !fields.get(index).mutableReferent()
+                            || !fields.get(index).type().equals(intArray)
+                            || !fresh.type().equals(intArray)
+                            || !fresh.arguments().isEmpty()) {
+                        throw error(previous(), "E_CONSTRUCTOR_ARRAY_INIT: requires fresh empty mutable Array<int> in declaration order");
+                    }
+                    lastFreshArray = index;
+                } else if (!(assignment.value() instanceof Ast.NameExpr value
                             && parameters.contains(value.name()) && !value.name().equals("self")
-                            || assignment.value() instanceof Ast.LiteralExpr))) {
+                            || assignment.value() instanceof Ast.LiteralExpr)) {
                     throw error(previous(), "E_INIT: deferred final fields require direct parameter or literal initialization before other statements: " + pending);
                 }
                 pending.remove(member.member());
@@ -2322,7 +2363,7 @@ public final class Parser {
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
-            Modifiers mods = parseModifiers();
+            Modifiers mods = parseModifiers(true);
             if (match(DEFINE)) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
@@ -3416,7 +3457,9 @@ public final class Parser {
         return result;
     }
 
-    private Modifiers parseModifiers() {
+    private Modifiers parseModifiers() { return parseModifiers(false); }
+
+    private Modifiers parseModifiers(boolean actorBareCriticalAstOnly) {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
         boolean suspends = false;
@@ -3450,6 +3493,14 @@ public final class Parser {
             // A method literally named critical(...) is left to the normal
             // callable-name path during migration.
             if (isContextualIdentifier("critical") && !checkNext(LPAREN)) {
+                // The narrow actor-local legacy AST lane retains the critical
+                // bit for checked rejection. Never enable the generic modifier,
+                // return-first signatures, or critical-read/write here.
+                if (actorBareCriticalAstOnly && checkNext(IDENT)
+                        && current + 2 < tokens.size()
+                        && tokens.get(current + 2).type() == LPAREN
+                        && !isAdjacentCompoundKeyword("critical", "read")
+                        && !isAdjacentCompoundKeyword("critical", "write")) break;
                 if (suspends || checkNext(SUSPENDS)) {
                     throw error(peek(), "E_CALLABLE_MODIFIERS: critical suspends callable is forbidden");
                 }
@@ -4998,6 +5049,17 @@ public final class Parser {
         return next == READCH || next == WRITECH || next == SELECT;
     }
 
+    /** At index i (just after `select`): an optional policy, then `{` or `over`. */
+    private boolean looksLikeStaticSelectValue(int i) {
+        if (i < tokens.size() && (tokens.get(i).type() == FIRST
+                || (tokens.get(i).type() == IDENT && (tokens.get(i).lexeme().equals("first")
+                        || tokens.get(i).lexeme().equals("fair")
+                        || tokens.get(i).lexeme().equals("random"))))) i++;
+        return i < tokens.size() && (tokens.get(i).type() == LBRACE
+                || tokens.get(i).type() == OVER
+                || (tokens.get(i).type() == IDENT && tokens.get(i).lexeme().equals("over")));
+    }
+
     private boolean looksLikeStaticSelectStatement() {
         int i = current;
         if (i >= tokens.size()) return false;
@@ -5137,7 +5199,9 @@ public final class Parser {
                     throw error(peek(), "select arm permits exactly one slim arrow '->'");
                 }
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'");
+                    throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'; "
+                            + "a select with expression arms is a Future<T>: bind it, 'await select' it, "
+                            + "or use 'do select' with block arms");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 if (canonicalAttoSource && explicitDo && mode == Ast.WaitMode.BLOCKING) {
@@ -7362,9 +7426,41 @@ public final class Parser {
 
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
+    /**
+     * `<<<=`, `>>>=` or `ashr=` at the current position (atto-spec
+     * bitwise-and-stream-operators-v1). The lexer keeps `<=`/`>=` whole, so
+     * the operators are adjacent `<` `<` `<=`, `>` `>` `>=` and `ashr` `=`.
+     * Returns the shift operator, or null.
+     */
+    private String checkCompoundShift() {
+        if (current + 1 >= tokens.size()) return null;
+        Token first = tokens.get(current);
+        Token second = tokens.get(current + 1);
+        if (first.type() == IDENT && first.lexeme().equals("ashr")
+                && second.type() == EQUAL && adjacent(first, second)) return "ashr";
+        if (current + 2 >= tokens.size()) return null;
+        Token third = tokens.get(current + 2);
+        if (!adjacent(first, second) || !adjacent(second, third)) return null;
+        if (first.type() == LT && second.type() == LT && third.type() == LTE) return "<<<";
+        if (first.type() == GT && second.type() == GT && third.type() == GTE) return ">>>";
+        return null;
+    }
+
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parsePipeline();
         rejectUnsupportedActorPipeline();
+        String compound = checkCompoundShift();
+        if (compound != null) {
+            // `x op= n` is exactly `x = x op n` on a named local; the ordinary
+            // assignment mutability and int shift checks apply.
+            Token at = peek();
+            current += compound.equals("ashr") ? 2 : 3;
+            if (!(expr instanceof Ast.NameExpr name)) {
+                throw error(at, "compound shift assignment requires a named local");
+            }
+            return new Ast.AssignExpr(expr,
+                    new Ast.BinaryExpr(compound, new Ast.NameExpr(name.name()), parseAssignment()));
+        }
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
@@ -7840,6 +7936,7 @@ public final class Parser {
         Ast.Expr expr = parseShift();
         while (true) {
             if (checkIoReadBinder()) break; // `source >> val name;`, not `>` twice
+            if (checkCompoundShift() != null) break; // `x <<<= n`, not a comparison
             if (match(LT, LTE, GT, GTE)) {
                 String op = previous().lexeme();
                 expr = new Ast.BinaryExpr(op, expr, parseShift());
@@ -7885,6 +7982,7 @@ public final class Parser {
         Ast.Expr expr = parseAdditive();
         while (true) {
             String op;
+            if (checkCompoundShift() != null) break; // `x <<<= n` belongs to parseAssignment
             if (matchAdjacentTriple(GT)) op = ">>>";
             else if (matchAdjacentTriple(LT)) op = "<<<";
             // Arithmetic (sign-filling) right shift is the contextual infix word
@@ -8124,6 +8222,16 @@ public final class Parser {
                     "Oreslang does not use '&' for borrowing (unary pointer syntax is not supported); use 'rt borrow value'");
         }
         if (match(AWAIT)) {
+            // `await select { ... }` with expression arms waits for the winning
+            // arm and evaluates it in place, so that arm's value may suspend.
+            // Block arms fall through to the closed default-only task lowering.
+            if (check(SELECT) && looksLikeStaticSelectValue(current + 1)) {
+                int beforeSelect = current;
+                advance();
+                Ast.SelectExpr valueSelect = parseSelectValue(Ast.WaitMode.BLOCKING, parseSelectPolicy());
+                if (valueSelect != null) return valueSelect;
+                current = beforeSelect;
+            }
             Ast.Expr operand = parseUnary();
             // First direct callable-await slice: a closed zero-argument
             // integer lambda, invoked through ordinary checked call lowering.
@@ -8535,8 +8643,20 @@ public final class Parser {
         // cases, arbitrary inferred effects, or immediate probes here.
         int policyStart = current;
         Ast.SelectPolicy policy = parseSelectPolicy();
-        if (check(LBRACE) || check(OVER)
-                || (check(IDENT) && peek().lexeme().equals("over"))) {
+        if (check(LBRACE) || check(OVER) || isContextualIdentifier("over")) {
+            // A value select is a Future<T> (`select { ... }`), awaited with
+            // `await select { ... }`; `try select { ... }` probes once. There
+            // is no `nb select` value form (atto-spec ch. 6).
+            if (mode == Ast.WaitMode.NONBLOCKING) {
+                throw error(previous(), "'nb select { ... }' is not a value form: 'select { ... }' "
+                        + "already returns a Future<T>; use 'await select { ... }' to wait for the result");
+            }
+            int armsStart = current;
+            Ast.SelectExpr valueSelect = parseSelectValue(
+                    mode == Ast.WaitMode.BLOCKING ? Ast.WaitMode.NONBLOCKING : mode, policy);
+            if (valueSelect != null) return valueSelect;
+            current = armsStart;
+            // Block arms: the closed default-only task lowering.
             if (mode == Ast.WaitMode.IMMEDIATE)
                 throw error(peek(), "static select expression requires tracked Future result lowering");
             current = policyStart;
@@ -8613,6 +8733,77 @@ public final class Parser {
             throw error(previous(), "Array.of() needs a checked element type; an empty untyped array cannot infer T");
         }
         return kind.equals("Tuple") ? new Ast.TupleExpr(elements) : new Ast.ListExpr(elements, true);
+    }
+
+    /**
+     * Value select (atto-spec ch. 6): {@code select}, {@code nb select} or
+     * {@code try select} in expression position with expression arms:
+     * {@code when readch ch: val x -> expr}, {@code when await f: v -> expr},
+     * {@code when writech ch, v: -> expr} and {@code default: -> expr},
+     * optionally separated by ',' or ';'. The statement form with block arms
+     * is {@code do select} and produces no value.
+     */
+    private Ast.SelectExpr parseSelectValue(Ast.WaitMode mode, Ast.SelectPolicy policy) {
+        boolean endDelimited = match(OVER) || matchContextualIdentifier("over");
+        if (!endDelimited) consume(LBRACE, "value select requires '{ ... }' or 'over ... end'");
+        List<Ast.SelectArm> arms = new ArrayList<>();
+        List<Ast.Expr> values = new ArrayList<>();
+        boolean seenDefault = false;
+        while (!(endDelimited ? check(END) : check(RBRACE)) && !check(EOF)) {
+            Ast.ChannelOperation operation;
+            Ast.Expr channel = null;
+            Ast.Expr written = null;
+            SelectReadBinding binding = null;
+            if (matchContextualKeyword("when", "case")) {
+                if (seenDefault) throw error(previous(), "select default arm must be last");
+                rejectPerArmChannelWaitModifier();
+                if (match(READCH) || match(AWAIT)) {
+                    Token.Type op = previous().type();
+                    operation = op == READCH ? Ast.ChannelOperation.READ : Ast.ChannelOperation.AWAIT;
+                    channel = parseExpression();
+                    consume(COLON, (op == READCH ? "readch" : "await") + " select arm requires ':'");
+                    binding = parseSelectReadBinding();
+                } else if (match(WRITECH)) {
+                    operation = Ast.ChannelOperation.WRITE;
+                    channel = parseExpression();
+                    consume(COMMA, "writech select arm requires 'channel, value'");
+                    written = parseExpression();
+                    consume(COLON, "writech select arm requires ':'");
+                } else {
+                    throw error(peek(), "value select arm requires 'when readch', 'when await' or 'when writech'");
+                }
+            } else if (match(DEFAULT)) {
+                if (seenDefault) throw error(previous(), "select permits at most one default arm");
+                seenDefault = true;
+                consume(COLON, "select default arm requires ':'");
+                operation = Ast.ChannelOperation.DEFAULT;
+            } else {
+                throw error(peek(), "expected when/case/default inside select");
+            }
+            if (check(FAT_ARROW)) {
+                throw error(peek(), "select arms use the slim arrow '->'; '=>' is not an arm delimiter");
+            }
+            consume(ARROW, "value select arm requires '-> expression'");
+            if (check(LBRACE)) {
+                // Block arms are not value arms: let the caller rewind to the
+                // closed task lowering (or its fail-closed diagnostics).
+                return null;
+            }
+            values.add(parseExpression());
+            if (!match(COMMA)) match(SEMICOLON);
+            arms.add(operation == Ast.ChannelOperation.DEFAULT
+                    ? new Ast.SelectArm(operation, null, null, null, null, List.of())
+                    : new Ast.SelectArm(operation, channel, written,
+                            binding == null ? null : binding.kind(),
+                            binding == null ? null : binding.name(),
+                            List.of(),
+                            binding != null && binding.mutableReferent(),
+                            binding == null ? null : binding.type()));
+        }
+        if (endDelimited) consume(END, "expected 'end' after select over");
+        else consume(RBRACE, "expected '}' after select");
+        if (arms.isEmpty()) throw error(previous(), "select requires at least one arm");
+        return new Ast.SelectExpr(new Ast.SelectStmt(mode, policy, arms, false), values);
     }
 
     private Ast.Expr parsePostfix() {
@@ -9178,10 +9369,16 @@ public final class Parser {
     private String checkedInlineRecordPairName(String name) {
         // Use the same lexer as parameter declarations, and require exact
         // spelling, not merely one token after trivia/comment removal.
-        List<Token> parts = new Lexer(name).scan();
+        List<Token> parts;
+        try {
+            parts = new Lexer(name).scan();
+        } catch (IllegalArgumentException invalid) {
+            throw error(previous(), "E_RECORD_LABEL: Record.of Pair key must be a valid static parameter identifier");
+        }
         if (parts.size() != 2 || parts.getFirst().type() != IDENT
-                || !parts.getFirst().lexeme().equals(name)) {
-            throw error(previous(), "Record.of Pair key must be a valid static parameter identifier");
+                || !parts.getFirst().lexeme().equals(name)
+                || name.codePoints().anyMatch(Character::isISOControl)) {
+            throw error(previous(), "E_RECORD_LABEL: Record.of Pair key must be a valid static parameter identifier");
         }
         return name;
     }
@@ -9286,6 +9483,13 @@ public final class Parser {
                 } else {
                     Token fieldToken = peek();
                     name = consumeStaticObjectKeyName("expected static Record.of field name");
+                    // Canonical Record fields use the ordinary identifier domain,
+                    // unlike generic object/Map keys. Keep legacy parsing intact.
+                    if (canonicalAttoSource) {
+                        if (fieldToken.type() == STRING) name = checkedQuotedRecordLabel(fieldToken);
+                        else if (fieldToken.type() != IDENT)
+                            throw error(fieldToken, "E_RECORD_LABEL: expected ordinary identifier");
+                    }
                     if (check(FAT_ARROW)) {
                         throw error(peek(), "mixed record and map entries are forbidden: Record.of does not accept Entry arrows");
                     }
@@ -9586,14 +9790,14 @@ public final class Parser {
                 args.add(new Ast.SpreadExpr(parseExpression()));
                 continue;
             }
-            if (check(IDENT) && checkNext(COLON)) {
+            if (check(IDENT) && (checkNext(COLON) || (canonicalAttoSource && checkNext(EQUAL)))) {
                 namedStarted = true;
                 String name = advance().lexeme();
-                consume(COLON, "expected ':' after named argument");
+                advance(); // The lookahead proved the named argument separator.
                 if (!seenLabels.add(name)) {
                     throw error(previous(), "duplicate named argument '" + name + "'");
                 }
-                args.add(new Ast.NamedArgExpr(name, parseExpression()));
+                args.add(new Ast.NamedArgExpr(name, canonicalAttoSource ? parseRecordFieldValue() : parseExpression()));
                 continue;
             }
             if (namedStarted) {

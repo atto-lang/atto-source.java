@@ -30,10 +30,12 @@ final class ActorSupervisorControlCounterSaturationTest {
         assertTrue(lane.publish(notice(first, 1, 1)));
         assertFalse(lane.publish(notice(first, 1, 2)));
 
-        assertEquals(first, lane.poll().orElseThrow().actor());
-        lane.retry(first, 1);
-        assertEquals(first, lane.poll().orElseThrow().actor());
-        lane.ack(first, 1);
+        var initial = lane.poll().orElseThrow();
+        assertEquals(first, initial.notice().actor());
+        lane.retry(initial);
+        var retry = lane.poll().orElseThrow();
+        assertEquals(first, retry.notice().actor());
+        lane.ack(retry);
 
         var stats = lane.snapshot();
         assertEquals(Long.MAX_VALUE, stats.published());
@@ -59,7 +61,7 @@ final class ActorSupervisorControlCounterSaturationTest {
         assertEquals(Long.MAX_VALUE, source.snapshot().transferred());
         assertEquals(0, source.snapshot().reserved());
         assertEquals(1, root.snapshot().pending());
-        assertEquals(child, root.poll().orElseThrow().actor());
+        assertEquals(child, root.poll().orElseThrow().notice().actor());
     }
 
     private static ActorRuntime.ActorFailureNotice notice(

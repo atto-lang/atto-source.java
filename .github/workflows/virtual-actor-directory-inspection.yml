@@ -9,6 +9,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/VirtualActorDirectoryInspection.java'
       - 'src/test/java/dev/oreslang/runtime/VirtualActorDirectoryInspectionTest.java'
       - 'src/test/java/dev/oreslang/runtime/VirtualActorSupervisorDirectoryTest.java'
+      - 'src/test/java/dev/oreslang/runtime/VirtualActorIdAddressRestartTest.java'
       - 'src/test/java/dev/oreslang/ExecutableVirtualActorStateContainerTest.java'
       - '.github/workflows/virtual-actor-directory-inspection.yml'
   workflow_dispatch:
@@ -53,8 +54,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=VirtualActorDirectoryInspectionTest,VirtualActorSupervisorDirectoryTest,ExecutableVirtualActorStateContainerTest -DfailIfNoTests=true test
-          for suite in VirtualActorDirectoryInspectionTest VirtualActorSupervisorDirectoryTest ExecutableVirtualActorStateContainerTest; do
+          mvn -B -ntp -Dtest=VirtualActorDirectoryInspectionTest,VirtualActorSupervisorDirectoryTest,VirtualActorIdAddressRestartTest,ExecutableVirtualActorStateContainerTest -DfailIfNoTests=true test
+          for suite in VirtualActorDirectoryInspectionTest VirtualActorSupervisorDirectoryTest VirtualActorIdAddressRestartTest ExecutableVirtualActorStateContainerTest; do
             report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
             if [ "$suite" = "VirtualActorSupervisorDirectoryTest" ]; then
               report="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"

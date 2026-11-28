@@ -170,7 +170,7 @@ final class SealedActorStateAdmissionTest {
                 define actor Ledger as
                   critical suspends increment(): void { return; }
                 end
-                """, "expected method name");
+                """, "E_CALLABLE_MODIFIERS");
     }
 
     @Test void criticalCannotSuspendInsideNestedBodies() {
@@ -319,4 +319,16 @@ final class SealedActorStateAdmissionTest {
                 end
                 """));
     }
+    @Test void actorCriticalAstLaneCannotEnableGeneralCriticalModifiers() {
+        rejected("critical fnc f(): void { return; }", "E_CRITICAL_UNSUPPORTED");
+        rejected("define actor Ledger as critical fnc f(): void { return; } end",
+                "E_CRITICAL_UNSUPPORTED");
+        rejected("define actor Ledger as critical-read f(): void { return; } end",
+                "critical");
+        rejected("define actor Ledger as pub critical f(): void { return; } end",
+                "critical actor method cannot have modifiers");
+        rejected("define actor Ledger as critical increment(): void { rt cooperate; return; } end",
+                "critical state loan cannot await or cooperate");
+    }
+
 }
