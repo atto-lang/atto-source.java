@@ -29,7 +29,7 @@ final class ActorPubSubAdversarialAdmissionTest {
     void dynamicCallableAndNestedCallablePayloadsAreRejectedBeforeFanout() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
-            group.events().topic("data-only", ActorEventBus.DeliveryPolicy.LATEST, 2);
+            group.events().topic("data-only", ActorEventBus.DeliveryPolicy.LATEST, 1);
             Runnable dynamicCallable = () -> { };
             assertThrows(IllegalArgumentException.class,
                     () -> group.events().publishSystem("data-only", dynamicCallable));
