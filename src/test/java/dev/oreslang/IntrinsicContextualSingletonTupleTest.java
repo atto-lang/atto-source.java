@@ -34,10 +34,12 @@ final class IntrinsicContextualSingletonTupleTest {
     }
     @Test void typedGuestConstructionPreservesScalarAndTupleDistinction() {
         String source = program("const [int] t=(42); const x=(42); stdio.out.write(t[0]); stdio.out.write(x);");
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        Ast.Program checked = assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(source));
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         assertDoesNotThrow(() -> {
-            try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
+            // Use the existing trusted, exact-source strict compiler-to-Truffle bridge.
+            try (OresLanguage.PrecheckedProgramScope lease = OresLanguage.openPrecheckedProgram("intrinsic-singleton.atto", source, checked);
+                 Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
                 context.eval(Source.newBuilder(OresLanguage.ID,source,"intrinsic-singleton.atto")
                     .mimeType(OresLanguage.MIME_TYPE).build());
             }
@@ -52,6 +54,6 @@ final class IntrinsicContextualSingletonTupleTest {
                 "const x=(42); const [int] t=x;",
                 "const [int] t=(42)+1;"
         }) assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(program(body)),body);
+                () -> OresCompiler.parseAndTypeCheckStrictAtto(program(body)),body);
     }
 }
