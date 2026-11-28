@@ -2546,6 +2546,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
+        /** Immutable copy-on-write selection snapshot. Mutations publish
+         * while already holding groupMembershipLock; user DATA turns never
+         * block a carrier on join, leave, or event-bus teardown. */
+        private final AtomicReference<Set<ActorId>> pipelineMembers =
+                new AtomicReference<>(Set.of());
         // Explicitly lifecycle-managed workers, distinct from cooperating
         // members: membership never grants cancellation authority.
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
@@ -2581,9 +2586,41 @@ public final class ActorRuntime implements AutoCloseable {
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
             if (creator != null) members.add(creator);
+            pipelineMembers.set(Set.copyOf(members));
+        }
+
+        /** Must be called under groupMembershipLock after membership changes.
+         * Out-of-memory during snapshot materialization must never leave an
+         * old grant to an actor that just left or terminated. Publishing the
+         * shared empty immutable set is allocation-free and fail closed. */
+        private void publishPipelineMembers() {
+            try {
+                pipelineMembers.set(Set.copyOf(members));
+            } catch (OutOfMemoryError memoryExhausted) {
+                pipelineMembers.set(Set.of());
+                throw memoryExhausted;
+            }
         }
 
         public ActorGroupId id() { return id; }
+
+        /** Internal routing authority: a group may select only its own
+         * runtime's actors. Neither a guest ActorGroupId nor a Mailman may
+         * substitute for the supervisor-installed group object. */
+        boolean ownedByRuntime(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
+        /** Snapshot admitted cooperative membership at one boundary. The
+         * checked graph further intersects this with its authorized edges.
+         * Join/leave after selection affects later selections, never the
+         * immutable return path of already-admitted DATA. */
+        Set<ActorId> pipelineMemberSnapshot() {
+            requireCallerRuntimeAffinity("snapshot ActorGroup routing members");
+            requireNotActorGroupMailman("snapshot ActorGroup routing members");
+            requireOpen();
+            return pipelineMembers.get();
+        }
 
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
@@ -2939,6 +2976,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (joined.isEmpty()) groupMemberships.remove(actorId);
                         throw new IllegalStateException("ActorGroup or actor closed during join");
                     }
+                    publishPipelineMembers();
                 }
             }
         }
@@ -3025,6 +3063,7 @@ public final class ActorRuntime implements AutoCloseable {
                     joined.remove(id);
                     if (joined.isEmpty()) groupMemberships.remove(actorId);
                 }
+                publishPipelineMembers();
                 // Rejoin must not overtake subscription draining for the old
                 // membership and inadvertently inherit a previous channel.
                 eventBus.removeActor(actorId);
@@ -3077,6 +3116,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 members.clear();
+                pipelineMembers.set(Set.of());
                 if (creator != null) {
                     Set<ActorGroupId> created = createdGroupsByActor.get(creator);
                     if (created != null) {
@@ -5531,6 +5571,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (pipelineFrame != null) {
+            // Independent from the graph router and envelope authority pair:
+            // a valid route token cannot be affixed to another actor's mail.
+            // Validate BEFORE reserving a mailbox slot or copying DATA.
+            if (cell.kind != ActorKind.SHARED)
+                throw new SecurityException(
+                        "routed DATA requires a SHARED mailbox recipient");
+            ActorPipelineRouteSession.requireMailboxRecipient(
+                    pipelineFrame, ref.id());
+        }
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
@@ -5539,7 +5589,14 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         boolean mailboxSlotTransferred = false;
+        // A rejected competing claim must NEVER undo the other sender's
+        // successful claim in the common rejection/finally cleanup.
+        boolean thisSendClaimedFrame = false;
         try {
+        // One frame may be offered to at most one mailbox at a time.
+        // Acquire before any fallible preparation or enqueue operation.
+        ActorPipelineRouteSession.claimMailboxAdmission(pipelineFrame);
+        thisSendClaimedFrame = pipelineFrame != null;
         validateMessageGraph(message);
         if (cell.kind == ActorKind.UNTRUSTED) {
             rejectUntrustedInboundCapabilities(message, new IdentityHashMap<>(), 0);
@@ -5637,6 +5694,12 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new ActorMailboxFullException(ref.id());
                     }
+                    // The mailbox DATA has crossed the irrevocable
+                    // publication point. Mark the sealed frame before any
+                    // further mutex bookkeeping or scheduler operation can
+                    // fail. Never allow a later exception to make it
+                    // appear safe to restore the source/retry this message.
+                    ActorPipelineRouteSession.markMailboxPublished(pipelineFrame);
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
                     admitted = true;
@@ -5665,7 +5728,11 @@ public final class ActorRuntime implements AutoCloseable {
             // branch. Admission does not promise eventual processing.
         }
         } finally {
-            if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
+            if (!mailboxSlotTransferred) {
+                if (thisSendClaimedFrame)
+                    ActorPipelineRouteSession.abortMailboxAdmission(pipelineFrame);
+                cell.releaseMailboxSlot(false);
+            }
         }
     }
 

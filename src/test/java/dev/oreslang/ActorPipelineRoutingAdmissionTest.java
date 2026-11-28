@@ -60,6 +60,37 @@ final class ActorPipelineRoutingAdmissionTest {
     }
 
     @Test
+    void startupHookCannotRouteWithoutAuthenticatedDataReceive() {
+        for (String call : new String[] {
+                "self.forward(1);",
+                "self.forward_round_robin(1);",
+                "self.forward_to(\"worker\", 1);",
+                "self.forward_by_key(\"key\", 1);",
+                "self.backward(1);",
+                "self.reply(1);"
+        }) {
+            String program = """
+                    define actor Worker as
+                      on_start(): void {
+                        %s
+                        return;
+                      }
+                      receive(ActorMail<int> mail): void {
+                        return;
+                      }
+                    end
+                    """.formatted(call);
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(program)),
+                    "routing during on_start must be rejected: " + call);
+            assertTrue(error.getMessage().contains(
+                            "on_start is not routed mail"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void pipelineSelectorsRequireStringsAndPrivateActorsRemainDenied() {
         String badSelector = """
                 define actor Worker as

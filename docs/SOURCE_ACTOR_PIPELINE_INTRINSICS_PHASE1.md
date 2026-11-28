@@ -80,6 +80,196 @@ The Java host reference still uses one generic payload type across forward and
 reverse directions. Full source pipeline lowering must type forward and
 backward ports separately and preserve Sendable/ownership rules.
 
+## 2026-10-17 security / rejection hardening
+
+The guest-intrinsic integration now reuses the final DATA-mailbox recipient
+check from the preceding host routing audit: an immutable graph-instance to
+**actual ActorId** binding is installed with the trusted session, and
+`ActorRuntime.sendWithPipelineFrame` independently verifies the live
+frame's bound recipient and SHARED destination kind **before mailbox
+reservation or payload serialization**. Merely pairing a live frame and
+`PipelineTurnAuthority` cannot send it to a different actor, and a
+selector-only session cannot publish guest DATA.
+
+A failed `backward` or direct `reply` mailbox admission no longer
+silently destroys the source receive's reverse-routing right. The router
+restores the source frame on a known prepublication `RuntimeException`;
+this also handles the path in which rejection-side
+`MessageEnvelope.close()` already retired the attempted child.
+Allocated route IDs remain spent (never reused). Fatal `Error` is
+not retryable and cannot be described as a safe rollback. An accepted
+envelope is not automatically retried: scheduling failure after DATA
+publication must remain distinguishable from admission failure.
+
+The compiler now rejects direct `self.forward*`, `self.backward` and
+`self.reply` calls in `on_start`: there cannot be a DATA mailbox turn
+or verified return path during startup. Other helper-method invocations
+still rely on the VM's runtime-authenticated receive guard. Tests cover
+wrong-recipient, unbound-session, valid recipient, failed backward followed
+by successful direct origin reply, and all enabled startup-hook negatives;
+the standalone route session smoke also covers rollback after envelope
+cleanup and spent route IDs.
+
+These source changes/tests are committed, not independently validated
+by a successful exact-head Maven/Native Image run. Both PR #1138 and
+the alternate stacked compiler slice #1171 remain draft until their
+overlapping source changes are reconciled against a tested base.
+
+## ActorGroup-backed routing selection — 2026-10-17
+
+The Java host pipeline router may optionally bind to a **runtime-local
+ActorGroup** when the supervisor installs its checked, immutable DAG.
+ActorGroup is a cooperation/membership domain, NOT a new mailbox,
+scheduler, transport credential, or authority to send outside the graph.
+The group does not need to manage a worker's lifecycle to select it.
+
+At each routing attempt, the host reads a **copy-on-write immutable
+membership snapshot** via a nonblocking atomic reference. Group join/leave,
+actor termination and group close publish snapshots under the existing
+membership mutation lock; the actor routing turn itself never acquires that
+lock. The router **intersects actual member ActorIds with the immutable
+DAG's connected recipients and already-bound ActorRefs**. An actor's matching name alone
+is never sufficient. An actor joining or leaving changes *future*
+selection snapshots; once DATA is admitted, its generation, actor path,
+and return/reply destination remain sealed, even if membership changes.
+STOP, mailbox bounds and cancellation are still checked on actual
+per-recipient admission. Membership is not a promise of liveness.
+
+Supported Java host selection:
+- `forwardAll(payload)`: fan out to every current connected group member,
+  with one **per-edge partial-admission receipt**, ordered by the DAG.
+- `forwardSelected(Set<instanceId>, payload)`: explicit selective
+  fan-out. Every requested instance must be a connected AND currently
+  eligible member. Empty sets, outsider names, stale members, duplicate
+  or reordered graph edges fail before route frame reservation.
+- `forwardRoundRobin(payload)`: select the next eligible group member
+  while retaining a cursor over the **whole fixed graph edge order**.
+  A changed membership set cannot change graph indexes or authorize
+  an out-of-graph recipient. An attempted choice advances the cursor
+  even if later mailbox admission fails.
+- `forwardTo` and `forward`: respect group eligibility, with plain
+  `forward` requiring exactly one selected target.
+- `forwardByKey`: retains strict UTF-8 deterministic graph hashing
+  and fails closed if its designated recipient has left the group;
+  it deliberately does NOT silently rehash keys on membership changes.
+
+**Hot-path and generation hardening:** the router caches the derived
+graph-bound eligible names by immutable membership snapshot identity.
+Normal steady-state ActorGroup selection does not reallocate that set
+on each message. Ungrouped full fanout retains its existing static
+graph-edge fast path. The session RR cursor is now a preallocated mutable
+integer slot per DAG source, instead of a repeatedly boxed `Integer`;
+a clean or aborted generation change resets cursor values but **never
+clears the selector table**. That fixes an audit-discovered
+missing-cursor failure on the first route after reconfiguration.
+Standalone tests cover group expansion, empty memberships, quiescent
+generation resets, abort resets, stable edge indexes, and one-shot
+credit accounting.
+
+**Guest authority remains distinct:** the current Oreslang source
+`self.forward_all` is still rejected pending a typed per-edge receipt
+ABI; `forwardSelected` is currently a trusted Java host interface,
+not a guest-callable bearer group or actor-ref selector. Native LLVM,
+.NET, Wasm and Forge require a corresponding authenticated API and
+conformance tests before cross-backend parity can be claimed.
+
+Tests: the standalone route ledger smoke checks graph-subsequence
+selection, duplicate/invalid/empty selection denial, cursor behavior
+under expanding eligibility, and frame cleanup. The Java real-mailbox
+integration exercises one-member fanout, nonmember denial, selective
+fanout, late group join, two-branch routing with original edge indexes,
+two eligible RR turns, and actor-termination membership removal; group
+close must not stop a membership-only worker. Exact-head execution
+remains unverified while source Actions fail before job steps.
+
+## Additional replay and publication audit — 2026-10-17
+
+A reverse route frame carries an immutable identity reference to the
+**exact consumed parent frame**, not merely a matching flow ID and
+actor path. `restoreRejectedReturn` rejects sibling-frame substitution,
+duplicate rollback, changed generation, and any return frame which has
+ever been published to a real mailbox. This closes an identity-replay
+gap when two branches legitimately share the same path and flow.
+
+At the successful bounded mailbox `tryWrite` boundary,
+`ActorRuntime` marks a route frame as **monotonically published**,
+before later shared-mutex accounting or scheduling can fail. The
+publisher then distinguishes a known prepublication rejection from a
+fault **after** DATA has entered the mailbox:
+
+- Prepublication: retire the rejected child or restore the exact
+  rejected reverse frame; the retry retains a fresh route ID.
+- Postpublication: NEVER restore the source or issue a false negative
+  per-edge admission receipt. Leave accepted child cleanup to its
+  actual mailbox envelope and fail closed on internal runtime error.
+- VM `Error`: preserve fatal classification; never turn it into an
+  ordinary retryable `RuntimeException`.
+
+The new standalone smoke adds same-flow/same-path sibling spoofing,
+rollback replay, and already-published-return tests, including envelope
+retirement. New actual ActorRuntime JUnit exercises group departure
+after successful admission: a previously sealed direct origin reply
+must still arrive, while subsequent routing to that departed member
+is rejected. The parallel ActorGroup snapshot JUnit exercises
+concurrent joins/readers (20,000 immutable snapshots), foreign-ID
+rejection, group closure and membership-only worker survival.
+Both JUnit fixtures are now included in the exact-head routing
+workflow's test selection.
+
+These are **committed test cases, not observed Maven passes** until a
+runner executes the exact source commit. The publication marker
+provides safe rejection classification, **not exactly-once processing,
+transactional multi-mailbox fanout, durable acknowledgement or remote
+delivery guarantees**.
+
+## Exclusive mailbox admission / runner audit — 2026-10-17
+
+The VM-owned route `MailFrame` now contains an atomic three-state
+publication protocol: `FREE → CLAIMED → PUBLISHED` for a successful
+one-shot delivery, or `CLAIMED → FREE` on **known prepublication**
+rejection. `ActorRuntime.sendWithPipelineFrame` claims before any
+fallible DATA preparation and refunds the claim with mailbox credits if
+it never publishes. Two concurrent publishers cannot enqueue the same
+sealed frame. A **per-send successful-claim flag** guards cleanup:
+a losing competing sender must never abort another sender's claim.
+The new real-mailbox JUnit regression holds a claim, rejects a
+competing send, proves the original claim remains reserved, then
+admits exactly one intended DATA envelope after release.
+`PUBLISHED` never transitions backward.
+
+The exact mailbox `tryWrite` commit is immediately followed by a
+**nonthrowing, allocation-free, monitor-free** publication state update.
+No fallible session/epoch lookup can now throw *between* actual enqueue
+and the publication marker. For a postpublication fault, the router
+preserves envelope-owned child cleanup and refuses any automatic
+source/reverse retry, including ingress. A returned failure is only a
+safe rollback when publication has provably not occurred.
+
+The standalone route ledger smoke adds a prepublication claim/retry
+test, an eight-way CAS contention test, and no replay after publication.
+Together with existing 8,000 RR and 2,000 native-style logical branch
+iterations, these remain committed but **not exact-head Maven/JUnit
+execution evidence** until an authorized runner executes them.
+
+**Private alternate-org runner proof:** The source files
+`ActorPipelineRoutePlan.java`, `ActorPipelineRouteSession.java` and
+their two JDK21 standalone smoke tests were copied byte-for-byte to
+private [zed-pkg-test test PR #7](https://github.com/zed-pkg-test/oreslang-private-pr-validation-20261012/pull/7)
+and [ores-stack test PR #3](https://github.com/ores-stack/ores-stack-infra/pull/3).
+The GitHub connector confirmed all **four original Git blob SHAs** after
+each copy and embedded exact `git hash-object` assertions in the
+private JDK21 workflow. No cross-org source checkout token or secret
+was used. Both orgs' workflow attempts failed with **no steps and no
+artifacts**, so they supply **no JDK21 runtime pass**. These are
+**four-file test-closure mirrors**, NOT copies of or proofs against
+the entire Java PR Git tree. The exact full-tree mirror remains blocked
+by unavailable Git tree enumeration/transfer and runner scheduling.
+
+A separate **local JDK21 isolated algorithm model**, not the original
+repository source, passed 500 × eight-contender route-claim races and
+200,000 COW membership reads across 10,000 updates. It is supplemental
+algorithm evidence only, not a substitute for Maven/GraalVM execution.
+
 ## Evidence required before promotion
 
 1. Exact-head Maven/JUnit compilation and execution of

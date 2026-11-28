@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -33,6 +34,67 @@ public final class ActorPipelineRouteSessionSmoke {
         check(ActorPipelineRouteSession.ReturnPath.class.getConstructors().length == 0,
                 "host caller could construct a forged reply path");
         var plan = graph();
+        // ActorGroup membership may restrict an existing DAG, never
+        // introduce a new edge or change its deterministic receipt order.
+        // This standalone selector test has no ActorRuntime dependency.
+        var selectedLedger = new ActorPipelineRouteSession(plan, 72, 6);
+        var groupRoot = selectedLedger.ingress("source");
+        var ordered = plan.forwardAll("source");
+        var onlySecond = selectedLedger.forwardSelected(
+                groupRoot, List.of(ordered.get(1)));
+        check(onlySecond.size() == 1
+                        && onlySecond.getFirst().receiver().equals("worker-b"),
+                "selective ActorGroup fanout chose incorrect connected worker");
+        selectedLedger.complete(onlySecond.getFirst());
+        reject(() -> selectedLedger.forwardSelected(
+                        groupRoot, List.of(ordered.get(0), ordered.get(0))),
+                "selective fanout admitted duplicate route edges");
+        try {
+            selectedLedger.forwardSelected(
+                    groupRoot, List.of(ordered.get(1), ordered.get(0)));
+            throw new AssertionError("selective fanout reordered immutable DAG edges");
+        } catch (SecurityException expected) { }
+        reject(() -> selectedLedger.forwardSelected(groupRoot, List.of()),
+                "empty ActorGroup selection silently discarded DATA");
+        reject(() -> selectedLedger.forwardRoundRobinEligible(
+                        groupRoot, java.util.Set.of()),
+                "round-robin without group members silently discarded DATA");
+        var firstEligible = selectedLedger.forwardRoundRobinEligible(
+                groupRoot, java.util.Set.of("worker-b"));
+        check(firstEligible.receiver().equals("worker-b"),
+                "round-robin did not skip nonmember graph worker-a");
+        selectedLedger.complete(firstEligible);
+        var nextEligible = selectedLedger.forwardRoundRobinEligible(
+                groupRoot, java.util.Set.of("worker-a", "worker-b"));
+        check(nextEligible.receiver().equals("worker-a"),
+                "round-robin cursor changed incorrectly after membership expansion");
+        selectedLedger.complete(nextEligible);
+        selectedLedger.complete(groupRoot);
+        check(selectedLedger.outstanding() == 0,
+                "selective fanout or round-robin retained phantom frames");
+        selectedLedger.advanceGeneration(73);
+        var restarted = selectedLedger.ingress("source");
+        var restartChoice = selectedLedger.forwardRoundRobinEligible(
+                restarted, java.util.Set.of("worker-a", "worker-b"));
+        check(restartChoice.receiver().equals("worker-a"),
+                "quiescent generation change lost or failed to reset RR cursor");
+        selectedLedger.complete(restartChoice);
+        selectedLedger.complete(restarted);
+        var cancelling = selectedLedger.ingress("source");
+        check(selectedLedger.abortAndAdvanceGeneration(74) == 1,
+                "abort did not retire the last source frame");
+        reject(() -> selectedLedger.forwardRoundRobin(cancelling),
+                "old-generation source used live RR cursor");
+        var afterAbort = selectedLedger.ingress("source");
+        var abortChoice = selectedLedger.forwardRoundRobinEligible(
+                afterAbort, java.util.Set.of("worker-a", "worker-b"));
+        check(abortChoice.receiver().equals("worker-a"),
+                "abort generation discarded preallocated RR cursor state");
+        selectedLedger.complete(abortChoice);
+        selectedLedger.complete(afterAbort);
+        check(selectedLedger.outstanding() == 0,
+                "generation reset left orphan group frames");
+
         var ledger = new ActorPipelineRouteSession(plan, 7, 8);
         reject(() -> ledger.ingress("worker-a"), "internal worker must not originate flow");
         reject(() -> ledger.ingress("worker-b"), "second internal worker must not originate flow");
@@ -110,6 +172,181 @@ public final class ActorPipelineRouteSessionSmoke {
                 "reverse delivery leaked quota at capacity boundary");
         returns.close();
 
+        // A real router must bind immutable actor identities before it can
+        // publish any route frame into a user mailbox. The standalone
+        // selector-only session deliberately has no real mailbox authority.
+        var authenticated = new ActorPipelineRouteSession(plan, 18, 5,
+                Map.of("source", "id-0", "worker-a", "id-1",
+                        "worker-b", "id-2", "sink", "id-3"));
+        var authorizedRoot = authenticated.ingress("source");
+        ActorPipelineRouteSession.requireMailboxRecipient(authorizedRoot, "id-0");
+        try {
+            ActorPipelineRouteSession.requireMailboxRecipient(authorizedRoot, "id-1");
+            throw new AssertionError("wrong-recipient DATA acquired frame authority");
+        } catch (SecurityException expected) { }
+        check(authenticated.outstanding() == 1,
+                "wrong recipient bypassed live frame accounting");
+        authenticated.complete(authorizedRoot);
+        var unbound = new ActorPipelineRouteSession(plan, 18, 4);
+        var unboundRoot = unbound.ingress("source");
+        try {
+            ActorPipelineRouteSession.requireMailboxRecipient(unboundRoot, "id-0");
+            throw new AssertionError("selector-only frame published user DATA");
+        } catch (SecurityException expected) { }
+        unbound.complete(unboundRoot);
+
+        // Model both failure paths: no envelope allocated, and a real
+        // mailbox rejection that already called envelope.close() to retire
+        // its attempted return frame. Neither may consume the source's
+        // legitimate one-shot reply right or reuse a spent route ID.
+        var retry = new ActorPipelineRouteSession(plan, 21, 4);
+        var retryRoot = retry.ingress("source");
+        var retryWorker = retry.forwardTo(retryRoot, "worker-a");
+        var retrySink = retry.forward(retryWorker);
+        var rejectedReturn = retry.returnOneHop(retrySink);
+        retry.restoreRejectedReturn(retrySink, rejectedReturn);
+        check(retry.outstanding() == 3,
+                "rejected reverse selection failed to restore live source");
+        reject(() -> retry.complete(rejectedReturn),
+                "failed reverse route could be replayed");
+        var rejectedReply = retry.returnToOrigin(retrySink);
+        ActorPipelineRouteSession.retireDelivered(rejectedReply);
+        retry.restoreRejectedReturn(retrySink, rejectedReply);
+        check(retry.outstanding() == 3,
+                "already-retired envelope prevented original frame rollback");
+        // Same flow AND identical route path is insufficient for rollback:
+        // only the exact predecessor frame consumed by this return may
+        // be restored. A sibling can have the same path and still have a
+        // different one-shot publication authority.
+        var siblings = new ActorPipelineRouteSession(plan, 22, 4);
+        var sharedRoot = siblings.ingress("source");
+        var siblingA = siblings.forwardTo(sharedRoot, "worker-a");
+        var siblingB = siblings.forwardTo(sharedRoot, "worker-a");
+        // At this point both siblings have identical actor path and flow.
+        var siblingBack = siblings.returnOneHop(siblingA);
+        try {
+            siblings.restoreRejectedReturn(siblingB, siblingBack);
+            throw new AssertionError("same-path sibling forged rollback");
+        } catch (IllegalStateException expected) { }
+        siblings.restoreRejectedReturn(siblingA, siblingBack);
+        siblings.complete(siblingA);
+        try {
+            siblings.restoreRejectedReturn(siblingA, siblingBack);
+            throw new AssertionError("spent reverse rollback was replayed");
+        } catch (IllegalStateException expected) { }
+        siblings.complete(siblingB);
+        siblings.complete(sharedRoot);
+        check(siblings.outstanding() == 0, "sibling return rollback leaked credits");
+
+        // Failed prepublication send attempts release the exclusive claim,
+        // preserving the route for a later safe retry. Once published, the
+        // same frame cannot be used for a second mailbox envelope.
+        var claimLedger = new ActorPipelineRouteSession(plan, 24, 4);
+        var claimFrame = claimLedger.ingress("source");
+        ActorPipelineRouteSession.claimMailboxAdmission(claimFrame);
+        reject(() -> ActorPipelineRouteSession.claimMailboxAdmission(claimFrame),
+                "concurrent mailbox publishers claimed the same route frame");
+        // In-flight mailbox admission blocks generation replacement and
+        // terminal teardown; otherwise a stopped graph could enqueue stale
+        // DATA before the successful tryWrite is marked irrevocable.
+        reject(() -> claimLedger.abortAndAdvanceGeneration(25),
+                "abort fenced epoch over in-flight mailbox publication");
+        reject(() -> claimLedger.complete(claimFrame),
+                "explicit completion retired in-flight mailbox publication");
+        reject(() -> claimLedger.close(),
+                "close retired actor route during in-flight mailbox admission");
+        check(!claimLedger.closed(), "rejected close mutated live session");
+        ActorPipelineRouteSession.abortMailboxAdmission(claimFrame);
+        check(!ActorPipelineRouteSession.wasMailboxPublished(claimFrame),
+                "failed prepublication attempt reported accepted DATA");
+        ActorPipelineRouteSession.claimMailboxAdmission(claimFrame);
+        ActorPipelineRouteSession.markMailboxPublished(claimFrame);
+        reject(() -> ActorPipelineRouteSession.claimMailboxAdmission(claimFrame),
+                "already-published route frame was reused in a second mailbox");
+        ActorPipelineRouteSession.abortMailboxAdmission(claimFrame);
+        check(ActorPipelineRouteSession.wasMailboxPublished(claimFrame),
+                "abort of a published frame erased monotonic publication");
+        claimLedger.complete(claimFrame);
+        claimLedger.advanceGeneration(25);
+        var newRoot = claimLedger.ingress("source");
+        ActorPipelineRouteSession.claimMailboxAdmission(newRoot);
+        reject(() -> claimLedger.abortAndAdvanceGeneration(26),
+                "generation abort raced second claimed mailbox frame");
+        ActorPipelineRouteSession.abortMailboxAdmission(newRoot);
+        check(claimLedger.abortAndAdvanceGeneration(26) == 1,
+                "failed claimed mailbox abort left phantom correlation frame");
+        reject(() -> ActorPipelineRouteSession.claimMailboxAdmission(newRoot),
+                "old generation was claimable after supervisor abort");
+
+        // Eight concurrent racing host admission attempts MUST grant exactly
+        // one winner until that winner releases its reservation. Do not
+        // require a physical carrier or a dedicated actor to prove CAS.
+        var race = new ActorPipelineRouteSession(plan, 25, 4);
+        var raceFrame = race.ingress("source");
+        var claimReady = new CountDownLatch(8);
+        var claimGo = new CountDownLatch(1);
+        var claimWins = new AtomicInteger();
+        var claimRejected = new AtomicInteger();
+        var claimThreads = new Thread[8];
+        for (int i = 0; i < claimThreads.length; i++) {
+            claimThreads[i] = new Thread(() -> {
+                claimReady.countDown();
+                try {
+                    claimGo.await();
+                    ActorPipelineRouteSession.claimMailboxAdmission(raceFrame);
+                    claimWins.incrementAndGet();
+                } catch (IllegalStateException expected) {
+                    claimRejected.incrementAndGet();
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(error);
+                }
+            });
+            claimThreads[i].start();
+        }
+        claimReady.await();
+        claimGo.countDown();
+        for (var contender : claimThreads) contender.join();
+        check(claimWins.get() == 1 && claimRejected.get() == 7,
+                "route-frame exclusive CAS admitted more than one publisher");
+        ActorPipelineRouteSession.abortMailboxAdmission(raceFrame);
+        race.complete(raceFrame);
+
+        // Publication is a monotonic VM fact, distinct from the current
+        // active-credit state. A return already enqueued in a real mailbox
+        // cannot be relabeled a rejection even after its envelope retires.
+        var published = new ActorPipelineRouteSession(plan, 23, 4);
+        var publishedRoot = published.ingress("source");
+        var publishedWorker = published.forwardTo(publishedRoot, "worker-a");
+        var publishedSink = published.forward(publishedWorker);
+        var publishedReply = published.returnToOrigin(publishedSink);
+        ActorPipelineRouteSession.claimMailboxAdmission(publishedReply);
+        ActorPipelineRouteSession.markMailboxPublished(publishedReply);
+        check(ActorPipelineRouteSession.wasMailboxPublished(publishedReply),
+                "published reply lost monotonic mailbox marker");
+        reject(() -> ActorPipelineRouteSession.markMailboxPublished(publishedReply),
+                "one route frame published into multiple envelopes");
+        reject(() -> published.restoreRejectedReturn(publishedSink, publishedReply),
+                "published reply was improperly restored for retry");
+        ActorPipelineRouteSession.retireDelivered(publishedReply);
+        reject(() -> published.restoreRejectedReturn(publishedSink, publishedReply),
+                "retired published reply was resurrected");
+        published.complete(publishedRoot);
+        published.complete(publishedWorker);
+        check(published.outstanding() == 0,
+                "published reply teardown leaked route credits");
+
+        var successfulReply = retry.returnToOrigin(retrySink);
+        check(successfulReply.receiver().equals("source")
+                        && successfulReply.routeId() > rejectedReply.routeId(),
+                "retry recycled an old route ID or forged origin");
+        retry.complete(successfulReply);
+        retry.complete(retryWorker);
+        retry.complete(retryRoot);
+        check(retry.outstanding() == 0,
+                "reverse rejection/retry leaked VM correlation credits");
+        retry.close();
+
         var old = ledger.ingress("source");
         reject(() -> ledger.advanceGeneration(8),
                 "clean generation change lost an in-flight message");
@@ -180,6 +417,57 @@ public final class ActorPipelineRouteSessionSmoke {
         reusable.complete(producer);
         check(reusable.outstanding() == 0, "fan-out producer not released");
 
+        // 8,000 concurrent group-filtered RR selections with alternating
+        // membership subsets must never choose an ineligible DAG target,
+        // duplicate a correlation ID, or leak per-message frame credits.
+        var groupParallel = new ActorPipelineRouteSession(plan, 76, 64);
+        var groupParent = groupParallel.ingress("source");
+        var groupReady = new CountDownLatch(8);
+        var groupGo = new CountDownLatch(1);
+        var groupErrors = new AtomicInteger();
+        var groupAccepted = new AtomicInteger();
+        var groupIds = java.util.concurrent.ConcurrentHashMap.<Long>newKeySet();
+        var groupThreads = new Thread[8];
+        for (int t = 0; t < groupThreads.length; t++) {
+            final int shard = t;
+            groupThreads[t] = new Thread(() -> {
+                groupReady.countDown();
+                try {
+                    groupGo.await();
+                    for (int i = 0; i < 1000; i++) {
+                        var members = (i + shard) % 3 == 0
+                                ? java.util.Set.of("worker-b")
+                                : (i + shard) % 3 == 1
+                                        ? java.util.Set.of("worker-a")
+                                        : java.util.Set.of("worker-a", "worker-b");
+                        var child = groupParallel.forwardRoundRobinEligible(
+                                groupParent, members);
+                        try {
+                            if (!members.contains(child.receiver())
+                                    || !groupIds.add(child.routeId())) {
+                                throw new IllegalStateException(
+                                        "RR chose ineligible actor or repeated route identity");
+                            }
+                            groupAccepted.incrementAndGet();
+                        } finally {
+                            groupParallel.complete(child);
+                        }
+                    }
+                } catch (Throwable failure) {
+                    groupErrors.incrementAndGet();
+                }
+            }, "group-rr-stress-" + t);
+            groupThreads[t].start();
+        }
+        groupReady.await();
+        groupGo.countDown();
+        for (var thread : groupThreads) thread.join();
+        check(groupErrors.get() == 0 && groupAccepted.get() == 8000
+                        && groupIds.size() == 8000
+                        && groupParallel.outstanding() == 1,
+                "concurrent dynamic group RR selection leaked/spoofed frames");
+        groupParallel.complete(groupParent);
+
         var parallel = new ActorPipelineRouteSession(plan, 10, 8192);
         var r = parallel.ingress("source");
         int threads = 4, iterations = 500;
@@ -205,6 +493,6 @@ public final class ActorPipelineRouteSessionSmoke {
         check(errors.get() == 0 && parallel.outstanding() == 1,
                 "concurrent branches raced or leaked");
         parallel.complete(r);
-        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=17 concurrent_branches=2000");
+        System.out.println("ORES_ACTOR_REPLY_CORRELATION_OK cases=21 concurrent_branches=10000");
     }
 }

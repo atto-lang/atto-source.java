@@ -50,6 +50,210 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void leavingGroupDoesNotRewriteAlreadyAdmittedReturnPath() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            var routerRef =
+                    new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
+            var replied = new CountDownLatch(1);
+            var futureDenied = new CountDownLatch(1);
+            var error = new AtomicReference<Throwable>();
+            var worker = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("branch", value);
+                group.leaveCurrent();
+                // The worker was a valid member at forward admission.
+                // Its immutable return frame must not be invalidated
+                // solely because it leaves the optional selection group.
+                runtime.routeCurrentPipelineReply("ack");
+            });
+            var other = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (value.equals("begin")) {
+                    routerRef.get().forwardTo("worker-a", "branch");
+                } else if (value.equals("ack")) {
+                    replied.countDown();
+                } else if (value.equals("second")) {
+                    try {
+                        routerRef.get().forwardTo("worker-a", "illegal");
+                        error.set(new AssertionError("ex-member received a new route"));
+                    } catch (IllegalStateException expected) {
+                        futureDenied.countDown();
+                    }
+                } else {
+                    error.set(new AssertionError("unexpected source payload " + value));
+                }
+            });
+            group.join(worker, join);
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanInGraph(),
+                    Map.of("source", source, "worker-a", worker,
+                           "worker-b", other, "sink", sink), 95, 12, group);
+            routerRef.set(router);
+            router.ingress("source", "begin");
+            assertTrue(replied.await(8, TimeUnit.SECONDS),
+                    "membership leave invalidated a sealed already-published return path");
+            source.drain().get(5, TimeUnit.SECONDS);
+            worker.drain().get(5, TimeUnit.SECONDS);
+            assertFalse(group.pipelineMemberSnapshot().contains(worker.id()));
+
+            router.ingress("source", "second");
+            assertTrue(futureDenied.await(5, TimeUnit.SECONDS),
+                    "departed worker remained eligible for new DATA selection");
+            source.drain().get(5, TimeUnit.SECONDS);
+            assertNull(error.get());
+            assertEquals(0, router.outstanding(),
+                    "group departure + reverse receipt leaked correlation frames");
+            router.close();
+            group.close();
+            source.stop();
+            worker.stop();
+            other.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            other.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void actorGroupFanoutSelectiveAndRoundRobinUseOnlyLiveGraphMembers()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            var routerRef =
+                    new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
+            var receipts = new java.util.concurrent.ConcurrentHashMap<String,
+                    List<ActorPipelineCorrelatedMailboxRouter.Admission>>();
+            var seen = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+            var denied = new AtomicInteger();
+            var a = runtime.<String>spawnShared(() -> (value, actor) ->
+                    seen.add("worker-a:" + value));
+            var b = runtime.<String>spawnShared(() -> (value, actor) ->
+                    seen.add("worker-b:" + value));
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                var router = routerRef.get();
+                switch (value) {
+                    case "fan1", "fan2" ->
+                            receipts.put(value, router.forwardAll(value));
+                    case "selected" ->
+                            receipts.put(value, router.forwardSelected(
+                                    java.util.Set.of("worker-b"), value));
+                    case "deny" -> {
+                        try {
+                            router.forwardSelected(java.util.Set.of("worker-b"), "bad");
+                            throw new AssertionError(
+                                    "inactive ActorGroup member received fanout");
+                        } catch (IllegalStateException expected) {
+                            denied.incrementAndGet();
+                        }
+                        try {
+                            router.forwardSelected(java.util.Set.of("sink"), "bad");
+                            throw new AssertionError(
+                                    "group membership created an unauthorized graph edge");
+                        } catch (SecurityException expected) {
+                            denied.incrementAndGet();
+                        }
+                        try {
+                            router.forwardSelected(java.util.Set.of(), "bad");
+                            throw new AssertionError("empty selection discarded DATA");
+                        } catch (IllegalArgumentException expected) {
+                            denied.incrementAndGet();
+                        }
+                        receipts.put(value, router.forwardSelected(
+                                java.util.Set.of("worker-a"), value));
+                    }
+                    case "rr1", "rr2", "rr3" ->
+                            router.forwardRoundRobin(value);
+                    default -> throw new AssertionError("unexpected source mail " + value);
+                }
+            });
+
+            group.join(a, join);
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanInGraph(),
+                    Map.of("source", source, "worker-a", a,
+                           "worker-b", b, "sink", sink), 53, 24, group);
+            routerRef.set(router);
+
+            // Only the first worker is a current cooperating group member.
+            router.ingress("source", "fan1");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, receipts.get("fan1").size());
+            assertEquals("worker-a", receipts.get("fan1").getFirst().target());
+            assertEquals(0, receipts.get("fan1").getFirst().edgeIndex());
+
+            // Selective fanout names a graph edge, but must also pass the
+            // group membership check. Denial must not consume the source.
+            router.ingress("source", "deny");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(3, denied.get(),
+                    "nonmember, off-graph and empty selection must fail closed");
+            assertEquals("worker-a", receipts.get("deny").getFirst().target());
+
+            // A subsequent join affects future snapshots without changing
+            // any prior frame's sealed origin/worker return path.
+            group.join(b, join);
+            router.ingress("source", "fan2");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(2, receipts.get("fan2").size());
+            assertEquals(0, receipts.get("fan2").get(0).edgeIndex());
+            assertEquals(1, receipts.get("fan2").get(1).edgeIndex());
+            assertEquals(receipts.get("fan2").get(0).flowId(),
+                         receipts.get("fan2").get(1).flowId());
+            assertNotEquals(receipts.get("fan2").get(0).routeId(),
+                            receipts.get("fan2").get(1).routeId());
+
+            router.ingress("source", "selected");
+            source.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, receipts.get("selected").size());
+            assertEquals("worker-b", receipts.get("selected").getFirst().target());
+            assertEquals(1, receipts.get("selected").getFirst().edgeIndex(),
+                    "selective fanout must report ORIGINAL DAG edge index");
+
+            router.ingress("source", "rr1");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            router.ingress("source", "rr2");
+            source.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(seen.contains("worker-a:rr1"));
+            assertTrue(seen.contains("worker-b:rr2"));
+
+            // Actor termination revokes cooperative membership; the next
+            // round-robin selection skips the removed DAG target.
+            b.stop();
+            b.getDone().get(5, TimeUnit.SECONDS);
+            router.ingress("source", "rr3");
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(seen.contains("worker-a:rr3"));
+            assertFalse(seen.contains("worker-b:rr3"));
+            assertEquals(0, router.outstanding(), "group fanout leaked frames");
+
+            router.close();
+            group.close(); // Membership alone must not cancel worker a.
+            assertTrue(a.isAlive(), "ActorGroup membership implied worker ownership");
+            source.stop();
+            a.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            a.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void compilerBridgeUsesOnlyEnvelopeBoundTurnAuthority() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var finished = new CountDownLatch(1);
@@ -72,9 +276,15 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
 
             var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
                 assertEquals("work:sink", value);
+                assertTrue(ActorPipelineRouteSession.wasMailboxPublished(
+                        runtime.currentPipelineRouteFrame()),
+                        "sink routed DATA must be marked published before receive");
                 runtime.routeCurrentPipelineBackward("ack:sink");
             });
             var worker = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertTrue(ActorPipelineRouteSession.wasMailboxPublished(
+                        runtime.currentPipelineRouteFrame()),
+                        "worker receive cannot run with unpublished route frame");
                 if (value.equals("work")) {
                     runtime.routeCurrentPipelineForward(value + ":sink");
                 } else if (value.equals("ack:sink")) {
@@ -122,6 +332,132 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             worker.getDone().get(5, TimeUnit.SECONDS);
             sink.getDone().get(5, TimeUnit.SECONDS);
             ordinary.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    private static ActorRuntime.PipelineTurnAuthority testAuthority(
+            ActorPipelineRouteSession session) {
+        return new ActorRuntime.PipelineTurnAuthority() {
+            @Override public boolean authenticates(
+                    ActorPipelineRouteSession.MailFrame frame) {
+                return session.ownsLive(frame);
+            }
+            @Override public void routeForward(Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeForwardRoundRobin(Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeForwardTo(String target, Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeForwardByKey(String key, Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeBackward(Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeReply(Object value) {
+                throw new UnsupportedOperationException();
+            }
+        };
+    }
+
+    @Test
+    void rejectedCompetingMailboxSendCannotReleaseAnotherPublisherClaim()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var gotData = new CountDownLatch(1);
+            var deliveries = new AtomicInteger();
+            var source = runtime.<String>spawnShared(() -> (value, ctx) -> {
+                assertEquals("one-admitted", value);
+                deliveries.incrementAndGet();
+                gotData.countDown();
+            });
+            var worker = runtime.<String>spawnShared(() -> (value, ctx) -> { });
+            var sink = runtime.<String>spawnShared(() -> (value, ctx) -> { });
+            var session = new ActorPipelineRouteSession(linearGraph(), 93, 4,
+                    Map.of("source", source.id(),
+                            "worker", worker.id(), "sink", sink.id()));
+            var frame = session.ingress("source");
+            // Model another publisher holding the exclusive pre-enqueue
+            // reservation. This rejected send must NOT clear its claim.
+            ActorPipelineRouteSession.claimMailboxAdmission(frame);
+            assertThrows(IllegalStateException.class, () ->
+                    runtime.sendWithPipelineFrame(
+                            source, "duplicate", frame, testAuthority(session)));
+            assertThrows(IllegalStateException.class, () ->
+                    ActorPipelineRouteSession.claimMailboxAdmission(frame),
+                    "failed second sender improperly aborted first sender's claim");
+            assertEquals(1, session.outstanding(),
+                    "competing publisher changed active route-credit accounting");
+            ActorPipelineRouteSession.abortMailboxAdmission(frame);
+            runtime.sendWithPipelineFrame(
+                    source, "one-admitted", frame, testAuthority(session));
+            assertTrue(gotData.await(5, TimeUnit.SECONDS));
+            source.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(ActorPipelineRouteSession.wasMailboxPublished(frame));
+            assertEquals(1, deliveries.get(),
+                    "failed competing sender published duplicate mailbox DATA");
+            assertEquals(0, session.outstanding());
+            source.stop();
+            worker.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void finalMailboxRejectsWrongActorAndUnboundSessionBeforeQueueing()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var delivered = new CountDownLatch(1);
+            var seen = new AtomicInteger();
+            var source = runtime.<String>spawnShared(() -> (value, ctx) -> {
+                assertEquals("allowed", value);
+                seen.incrementAndGet();
+                delivered.countDown();
+            });
+            var worker = runtime.<String>spawnShared(() -> (value, ctx) -> {
+                throw new AssertionError("wrong-target DATA executed");
+            });
+            var sink = runtime.<String>spawnShared(() -> (value, ctx) -> { });
+            var graph = linearGraph();
+            var bound = new ActorPipelineRouteSession(
+                    graph, 79, 4,
+                    Map.of("source", source.id(),
+                           "worker", worker.id(),
+                           "sink", sink.id()));
+            var root = bound.ingress("source");
+            assertThrows(SecurityException.class,
+                    () -> runtime.sendWithPipelineFrame(
+                            worker, "wrong", root, testAuthority(bound)));
+            assertEquals(1, bound.outstanding(),
+                    "unauthorized target must not consume correlation frame");
+
+            var unbound = new ActorPipelineRouteSession(graph, 79, 4);
+            var unattached = unbound.ingress("source");
+            assertThrows(SecurityException.class,
+                    () -> runtime.sendWithPipelineFrame(
+                            source, "wrong", unattached, testAuthority(unbound)),
+                    "selector-only sessions cannot publish real mailbox DATA");
+            assertEquals(1, unbound.outstanding());
+
+            runtime.sendWithPipelineFrame(
+                    source, "allowed", root, testAuthority(bound));
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+            source.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, seen.get());
+            assertEquals(0, bound.outstanding());
+            unbound.complete(unattached);
+            source.stop();
+            worker.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
@@ -230,6 +566,85 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             source.getDone().get(5, TimeUnit.SECONDS);
             workerA.getDone().get(5, TimeUnit.SECONDS);
             workerB.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void rejectedBackwardAdmissionRestoresOriginalFrameForDirectReply()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var sinkEntered = new CountDownLatch(1);
+            var releaseSink = new CountDownLatch(1);
+            var sourceReplied = new CountDownLatch(1);
+            var rejected = new AtomicReference<Throwable>();
+            var observed = new AtomicReference<String>();
+
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("work", value);
+                sinkEntered.countDown();
+                if (!releaseSink.await(8, TimeUnit.SECONDS))
+                    throw new AssertionError("sink release timed out");
+                try {
+                    runtime.routeCurrentPipelineBackward("cannot-deliver");
+                    throw new AssertionError("backward into stopped worker was accepted");
+                } catch (RuntimeException expected) {
+                    // A stopped destination may be surfaced by the runtime as
+                    // an ActorInvalidReference/termination admission failure.
+                    rejected.set(expected);
+                }
+                // A prepublication rejection must NOT consume the original
+                // sealed route frame. Direct reply to source remains legal.
+                runtime.routeCurrentPipelineReply("recovered");
+            });
+            var worker = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("request", value);
+                runtime.routeCurrentPipelineForward("work");
+            });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (value.equals("begin")) {
+                    runtime.routeCurrentPipelineForward("request");
+                } else if (value.equals("recovered")) {
+                    observed.set(value);
+                    sourceReplied.countDown();
+                } else {
+                    throw new AssertionError("source received wrong DATA");
+                }
+            });
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, linearGraph(),
+                    Map.of("source", source, "worker", worker, "sink", sink),
+                    87, 12);
+            router.ingress("source", "begin");
+            try {
+                assertTrue(sinkEntered.await(6, TimeUnit.SECONDS));
+                assertTrue(runtime.cancel(worker),
+                        "host must seal cancelled upstream worker");
+                // Do NOT await finalization while another SHARED actor
+                // deliberately occupies a carrier on releaseSink. A
+                // single-carrier executor could otherwise deadlock the test.
+            } finally {
+                releaseSink.countDown();
+            }
+            try {
+                worker.getDone().get(5, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException cancelled) {
+                assertNotNull(cancelled.getCause(),
+                        "cancelled worker should carry a terminal cause");
+            }
+            assertTrue(sourceReplied.await(8, TimeUnit.SECONDS),
+                    "failed backward should permit authenticated alternate reply");
+            assertNotNull(rejected.get(),
+                    "backward to stopped worker should have failed admission");
+            assertEquals("recovered", observed.get());
+            source.drain().get(5, TimeUnit.SECONDS);
+            sink.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(0, router.outstanding(),
+                    "failed return + valid origin reply leaked route frames");
+            router.close();
+            source.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
             sink.getDone().get(5, TimeUnit.SECONDS);
         }
     }

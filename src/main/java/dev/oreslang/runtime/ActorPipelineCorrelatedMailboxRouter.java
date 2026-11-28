@@ -46,6 +46,20 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     private final ActorRuntime owner;
     private final ActorPipelineRoutePlan graph;
     private final ActorPipelineRouteSession session;
+    /** Optional cooperative membership *selector*, never a source of new
+     * graph edges, return authority, or cancellation rights. */
+    private final ActorRuntime.ActorGroup routingGroup;
+    /** Snapshot identity changes on membership mutation. Cache only
+     * derivative recipient eligibility, never any guest route authority. */
+    private static final class GroupEligibleSnapshot {
+        final Set<ActorRuntime.ActorId> members;
+        final Set<String> enabledNames;
+        GroupEligibleSnapshot(Set<ActorRuntime.ActorId> members, Set<String> enabledNames) {
+            this.members = members;
+            this.enabledNames = enabledNames;
+        }
+    }
+    private volatile GroupEligibleSnapshot cachedGroupEligibility;
     private final Map<String, ActorRuntime.ActorRef<M>> targets;
     private final Map<ActorRuntime.ActorId, String> identities;
     private final Map<ActorPipelineRoutePlan.Edge, Integer> edges;
@@ -60,6 +74,17 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             ActorPipelineRoutePlan plan,
             Map<String, ActorRuntime.ActorRef<M>> bindings,
             long generation, int maxActiveFrames) {
+        this(runtime, plan, bindings, generation, maxActiveFrames, null);
+    }
+
+    /** Supervisor-installed group policy. Only actual group members that
+     * are also connected graph targets may receive selected DATA. */
+    ActorPipelineCorrelatedMailboxRouter(
+            ActorRuntime runtime,
+            ActorPipelineRoutePlan plan,
+            Map<String, ActorRuntime.ActorRef<M>> bindings,
+            long generation, int maxActiveFrames,
+            ActorRuntime.ActorGroup group) {
         this(runtime, plan, bindings, generation, maxActiveFrames, false);
     }
 
@@ -74,6 +99,12 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         if (sourceRootRegistration) owner.requireSourcePipelineRegistrationAuthority();
         else owner.requirePipelineRegistrationHostAuthority();
         graph = Objects.requireNonNull(plan);
+        if (group != null) {
+            if (!group.ownedByRuntime(owner))
+                throw new SecurityException("routing group belongs to a foreign runtime");
+            group.pipelineMemberSnapshot(); // must be live at registration
+        }
+        routingGroup = group;
         Objects.requireNonNull(bindings);
         Set<String> required = new HashSet<>();
         Map<ActorPipelineRoutePlan.Edge, Integer> indexed = new HashMap<>();
@@ -99,7 +130,11 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         targets = Map.copyOf(bound);
         identities = Map.copyOf(reverse);
         edges = Map.copyOf(indexed);
-        session = new ActorPipelineRouteSession(plan, generation, maxActiveFrames);
+        var recipients = new HashMap<String, ActorRuntime.ActorId>();
+        for (var binding : targets.entrySet())
+            recipients.put(binding.getKey(), binding.getValue().id());
+        session = new ActorPipelineRouteSession(
+                plan, generation, maxActiveFrames, recipients);
     }
 
     /**
@@ -133,9 +168,21 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             var frame = session.ingress(root);
             try {
                 owner.sendWithPipelineFrame(targets.get(root), message, frame, this);
-            } catch (RuntimeException | Error failed) {
+            } catch (RuntimeException failed) {
+                if (ActorPipelineRouteSession.wasMailboxPublished(frame)) {
+                    // Root DATA has already entered the mailbox. Never
+                    // retire its frame or represent this as retryable ingress.
+                    // A supervisor must reconcile the admitted message.
+                    throw new IllegalStateException(
+                            "pipeline ingress DATA already published; retry is unsafe",
+                            failed);
+                }
                 ActorPipelineRouteSession.retireDelivered(frame);
                 throw failed;
+            } catch (Error fatal) {
+                if (!ActorPipelineRouteSession.wasMailboxPublished(frame))
+                    ActorPipelineRouteSession.retireDelivered(frame);
+                throw fatal;
             }
             return null;
         });
@@ -156,6 +203,59 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         return frame;
     }
 
+    /** The group is snapshotted at selection, not on delivery or reply.
+     * A join/leave affects future selections only. A stopped destination
+     * still reports a real per-edge mailbox admission failure. */
+    private Set<String> groupEligible(String source) {
+        // Source edge validation is performed by the caller's immutable DAG
+        // lookup. Only graph-bound targets are ever present in this cache.
+        if (routingGroup == null) return targets.keySet();
+        var members = routingGroup.pipelineMemberSnapshot();
+        var cached = cachedGroupEligibility;
+        if (cached != null && cached.members == members)
+            return cached.enabledNames;
+        // Compute at most once per observed membership snapshot per router.
+        // Concurrent writers may duplicate this pure work, never publish
+        // an unverified target or mutate an already-read immutable view.
+        var names = new HashSet<String>();
+        for (var entry : targets.entrySet())
+            if (members.contains(entry.getValue().id()))
+                names.add(entry.getKey());
+        var ready = Set.copyOf(names);
+        cachedGroupEligibility = new GroupEligibleSnapshot(members, ready);
+        return ready;
+    }
+
+    private List<ActorPipelineRoutePlan.Edge> selectedGroupEdges(
+            String source, Set<String> requested) {
+        var edges = graph.forwardAll(source);
+        // Legacy static fanout stays allocation-light; ActorGroup selection
+        // is completely optional, not an extra broker in the hot path.
+        if (routingGroup == null && requested == null) return edges;
+        if (requested != null && requested.isEmpty())
+            throw new IllegalArgumentException("selective fanout requires targets");
+        var active = groupEligible(source);
+        if (requested != null) {
+            var connected = new HashSet<String>();
+            for (var edge : edges) connected.add(edge.target());
+            for (var name : requested) {
+                if (!connected.contains(name))
+                    throw new SecurityException("selected target is not a connected graph edge");
+                if (!active.contains(name))
+                    throw new IllegalStateException(
+                            "selected actor is not an active ActorGroup member");
+            }
+        }
+        var selected = new ArrayList<ActorPipelineRoutePlan.Edge>();
+        for (var edge : edges)
+            if (active.contains(edge.target())
+                    && (requested == null || requested.contains(edge.target())))
+                selected.add(edge);
+        if (selected.isEmpty())
+            throw new IllegalStateException("no eligible ActorGroup graph recipients");
+        return List.copyOf(selected);
+    }
+
     /** Read-only host observability; never an authority-bearing route handle. */
     Correlation currentCorrelation() {
         var frame = current();
@@ -174,7 +274,18 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     void forward(M value) {
         inLiveGeneration(() -> {
             var source = current();
-            sendChild(session.forward(source), value);
+            Objects.requireNonNull(value, "pipeline payload");
+            ActorPipelineRouteSession.MailFrame child;
+            if (routingGroup == null) {
+                child = session.forward(source);
+            } else {
+                var edges = selectedGroupEdges(source.receiver(), null);
+                if (edges.size() != 1)
+                    throw new IllegalArgumentException(
+                            "ambiguous group forward; use selective fanout or round robin");
+                child = session.forwardTo(source, edges.getFirst().target());
+            }
+            sendChild(source, child, value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -183,7 +294,12 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     void forwardRoundRobin(M value) {
         inLiveGeneration(() -> {
             var source = current();
-            sendChild(session.forwardRoundRobin(source), value);
+            Objects.requireNonNull(value, "pipeline payload");
+            var child = routingGroup == null
+                    ? session.forwardRoundRobin(source)
+                    : session.forwardRoundRobinEligible(
+                            source, groupEligible(source.receiver()));
+            sendChild(source, child, value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -192,7 +308,11 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     void forwardTo(String target, M value) {
         inLiveGeneration(() -> {
             var source = current();
-            sendChild(session.forwardTo(source, target), value);
+            Objects.requireNonNull(value, "pipeline payload");
+            if (routingGroup != null && !groupEligible(source.receiver()).contains(target))
+                throw new IllegalStateException(
+                        "target is not an active ActorGroup graph member");
+            sendChild(source, session.forwardTo(source, target), value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -201,7 +321,17 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     void forwardByKey(String key, M value) {
         inLiveGeneration(() -> {
             var source = current();
-            sendChild(session.forwardByKey(source, key), value);
+            Objects.requireNonNull(value, "pipeline payload");
+            // Stable-key selection uses the immutable graph's strict UTF-8
+            // contract. Do not silently rehash a key across a changing
+            // group: fail closed if its designated actor is no longer active.
+            if (routingGroup != null) {
+                var edge = graph.forwardByKey(source.receiver(), key);
+                if (!groupEligible(source.receiver()).contains(edge.target()))
+                    throw new IllegalStateException(
+                            "key-selected actor is not an active ActorGroup member");
+            }
+            sendChild(source, session.forwardByKey(source, key), value);
             ActorPipelineRouteSession.retireDelivered(source);
             return null;
         });
@@ -214,7 +344,10 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
      * not enabled until compiler-owned backward message handlers exist. */
     void backward(M value) {
         inLiveGeneration(() -> {
-            sendChild(session.returnOneHop(current()), value);
+            Objects.requireNonNull(value, "pipeline payload");
+            var source = current();
+            var child = session.returnOneHop(source);
+            sendReturnChild(source, child, value);
             return null;
         });
     }
@@ -223,7 +356,10 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
      * derived from the sealed route path and is never caller-selected. */
     void reply(M value) {
         inLiveGeneration(() -> {
-            sendChild(session.returnToOrigin(current()), value);
+            Objects.requireNonNull(value, "pipeline reply payload");
+            var source = current();
+            var child = session.returnToOrigin(source);
+            sendReturnChild(source, child, value);
             return null;
         });
     }
@@ -231,19 +367,30 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     /** Every recipient gets an independent admission result; earlier
      * successes are not rolled back when a later mailbox is full or stopped. */
     List<Admission> forwardAll(M value) {
+        return deliverSelected(value, null);
+    }
+
+    /** Explicit selective fanout intersects the requested *names* with the
+     * same immutable graph and, when configured, the current ActorGroup
+     * membership. Return one receipt for each selected graph edge. */
+    List<Admission> forwardSelected(Set<String> targets, M value) {
+        return deliverSelected(value, Set.copyOf(Objects.requireNonNull(targets)));
+    }
+
+    private List<Admission> deliverSelected(M value, Set<String> requested) {
         return inLiveGeneration(() -> {
         var frame = current();
         Objects.requireNonNull(value, "pipeline payload");
         // Allocate independent receipt slots and resolve the immutable edge
         // order BEFORE reserving any route frame. A failed host allocation
         // must never strand a live, undeliverable correlation child.
-        var out = graph.forwardAll(frame.receiver());
+        var out = selectedGroupEdges(frame.receiver(), requested);
         var result = new ArrayList<Admission>(out.size());
         // Allocate the read-only wrapper before any live correlation frame
         // or mailbox DATA publication. No final List.copyOf allocation
         // occurs after successful sends have become externally visible.
         var completed = Collections.unmodifiableList(result);
-        var children = session.forwardAll(frame);
+        var children = session.forwardSelected(frame, out);
         // Pre-materialize EVERY successful AND failed branch receipt before
         // the first mailbox send. Allocation pressure must not turn a
         // nontransactional branch rejection into loss of earlier receipts.
@@ -283,6 +430,16 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
                     // receipt was created before any branch publication.
                     result.add(prepared.get(next));
                 } catch (RuntimeException failure) {
+                    if (ActorPipelineRouteSession.wasMailboxPublished(child)) {
+                        // A post-enqueue error is never a rejected branch.
+                        // Preserve its sealed frame for the recipient; do
+                        // not falsely report failure and invite duplicate
+                        // retries under a different route identifier.
+                        ActorPipelineRouteSession.retireDelivered(frame);
+                        throw new IllegalStateException(
+                                "fanout DATA already published before runtime failure",
+                                failure);
+                    }
                     ActorPipelineRouteSession.retireDelivered(child);
                     var denied = rejected.get(next);
                     denied.failure().initCause(failure);
@@ -299,20 +456,65 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             // error happened during receipt construction. A fatal error
             // during send is treated as terminal runtime failure; session
             // cleanup is idempotent and never claims a delivery succeeded.
-            for (int rest = next; rest < children.size(); rest++)
-                ActorPipelineRouteSession.retireDelivered(children.get(rest));
+            for (int rest = next; rest < children.size(); rest++) {
+                var child = children.get(rest);
+                if (!ActorPipelineRouteSession.wasMailboxPublished(child))
+                    ActorPipelineRouteSession.retireDelivered(child);
+            }
             throw failure;
         }
         });
     }
 
-    private void sendChild(ActorPipelineRouteSession.MailFrame child, M value) {
+    private void sendChild(
+            ActorPipelineRouteSession.MailFrame source,
+            ActorPipelineRouteSession.MailFrame child, M value) {
         try {
             owner.sendWithPipelineFrame(targets.get(child.receiver()),
                     Objects.requireNonNull(value, "pipeline payload"), child, this);
-        } catch (RuntimeException | Error failed) {
+        } catch (RuntimeException failed) {
+            if (ActorPipelineRouteSession.wasMailboxPublished(child)) {
+                // Accepted DATA is not a failed admission. Its envelope owns
+                // child cleanup; do not let a caught exception replay source.
+                ActorPipelineRouteSession.retireDelivered(source);
+                throw new IllegalStateException(
+                        "pipeline DATA already published; retry is unsafe", failed);
+            }
             ActorPipelineRouteSession.retireDelivered(child);
             throw failed;
+        } catch (Error fatal) {
+            // Preserve fatal VM failure classification instead of wrapping
+            // it as recoverable. Keep any published child in its mailbox.
+            if (ActorPipelineRouteSession.wasMailboxPublished(child))
+                ActorPipelineRouteSession.retireDelivered(source);
+            else
+                ActorPipelineRouteSession.retireDelivered(child);
+            throw fatal;
+        }
+    }
+
+    /** An actual mailbox rejection never consumes the source reply right.
+     * A published message is never retried automatically. In particular,
+     * ActorRuntime handles post-publication scheduler rejection as an
+     * admitted envelope (with eventual STOP cleanup), so that exception
+     * cannot be mistaken for a failed admission here. */
+    private void sendReturnChild(
+            ActorPipelineRouteSession.MailFrame source,
+            ActorPipelineRouteSession.MailFrame child, M value) {
+        try {
+            owner.sendWithPipelineFrame(
+                    targets.get(child.receiver()), value, child, this);
+        } catch (RuntimeException rejected) {
+            if (ActorPipelineRouteSession.wasMailboxPublished(child))
+                throw new IllegalStateException(
+                        "pipeline return DATA already published; retry is unsafe", rejected);
+            session.restoreRejectedReturn(source, child);
+            throw rejected;
+        } catch (Error fatal) {
+            // A published child is owned by its envelope, not this catch.
+            if (!ActorPipelineRouteSession.wasMailboxPublished(child))
+                ActorPipelineRouteSession.retireDelivered(child);
+            throw fatal;
         }
     }
 

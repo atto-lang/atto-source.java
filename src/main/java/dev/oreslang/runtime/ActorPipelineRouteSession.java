@@ -56,14 +56,36 @@ final class ActorPipelineRouteSession {
         private final List<String> actorPath;
         private final int receiverIndex;
         private final boolean returning;
+        // Exactly one original forward/return frame was consumed to create
+        // this reverse hop. This is an identity relation, not a flow/path
+        // equality guess. Never serialized into an ActorMail payload.
+        private final MailFrame returnParent;
+        // Guarded by the owning session monitor.
+        private boolean rollbackConsumed;
+        // Set at the exact mailbox enqueue linearization point. Unlike
+        // active-frame membership, this flag is monotonic and survives
+        // normal delivery/STOP frame retirement. Published DATA can NEVER
+        // be restored to its source even after a later runtime failure.
+        // 0=free, 1=reserved for one send, 2=irrevocably enqueued.
+        // CAS prevents two concurrent host publishers from enqueueing the
+        // same sealed frame; only the transition to 2 is irreversible.
+        private final java.util.concurrent.atomic.AtomicInteger publicationState =
+                new java.util.concurrent.atomic.AtomicInteger();
         private MailFrame(ActorPipelineRouteSession session, long generation,
                           long flowId, long routeId, List<String> actorPath) {
             this(session, generation, flowId, routeId, actorPath,
-                    actorPath.size() - 1, false);
+                    actorPath.size() - 1, false, null);
         }
         private MailFrame(ActorPipelineRouteSession session, long generation,
                           long flowId, long routeId, List<String> actorPath,
                           int receiverIndex, boolean returning) {
+            this(session, generation, flowId, routeId, actorPath,
+                    receiverIndex, returning, null);
+        }
+        private MailFrame(ActorPipelineRouteSession session, long generation,
+                          long flowId, long routeId, List<String> actorPath,
+                          int receiverIndex, boolean returning,
+                          MailFrame returnParent) {
             this.session = session;
             this.generation = generation;
             this.flowId = flowId;
@@ -73,6 +95,7 @@ final class ActorPipelineRouteSession {
                 throw new IllegalArgumentException("route receiver index out of bounds");
             this.receiverIndex = receiverIndex;
             this.returning = returning;
+            this.returnParent = returnParent;
         }
         public String receiver() { return actorPath.get(receiverIndex); }
         public long generation() { return generation; }
@@ -82,9 +105,22 @@ final class ActorPipelineRouteSession {
 
     private final ActorPipelineRoutePlan graph;
     private final int capacity;
+    // A selector-only session must not be used to attach VM route metadata
+    // to actual mailbox envelopes. Only supervisor-bound actor IDs confer
+    // recipient identity; graph instance strings are not capabilities.
+    private final Map<String, ?> runtimeRecipients;
     private final IdentityHashMap<MailFrame, Boolean> active = new IdentityHashMap<>();
+    // A trusted close/generation fence must not retire or reuse a frame
+    // while a publisher has claimed it but not yet committed its mailbox
+    // DATA. Count is allocated once and updated without boxing/locking at
+    // the post-enqueue commit boundary.
+    private final java.util.concurrent.atomic.AtomicInteger claimedPublications =
+            new java.util.concurrent.atomic.AtomicInteger();
     // Cursor is scoped to this trusted graph session / generation.
-    private final Map<String, Integer> roundRobin = new HashMap<>();
+    // Mutable one-element slots are preallocated once per graph source.
+    // Generation changes reset values, NEVER erase selectors. Avoids the
+    // post-reconfiguration missing-cursor bug and per-turn Integer boxing.
+    private final Map<String, int[]> roundRobin = new HashMap<>();
     private long generation;
     private long nextFlowId = 1;
     private long nextRouteId = 1;
@@ -94,9 +130,24 @@ final class ActorPipelineRouteSession {
 
     ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
                                      long generation, int maxActiveFrames) {
+        this(graph, generation, maxActiveFrames, Map.of());
+    }
+
+    ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
+                              long generation, int maxActiveFrames,
+                              Map<String, ?> runtimeRecipients) {
         this.graph = Objects.requireNonNull(graph);
         if (generation < 1 || maxActiveFrames < 1 || maxActiveFrames > 65536) {
             throw new IllegalArgumentException("invalid route generation or frame budget");
+        }
+        this.runtimeRecipients = Map.copyOf(Objects.requireNonNull(runtimeRecipients));
+        if (!this.runtimeRecipients.isEmpty()) {
+            for (var edge : graph.edges()) {
+                if (!this.runtimeRecipients.containsKey(edge.source())
+                        || !this.runtimeRecipients.containsKey(edge.target()))
+                    throw new IllegalArgumentException(
+                            "bound routing session must cover all actor instances");
+            }
         }
         this.generation = generation;
         this.capacity = maxActiveFrames;
@@ -104,7 +155,7 @@ final class ActorPipelineRouteSession {
         // Updating an existing HashMap entry during a turn must not allocate a
         // first-use selector node; this matches the other native/host backends.
         for (ActorPipelineRoutePlan.Edge edge : graph.edges()) {
-            roundRobin.putIfAbsent(edge.source(), 0);
+            roundRobin.computeIfAbsent(edge.source(), ignored -> new int[1]);
         }
     }
 
@@ -115,6 +166,65 @@ final class ActorPipelineRouteSession {
     /** VM-only validation for host-reported immutable correlation metadata. */
     synchronized void requireLive(MailFrame frame) {
         requireActive(frame);
+    }
+
+    /** Reserve exclusive host publication authority BEFORE any DATA
+     * freezing/copying, quotas or mailbox write. A failure prior to actual
+     * enqueue releases this claim and leaves the frame retryable. */
+    static void claimMailboxAdmission(MailFrame frame) {
+        if (frame != null) frame.session.claimPublishedFrame(frame);
+    }
+
+    private synchronized void claimPublishedFrame(MailFrame frame) {
+        // Generation validation and claim are ONE admission operation:
+        // a concurrent close/abort cannot fence the epoch in between.
+        requireActive(frame);
+        if (!frame.publicationState.compareAndSet(0, 1))
+            throw new IllegalStateException(
+                    "routed DATA already admitted or being published");
+        claimedPublications.incrementAndGet();
+    }
+
+    /** Only called when the final mailbox enqueue did NOT succeed. */
+    static void abortMailboxAdmission(MailFrame frame) {
+        if (frame != null && frame.publicationState.compareAndSet(1, 0))
+            frame.session.claimedPublications.decrementAndGet();
+    }
+
+    /** Exactly the successful bounded mailbox tryWrite linearization:
+     * cannot allocate, acquire a session lock or throw after enqueue.
+     * claimMailboxAdmission already validated and reserved the token. */
+    static void markMailboxPublished(MailFrame frame) {
+        if (frame != null) {
+            // No allocation/monitor/exception between successful tryWrite
+            // and this irreversible marker. The claimed-publication
+            // counter is released only by its owning successful sender.
+            int prior = frame.publicationState.getAndSet(2);
+            if (prior == 1)
+                frame.session.claimedPublications.decrementAndGet();
+        }
+    }
+
+    static boolean wasMailboxPublished(MailFrame frame) {
+        Objects.requireNonNull(frame, "route frame");
+        return frame.publicationState.get() == 2;
+    }
+
+    /** Final DATA admission guard independent of the high-level router.
+     * Reject wrong-actor, stale and selector-only route metadata before any
+     * payload copy or mailbox slot reservation. */
+    static void requireMailboxRecipient(MailFrame frame, Object actorId) {
+        Objects.requireNonNull(frame, "route frame");
+        frame.session.requireBoundRecipient(frame, actorId);
+    }
+
+    private synchronized void requireBoundRecipient(MailFrame frame, Object actorId) {
+        requireActive(frame);
+        Object expected = runtimeRecipients.get(frame.receiver());
+        if (expected == null || !expected.equals(actorId)) {
+            throw new SecurityException(
+                    "routed DATA mailbox target does not match sealed actor binding");
+        }
     }
 
     /** Fail-closed ownership predicate used when pairing a route frame with
@@ -146,11 +256,38 @@ final class ActorPipelineRouteSession {
     public synchronized MailFrame forwardRoundRobin(MailFrame current) {
         requireForward(current);
         List<ActorPipelineRoutePlan.Edge> options = graph.forwardAll(current.receiver());
-        Integer cursor = roundRobin.get(current.receiver());
-        if (cursor == null) throw new IllegalStateException("round-robin cursor missing");
-        roundRobin.put(current.receiver(), cursor + 1 == options.size() ? 0 : cursor + 1);
+        int[] position = roundRobin.get(current.receiver());
+        if (position == null) throw new IllegalStateException("round-robin cursor missing");
+        int cursor = position[0];
+        position[0] = cursor + 1 == options.size() ? 0 : cursor + 1;
         // Attempt consumes a turn even when subsequent capacity admission fails.
         return child(current, options.get(cursor));
+    }
+
+    /** Group-backed round robin cycles over the COMPLETE immutable DAG edge
+     * order, skipping inactive group members. A membership change therefore
+     * never causes a cursor to point at an unverified actor instance. The
+     * attempt consumes its selected turn even if admission subsequently fails.
+     * Group snapshots are host-owned selector inputs, not new route authority.
+     */
+    synchronized MailFrame forwardRoundRobinEligible(
+            MailFrame current, java.util.Set<String> eligible) {
+        requireForward(current);
+        Objects.requireNonNull(eligible, "eligible targets");
+        List<ActorPipelineRoutePlan.Edge> options = graph.forwardAll(current.receiver());
+        int[] position = roundRobin.get(current.receiver());
+        if (position == null) throw new IllegalStateException("round-robin cursor missing");
+        int cursor = position[0];
+        for (int offset = 0; offset < options.size(); offset++) {
+            int index = (cursor + offset) % options.size();
+            var edge = options.get(index);
+            if (eligible.contains(edge.target())) {
+                position[0] = index + 1 == options.size() ? 0 : index + 1;
+                return child(current, edge);
+            }
+        }
+        throw new IllegalStateException(
+                "no connected ActorGroup member is eligible for round robin");
     }
 
     public synchronized MailFrame forwardTo(MailFrame current, String target) {
@@ -192,6 +329,44 @@ final class ActorPipelineRouteSession {
         return result;
     }
 
+    /** Atomic allocation of a *subsequence* of graph edges. A dynamic
+     * ActorGroup may remove candidates, but may not add edges, reorder
+     * recipients, repeat a branch, or silently select an empty set. */
+    synchronized List<MailFrame> forwardSelected(
+            MailFrame current, List<ActorPipelineRoutePlan.Edge> selected) {
+        requireForward(current);
+        Objects.requireNonNull(selected, "selected graph edges");
+        var allowed = graph.forwardAll(current.receiver());
+        if (selected.isEmpty())
+            throw new IllegalStateException("no eligible actor pipeline recipients");
+        int cursor = 0;
+        for (var edge : selected) {
+            Objects.requireNonNull(edge, "selected edge");
+            while (cursor < allowed.size() && !allowed.get(cursor).equals(edge)) cursor++;
+            if (cursor == allowed.size())
+                throw new SecurityException(
+                        "selected ActorGroup recipient is not an ordered graph edge");
+            cursor++;
+        }
+        reserve(selected.size());
+        reserveRouteIds(selected.size());
+        var prepared = new ArrayList<MailFrame>(selected.size());
+        long routeId = nextRouteId;
+        for (var edge : selected) {
+            prepared.add(new MailFrame(this, generation, current.flowId,
+                    routeId++, extend(current.actorPath, edge.target())));
+        }
+        var ready = List.copyOf(prepared);
+        try {
+            for (var child : ready) active.put(child, Boolean.TRUE);
+        } catch (RuntimeException | Error failed) {
+            for (var child : ready) active.remove(child);
+            throw failed;
+        }
+        nextRouteId = routeId;
+        return ready;
+    }
+
     /** VM-only actual reverse DATA hop. The original trusted path is carried
      * intact across the return, with a decreasing receiver index. The branch
      * keeps its flow ID while each hop receives a distinct one-shot route ID.
@@ -203,7 +378,8 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException("pipeline origin has no upstream return hop");
         reserveRouteIds(1);
         MailFrame child = new MailFrame(this, generation, current.flowId,
-                nextRouteId, current.actorPath, current.receiverIndex - 1, true);
+                nextRouteId, current.actorPath, current.receiverIndex - 1, true,
+                current);
         active.put(child, Boolean.TRUE);
         active.remove(current);
         nextRouteId++;
@@ -222,11 +398,41 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException("pipeline origin cannot reply to itself");
         reserveRouteIds(1);
         MailFrame child = new MailFrame(this, generation, current.flowId,
-                nextRouteId, current.actorPath, 0, true);
+                nextRouteId, current.actorPath, 0, true, current);
         active.put(child, Boolean.TRUE);
         active.remove(current);
         nextRouteId++;
         return child;
+    }
+
+    /** Roll back a reverse/reply selection whose mailbox admission failed
+     * before publication. This is a VM-owned one-shot transition, not a guest
+     * API. Route IDs remain spent; they are NEVER reused after rejection.
+     * A retired generation cannot resurrect a previously consumed frame. */
+    synchronized void restoreRejectedReturn(MailFrame original, MailFrame rejected) {
+        Objects.requireNonNull(original, "original");
+        Objects.requireNonNull(rejected, "rejected");
+        ensureOpen();
+        if (original.session != this || rejected.session != this
+                || original.generation != generation
+                || rejected.generation != generation
+                || !rejected.returning
+                || rejected.returnParent != original
+                || rejected.rollbackConsumed
+                || rejected.publicationState.get() == 2
+                || original.flowId != rejected.flowId
+                || !original.actorPath.equals(rejected.actorPath)
+                || active.containsKey(original)) {
+            throw new IllegalStateException(
+                    "reverse routing admission cannot restore an unrelated/stale frame");
+        }
+        // The mailbox's rejection cleanup may already have retired the
+        // attempted child envelope. The parent must still be restorable
+        // after either pre-enqueue rejection or envelope.close() cleanup.
+        // Failed attempts always spend their distinct route ID.
+        active.put(original, Boolean.TRUE);
+        active.remove(rejected);
+        rejected.rollbackConsumed = true;
     }
 
     /** Send to the immediate authenticated sender of the current message. */
@@ -255,6 +461,9 @@ final class ActorPipelineRouteSession {
     /** Complete a one-way message without a reply; never replay a terminal. */
     public synchronized void complete(MailFrame current) {
         requireActive(current);
+        if (current.publicationState.get() == 1)
+            throw new IllegalStateException(
+                    "cannot complete route while mailbox publication is claimed");
         active.remove(current);
     }
 
@@ -302,7 +511,7 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException(
                     "pipeline reconfiguration requires a quiescent message barrier");
         }
-        roundRobin.clear();
+        for (int[] cursor : roundRobin.values()) cursor[0] = 0;
         generation = successor;
     }
 
@@ -314,13 +523,13 @@ final class ActorPipelineRouteSession {
         validateSuccessor(successor);
         int cancelled = active.size();
         active.clear();
-        roundRobin.clear();
+        for (int[] cursor : roundRobin.values()) cursor[0] = 0;
         generation = successor;
         return cancelled;
     }
 
     private void rejectPublicationFence() {
-        if (publicationInProgress) {
+        if (publicationInProgress || claimedPublications.get() != 0) {
             throw new IllegalStateException(
                     "cannot fence pipeline generation during mailbox publication");
         }
