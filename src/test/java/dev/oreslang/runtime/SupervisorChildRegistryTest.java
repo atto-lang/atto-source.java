@@ -740,4 +740,203 @@ final class SupervisorChildRegistryTest {
                 registry.snapshot(child.child()).phase());
     }
 
+
+    @Test
+    void cleanupProbeNeverRunsForForeignPhysicalCandidateOrRetiredPermit() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var failed = ActorRuntime.ActorId.create();
+        var child = registry.register(failed);
+        registry.finalized(child.child(), failed, 1);
+        var permit = registry.beginRestart(child.child(), failed, 1);
+        var staged = ActorRuntime.ActorId.create();
+        registry.stageReplacement(permit, staged);
+        var probes = new java.util.concurrent.atomic.AtomicInteger();
+
+        assertThrows(IllegalStateException.class,
+                () -> registry.acknowledgeCleanupIfStaged(
+                        permit, ActorRuntime.ActorId.create(),
+                        () -> { probes.incrementAndGet(); return true; }));
+        assertEquals(0, probes.get(), "wrong actor must not invoke scheduler callback");
+        assertEquals(SupervisorChildRegistry.Phase.RESTARTING,
+                registry.snapshot(child.child()).phase());
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(permit));
+
+        registry.acknowledgeCleanupIfStaged(
+                permit, staged, () -> { probes.incrementAndGet(); return true; });
+        assertEquals(1, probes.get());
+        // A second observation of CLEANED is idempotent and must not probe again.
+        registry.acknowledgeCleanupIfStaged(
+                permit, staged, () -> { probes.incrementAndGet(); return false; });
+        assertEquals(1, probes.get());
+        registry.abortRestart(permit);
+
+        assertThrows(IllegalStateException.class,
+                () -> registry.acknowledgeCleanupIfStaged(
+                        permit, staged, () -> { probes.incrementAndGet(); return true; }));
+        assertEquals(1, probes.get(), "expired permit must be rejected before callback");
+        assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                registry.snapshot(child.child()).phase());
+    }
+
+    @Test
+    void cleanupProbeFailureCannotMutateReplacementStateOrJournal() {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var failed = ActorRuntime.ActorId.create();
+        var child = registry.register(failed);
+        registry.finalized(child.child(), failed, 1);
+        var permit = registry.beginRestart(child.child(), failed, 1);
+        var staged = ActorRuntime.ActorId.create();
+        registry.stageReplacement(permit, staged);
+        long cleanupTransitionsBefore = registry.committedTransitions().stream()
+                .filter(t -> t.operation().equals("restart.cleanup-verified")).count();
+
+        assertThrows(IllegalStateException.class,
+                () -> registry.acknowledgeCleanupIfStaged(
+                        permit, staged,
+                        () -> { throw new IllegalStateException("scheduler probe failed"); }));
+        assertEquals(SupervisorChildRegistry.Phase.RESTARTING,
+                registry.snapshot(child.child()).phase());
+        assertThrows(IllegalStateException.class, () -> registry.abortRestart(permit),
+                "a failed probe must not authorize restart abort");
+        assertEquals(cleanupTransitionsBefore, registry.committedTransitions().stream()
+                .filter(t -> t.operation().equals("restart.cleanup-verified")).count());
+
+        assertThrows(IllegalStateException.class,
+                () -> registry.acknowledgeCleanupIfStaged(permit, staged, () -> false));
+        assertEquals(cleanupTransitionsBefore, registry.committedTransitions().stream()
+                .filter(t -> t.operation().equals("restart.cleanup-verified")).count());
+
+        registry.acknowledgeCleanupIfStaged(permit, staged, () -> true);
+        assertEquals(cleanupTransitionsBefore + 1, registry.committedTransitions().stream()
+                .filter(t -> t.operation().equals("restart.cleanup-verified")).count());
+        assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                registry.abortRestart(permit).phase());
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(40)
+    void cleanupAbortAndSupervisorCloseRaceRemainsLinearizable() throws Exception {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var failed = ActorRuntime.ActorId.create();
+        var child = registry.register(failed);
+        registry.finalized(child.child(), failed, 1);
+        var permit = registry.beginRestart(child.child(), failed, 1);
+        var staged = ActorRuntime.ActorId.create();
+        registry.stageReplacement(permit, staged);
+
+        var ready = new java.util.concurrent.CountDownLatch(3);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var cleanupFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var abortFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+        Thread cleanup = new Thread(() -> {
+            ready.countDown();
+            try {
+                start.await();
+                registry.acknowledgeCleanupIfStaged(permit, staged, () -> true);
+            } catch (Throwable failure) {
+                cleanupFailure.set(failure);
+            }
+        }, "restart-cleanup");
+        Thread abort = new Thread(() -> {
+            ready.countDown();
+            try {
+                start.await();
+                registry.abortRestart(permit);
+            } catch (Throwable failure) {
+                abortFailure.set(failure);
+            }
+        }, "restart-abort");
+        Thread close = new Thread(() -> {
+            ready.countDown();
+            try {
+                start.await();
+                registry.closeRestartAdmission();
+            } catch (Throwable failure) {
+                closeFailure.set(failure);
+            }
+        }, "restart-close");
+
+        cleanup.start();
+        abort.start();
+        close.start();
+        assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        start.countDown();
+        cleanup.join(5000);
+        abort.join(5000);
+        close.join(5000);
+
+        assertFalse(cleanup.isAlive() || abort.isAlive() || close.isAlive(),
+                "cleanup/abort/close race must not deadlock");
+        assertNull(cleanupFailure.get(),
+                "closing restart admission must never block physical cleanup");
+        assertNull(closeFailure.get());
+        if (abortFailure.get() != null) {
+            assertInstanceOf(IllegalStateException.class, abortFailure.get(),
+                    "abort may only lose because cleanup had not committed yet");
+            assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                    registry.abortRestart(permit).phase(),
+                    "retry after committed cleanup must restore the failed child");
+        }
+        assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                registry.snapshot(child.child()).phase());
+        assertEquals(1L, registry.committedTransitions().stream()
+                .filter(transition -> transition.operation().equals("restart.cleanup-verified"))
+                .count(),
+                "exactly one physical cleanup observation may commit");
+        assertThrows(IllegalStateException.class,
+                () -> registry.acknowledgeCleanupIfStaged(permit, staged, () -> true),
+                "retired restart reservation must never revive after the race");
+    }
+
+    @Test
+    void cleanupProbeCannotRevalidateAReservationAbortedDuringTheCallback()
+            throws Exception {
+        var registry = new SupervisorChildRegistry(
+                ActorRuntime.SupervisorId.create(), ActorRuntime.ActorGroupId.create());
+        var failed = ActorRuntime.ActorId.create();
+        var child = registry.register(failed);
+        registry.finalized(child.child(), failed, 1);
+        var permit = registry.beginRestart(child.child(), failed, 1);
+        // Candidate was physically created but not yet recorded as staged.
+        var candidate = ActorRuntime.ActorId.create();
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var outcome = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread verifier = new Thread(() -> {
+            try {
+                registry.acknowledgeCleanupIfStaged(permit, candidate, () -> {
+                    entered.countDown();
+                    try {
+                        return release.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return false;
+                    }
+                });
+            } catch (Throwable failure) {
+                outcome.set(failure);
+            }
+        }, "supervisor-cleanup-probe-race");
+        verifier.setDaemon(true);
+        verifier.start();
+        try {
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            registry.abortRestart(permit);
+        } finally {
+            release.countDown();
+            verifier.join(5000);
+        }
+        assertFalse(verifier.isAlive(), "scheduler probe must not be stuck");
+        assertInstanceOf(IllegalStateException.class, outcome.get(),
+                "a retired claim cannot be revived by delayed cleanup evidence");
+        assertEquals(SupervisorChildRegistry.Phase.FINALIZED,
+                registry.snapshot(child.child()).phase());
+        assertFalse(registry.committedTransitions().stream()
+                .anyMatch(t -> t.operation().equals("restart.cleanup-verified")),
+                "delayed callback must not forge cleanup for a retired permit");
+    }
 }
