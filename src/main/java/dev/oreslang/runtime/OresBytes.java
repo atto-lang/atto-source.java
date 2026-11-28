@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Objects;
 
@@ -29,6 +30,29 @@ public final class OresBytes {
 
     public static OresBytes empty() {
         return EMPTY;
+    }
+
+    /**
+     * Ownership transfer used only by a completed NIO2 read handler.
+     * The channel must never reuse or publish the array after this call.
+     * Short reads trim the unused portion; full reads adopt the allocation.
+     */
+    static OresBytes takeCompletedNioRead(byte[] owned, int length) {
+        Objects.requireNonNull(owned, "completed read");
+        if (length < 0 || length > owned.length || length > MAX_LENGTH) {
+            throw new IllegalArgumentException("invalid NIO read extent");
+        }
+        if (length == 0) return EMPTY;
+        return new OresBytes(length == owned.length
+                ? owned : Arrays.copyOf(owned, length), true);
+    }
+
+    /**
+     * Immutable backing may be shared with an in-flight write. The view
+     * is read-only, position-local, and never makes the byte array mutable.
+     */
+    ByteBuffer readOnlyNioView() {
+        return ByteBuffer.wrap(bytes).asReadOnlyBuffer();
     }
 
     public static OresBytes fromArray(byte[] input) {

@@ -8256,12 +8256,26 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return socket.readBytesAsync(n.intValue());
                     };
+                    case "read_buffer_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.read_buffer_async");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
+                            throw new IllegalArgumentException("read buffer limit must be integer");
+                        }
+                        return socket.readBufferAsync(n.intValue());
+                    };
                     case "write_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "socket.write_bytes_async");
                         if (!(args.getFirst() instanceof List<?> data)) {
                             throw new IllegalArgumentException("write_bytes_async needs a byte list");
                         }
                         return socket.writeBytesAsync(data);
+                    };
+                    case "write_buffer_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_buffer_async");
+                        if (!(args.getFirst() instanceof OresBytes data)) {
+                            throw new IllegalArgumentException("write_buffer_async needs owned Bytes");
+                        }
+                        return socket.writeBufferAsync(data);
                     };
                     case "close_async" -> (Invokable) args -> {
                         requireZero(args, "socket.close_async");
