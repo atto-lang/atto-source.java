@@ -3557,9 +3557,17 @@ public final class TypeChecker {
                         || (binding.initializer() instanceof Ast.NameExpr sourceName
                                 && env.lookup(sourceName.name()) != null
                                 && env.lookup(sourceName.name()).exactAggregate()));
+            // Collect source widths before installing the new lexical binding.
+            // Only closed readonly records carry this proof; no erased INT/FLOAT
+            // member type is treated as a source-width witness.
+            Map<String, String> recordWidths = strictAttoEquality
+                    && declared instanceof Record row && row.readOnly()
+                    && row.kind() == AggregateKind.RECORD
+                    ? strictRecordFieldWidths(binding.initializer(), env) : Map.of();
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
             if (exactAggregate) env.lookup(binding.name()).setExactAggregate(true);
+            env.lookup(binding.name()).strictRecordWidths = Map.copyOf(recordWidths);
             if (strictAttoEquality) {
                 Ast.TypeRef sourceType = binding.declaredType();
                 if (sourceType == null) {
@@ -4269,6 +4277,16 @@ public final class TypeChecker {
                 Env.Binding binding = env.lookup(name.name());
                 if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
                 if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("E_IMMUTABLE_REBIND: cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
+                if (strictAttoEquality && !binding.strictRecordWidths.isEmpty()) {
+                    Map<String, String> replacement = strictRecordFieldWidths(assignment.value(), env);
+                    for (var field : binding.strictRecordWidths.entrySet()) {
+                        if (!field.getValue().equals(replacement.get(field.getKey()))) {
+                            throw new IllegalArgumentException(
+                                    "ATTO_STRICT_UNRESOLVED_NUMERIC_WIDTH: record reassignment requires exact "
+                                    + field.getValue() + " source provenance for field " + field.getKey());
+                        }
+                    }
+                }
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
@@ -12061,6 +12079,23 @@ public final class TypeChecker {
         return strictNumericName(ref, new HashSet<>());
     }
 
+    // Keep width proofs separate from the structural row's erased member types.
+    // Spread and unknown-producing expressions intentionally fail closed.
+    private Map<String, String> strictRecordFieldWidths(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.NameExpr name) {
+            Env.Binding binding = env.lookup(name.name());
+            return binding == null ? Map.of() : binding.strictRecordWidths;
+        }
+        if (!(expr instanceof Ast.ObjectExpr object) || !object.structuralRecord()
+                || object.fields().stream().anyMatch(Ast.ObjectField::spread)) return Map.of();
+        Map<String, String> widths = new HashMap<>();
+        for (Ast.ObjectField field : object.fields()) {
+            String width = strictNumericSource(field.value(), env);
+            if (width != null) widths.put(field.name(), width);
+        }
+        return widths;
+    }
+
     private Ast.TypeRef strictSourceRef(Ast.Expr expr, Env env) {
         if (expr instanceof Ast.NameExpr name) {
             Ast.TypeRef declared = env.lookupStrictSourceType(name.name());
@@ -12073,6 +12108,8 @@ public final class TypeChecker {
         if (expr instanceof Ast.NewExpr object) return object.type();
         if (expr instanceof Ast.CastExpr cast) return cast.targetType();
         if (expr instanceof Ast.MemberExpr member) {
+            String recordWidth = strictRecordFieldWidths(member.receiver(), env).get(member.member());
+            if (recordWidth != null) return Ast.TypeRef.simple(recordWidth);
             Ast.TypeRef receiver = strictSourceRef(member.receiver(), env);
             if (receiver == null || receiver.isBorrow()) return null;
             Ast.ClassDecl klass = findClass(receiver.name());
@@ -15373,6 +15410,7 @@ public final class TypeChecker {
             private final Ast.BindingKind kind;
             private final Set<String> uninitializedFields;
             private boolean exactAggregate;
+            private Map<String, String> strictRecordWidths = Map.of();
 
             private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields) {
                 this.type = type;
