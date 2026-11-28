@@ -53,8 +53,7 @@ public final class OresTimers implements AutoCloseable {
     static int availableGlobalIntervalSlots() {
         return GLOBAL_INTERVAL_SLOTS.availablePermits();
     }
-    // One clock thread over one logical timer wheel: the host arms a single
-    // wakeup for the nearest deadline, not one scheduled task per timer.
+    // One clock thread over one logical timer wheel.
     private static final MonotonicTimerDriver CLOCK = MonotonicTimerDriver.shared();
 
     private final Object admission = new Object();
@@ -69,9 +68,12 @@ public final class OresTimers implements AutoCloseable {
      */
     public OresFuture<Void> afterNanos(long delayNanos) {
         if (delayNanos < 0) throw new IllegalArgumentException("negative timer delay");
+        // Measure from before registration. Never add delayNanos to an
+        // arbitrary System.nanoTime() origin: signed overflow is legal there.
+        final long startedNs = System.nanoTime();
         AtomicLong scheduled = new AtomicLong();
         OresFuture<Void> future = new OresFuture<>(() -> {
-            long event = scheduled.get();
+            long event = scheduled.getAndSet(0);
             if (event != 0) CLOCK.cancel(event);
         });
         synchronized (admission) {
@@ -95,14 +97,41 @@ public final class OresTimers implements AutoCloseable {
                 });
                 registeredCleanup = true;
                 active.add(future);
-                scheduled.set(CLOCK.armAfter(delayNanos, () -> {
-                    IN_CLOCK_THREAD.set(Boolean.TRUE);
-                    try {
-                        future.completeFromRuntime(null);
-                    } finally {
-                        IN_CLOCK_THREAD.remove();
+                // A scheduler or platform timer may fire before its nominal
+                // deadline. Recheck the same monotonic origin before settling.
+                // Rescheduling is only an implementation detail of the host
+                // timer; it never executes a guest continuation on CLOCK.
+                Runnable expire = new Runnable() {
+                    @Override public void run() {
+                        IN_CLOCK_THREAD.set(Boolean.TRUE);
+                        try {
+                            if (future.isDone()) return;
+                            long elapsedNs = System.nanoTime() - startedNs;
+                            if (elapsedNs < 0 || elapsedNs < delayNanos) {
+                                long remainingNs = elapsedNs < 0
+                                        ? delayNanos : delayNanos - elapsedNs;
+                                try {
+                                    synchronized (admission) {
+                                        if (future.isDone()) return;
+                                        long retry = CLOCK.armAfter(remainingNs, this);
+                                        scheduled.set(retry);
+                                        // Cancellation can race with storing the new handle.
+                                        if (future.isDone()) CLOCK.cancel(retry);
+                                    }
+                                } catch (RejectedExecutionException unavailable) {
+                                    future.failFromRuntime(unavailable);
+                                }
+                                return;
+                            }
+                            future.completeFromRuntime(null);
+                        } finally {
+                            IN_CLOCK_THREAD.remove();
+                        }
                     }
-                }));
+                };
+                long first = CLOCK.armAfter(delayNanos, expire);
+                scheduled.set(first);
+                if (future.isDone()) CLOCK.cancel(first);
             } catch (RuntimeException | Error failure) {
                 // No Future escapes before this block exits. Settle it to
                 // run the same exact-once cleanup on failed admission.

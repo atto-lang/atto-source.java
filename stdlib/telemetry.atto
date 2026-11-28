@@ -137,16 +137,14 @@ define module telemetry as
     pub val int http_status;
     pub val bool failed;
 
-    pub constructor(
+    // Module-private: completed_span() validates the W3C hex IDs first.
+    constructor(
         String trace_id, String span_id, String parent_span_id,
         int operation_id, int kind, int start_unix_ns, int end_unix_ns,
         int http_status, bool failed) {
       if operation_id < 1 || kind < 1 || kind > 5 ||
           start_unix_ns < 1 || end_unix_ns < start_unix_ns ||
-          http_status < 0 || http_status > 599 ||
-          !is_exact_lower_hex(trace_id, 32) ||
-          !is_exact_lower_hex(span_id, 16) ||
-          (parent_span_id != "" && !is_exact_lower_hex(parent_span_id, 16)); do
+          http_status < 0 || http_status > 599; do
         rt fail("telemetry: invalid completed span metadata");
       fi
       // Trusted internal bridge must validate W3C hex ID dimensions before
@@ -252,6 +250,10 @@ define module telemetry as
       String trace_id, String span_id, String parent_span_id,
       int operation_id, int kind, int start_unix_ns, int end_unix_ns,
       int http_status, bool failed): CompletedSpan {
+    if !is_exact_lower_hex(trace_id, 32) || !is_exact_lower_hex(span_id, 16) ||
+        (parent_span_id != "" && !is_exact_lower_hex(parent_span_id, 16)); do
+      rt fail("telemetry: invalid completed span metadata");
+    fi
     return new CompletedSpan(trace_id, span_id, parent_span_id,
         operation_id, kind, start_unix_ns, end_unix_ns, http_status, failed);
   }
@@ -260,16 +262,91 @@ define module telemetry as
     return new SpanBatch(capacity);
   }
 
-  // Native Atto async HTTP POST building block; not a collector by itself.
-  // This returns only the HTTP status. OTLP partialSuccess must be parsed
-  // by a collector before it acknowledges or drops a buffered batch.
-  // Network policy/NET permission/cancellation are enforced by the same
-  // pinned http.request runtime used by ordinary Atto services.
-  pub async fnc post_otlp_json_async(String endpoint, String json): int {
-    val response = await http.request("POST", endpoint,
-        [("Content-Type", "application/json")], json);
-    val int status = response.status;
-    await response.close();
-    return status;
+  // The OTLP network exporter lives in std/telemetry_otlp, so importing
+  // span and sampling policy never requires the NETWORK capability.
+
+  // W3C traceparent and sampling/export admission policy (from atto-source.java#1756).
+  pub fnc traceparent_v00_fields_valid(int version, int trace_high, int trace_low, int span_id, int flags): bool {
+    if version != 0 then return false; fi
+    if trace_high == 0 && trace_low == 0 then return false; fi
+    if span_id == 0 then return false; fi
+    return flags >= 0 && flags <= 255;
+  }
+
+  pub fnc sampled_flag(int flags): bool {
+    if flags < 0 || flags > 255 then return false; fi
+    return Integer.rem(flags, 2) == 1;
+  }
+
+  pub fnc sampling_decision(int policy, bool parent_sampled): int {
+    if policy == 1 then return 1; fi
+    if policy == 2 then return 2; fi
+    if policy == 3 && parent_sampled then return 2; fi
+    return 0;
+  }
+
+  pub fnc decision_is_recording(int decision): bool {
+    return decision == 1 || decision == 2;
+  }
+
+  pub fnc decision_is_sampled(int decision): bool {
+    return decision == 2;
+  }
+
+  pub fnc dormant_probe_admissible(int compiled_ceiling, int requested, bool authorized): bool {
+    if !authorized then return false; fi
+    if compiled_ceiling < 1 || compiled_ceiling > 3 then return false; fi
+    if requested < 1 || requested > 3 then return false; fi
+    return requested <= compiled_ceiling;
+  }
+
+  pub fnc span_window_valid(int started_ns, int ended_ns): bool {
+    if started_ns < 0 || ended_ns < 0 then return false; fi
+    return ended_ns >= started_ns;
+  }
+
+  pub fnc export_queue_admissible(int queued, int capacity, int new_bytes, int bytes_remaining): bool {
+    if queued < 0 || capacity < 1 || queued >= capacity then return false; fi
+    if new_bytes < 0 || bytes_remaining < 0 then return false; fi
+    return new_bytes <= bytes_remaining;
+  }
+
+  fnc lower_hex(int scalar): bool {
+    return (scalar >= 48 && scalar <= 57) ||
+           (scalar >= 97 && scalar <= 102);
+  }
+
+  pub fnc traceparent_v00_header_valid(String header): bool {
+    let points = header.codepoints();
+    if points.size != 55 then return false; fi
+    if points.get(0) != 48 || points.get(1) != 48 then return false; fi
+    if points.get(2) != 45 || points.get(35) != 45 ||
+       points.get(52) != 45 then return false; fi
+    let mut bool trace_nonzero = false;
+    let mut bool parent_nonzero = false;
+    for (let int i = 3; i <= 54; i = i + 1) {
+      if i != 35 && i != 52; do
+        let int scalar = points.get(i);
+        if !lower_hex(scalar) then return false; fi
+        if scalar != 48; do
+          if i >= 3 && i <= 34 then trace_nonzero = true; fi
+          if i >= 36 && i <= 51 then parent_nonzero = true; fi
+        fi
+      fi
+    }
+    return trace_nonzero && parent_nonzero;
+  }
+
+  pub fnc queue_admissible(int queued, int capacity, int batch_bytes,
+                          int available_bytes): bool {
+    if capacity < 1 || capacity > 65536 then return false; fi
+    let bool admissible = export_queue_admissible(queued, capacity, batch_bytes, available_bytes);
+    return admissible;
+  }
+
+  pub fnc drop_increment(int count): int {
+    if count < 0 then return -1; fi
+    if count >= 2147483647 then return 2147483647; fi
+    return count + 1;
   }
 end

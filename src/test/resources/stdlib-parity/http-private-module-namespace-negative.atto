@@ -1,0 +1,6 @@
+// A wildcard alias must NOT turn a private module into an exported facade.
+import * as lib from "./http-module-private-lib.atto";
+pub routine main(): void {
+  stdio.println(lib.internal.leak());
+  return;
+}

@@ -106,13 +106,15 @@ final class SelectFormParserGuardTest {
     void futureDefaultExpressionRequiresExplicitAwaitAndConcreteResultType() {
         for (String body : new String[] {" { default: -> { return 42; } }",
                 " over default: -> { return 42; } end"}) {
-            for (String prefix : new String[] {"select", "nb select"}) {
+            // `nb select` has no value form (atto-spec ch. 6): rejected with or
+            // without await. A bare `select` is a Future<int>, not an int.
+            for (String prefix : new String[] {"select", "nb select", "await nb select"}) {
                 String source = "suspends fnc main(): int { return " + prefix + body + "; }";
                 IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                         () -> OresCompiler.parseAndTypeCheck(source), source);
                 assertTrue(error.getMessage().contains("Future"), error::getMessage);
             }
-            for (String prefix : new String[] {"await select", "await nb select"}) {
+            for (String prefix : new String[] {"await select"}) {
                 String source = "suspends fnc main(): int { return " + prefix + body + "; }";
                 org.junit.jupiter.api.Assertions.assertDoesNotThrow(
                         () -> OresCompiler.parseAndTypeCheck(source), source);

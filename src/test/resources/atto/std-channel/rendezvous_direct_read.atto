@@ -1,0 +1,13 @@
+// expect-stdout: 42
+// A synchronous-style await on an ordinary receive must rendezvous with an
+// already-pending send on a capacity-zero channel, without buffering.
+import module channel from "std/channel";
+
+pub async routine main(): void {
+  val Channel<int> ch = channel.rendezvous<int>();
+  val Future<void> writer = channel.send_pending<int>(ch, 42);
+  stdio.stdout.write(await channel.receive<int>(ch));
+  await writer;
+  channel.close<int>(ch);
+  return;
+}

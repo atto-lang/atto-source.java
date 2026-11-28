@@ -600,6 +600,13 @@ public final class CapabilityChecker {
             if (e.value() != null) checkExpr(e.value(), policy);
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) checkExpr(e.cases(), policy);
+        else if (expr instanceof Ast.SelectExpr e) {
+            for (Ast.SelectArm arm : e.select().arms()) {
+                if (arm.channel() != null) checkExpr(arm.channel(), policy);
+                if (arm.value() != null) checkExpr(arm.value(), policy);
+            }
+            for (Ast.Expr value : e.armValues()) checkExpr(value, policy);
+        }
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.ObjectExpr e) {

@@ -23,7 +23,9 @@ final class CrossFileLinkedTypingTest {
             define module lib as
               define pub class Command as
                 pub val String executable;
+                let mut int launches = 0;
                 pub constructor(String executable) { self.executable = executable; }
+                pub launch(mut self)(): void { self.launches = self.launches + 1; return; }
               end
 
               pub fnc command(String executable): Command {
@@ -290,5 +292,42 @@ final class CrossFileLinkedTypingTest {
                   return data;
                 }
                 """, "data");
+    }
+
+    @Test
+    void mutatingMethodsOnLinkedValuesNeedMutableBindings() {
+        accepts("""
+                import module lib from "./lib.atto";
+                pub fnc main(): int {
+                  let mut made = lib.command("ls");
+                  made.launch();
+                  return 0;
+                }
+                """);
+        rejects("""
+                import module lib from "./lib.atto";
+                pub fnc main(): int {
+                  const made = lib.command("ls");
+                  made.launch();
+                  return 0;
+                }
+                """, "read-only");
+    }
+
+    @Test
+    void actorsMayUseExplicitlyImportedModules() {
+        accepts("""
+                import module lib from "./lib.atto";
+                define actor Counter as
+                  receive(ActorMail<int> mail): void {
+                    let mut Array<int> values = new Array<int>();
+                    values.add(mail.value);
+                    stdio.println(lib.total(rt borrow values));
+                    self.end();
+                    return;
+                  }
+                end
+                pub fnc main(): int { return 0; }
+                """);
     }
 }

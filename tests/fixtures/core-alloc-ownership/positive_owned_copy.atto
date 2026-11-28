@@ -2,8 +2,8 @@
 define module borrow_fixture as
   pub fnc copy_ints(borrow Array<int> input): Array<int> {
     let mut Array<int> output = new Array<int>();
-    for (const item of input) {
-      output.add(item);
+    for (let int index = 0; index < input.size; index = index + 1) {
+      output.add(input.get(index));
     }
     return rt take output;
   }

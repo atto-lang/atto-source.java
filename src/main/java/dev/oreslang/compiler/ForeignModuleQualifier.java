@@ -52,7 +52,7 @@ final class ForeignModuleQualifier {
             declarations.add(qualifier.rewriteDecl(declaration, Set.of()));
         }
         return new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(),
-                declarations);
+                declarations, module.visibility());
     }
 
     static Ast.ClassDecl qualify(String alias, Ast.ModuleDecl owner, Ast.ClassDecl klass) {

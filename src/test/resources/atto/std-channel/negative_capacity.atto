@@ -1,0 +1,8 @@
+// expect-runtime-error: std/channel: capacity must be nonnegative
+import module channel from "std/channel";
+
+pub routine main(): void {
+  val Channel<int> ch = channel.bounded<int>(-1);
+  stdio.stdout.write("unexpected");
+  return;
+}

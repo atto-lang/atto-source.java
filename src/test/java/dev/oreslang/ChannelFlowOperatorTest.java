@@ -81,7 +81,12 @@ final class ChannelFlowOperatorTest {
         assertEquals("false|1|2|3", run("""
                 async fnc produce(Channel<int> data, Channel<bool> ready): void {
                   data << 1;
-                  val bool admitted = try writech data, 99;
+                  val TryWriteResult<int> outcome = try writech data, 99;
+                  val bool admitted = match<bool> outcome over
+                    on Accepted -> true
+                    on Full(rejected) -> false
+                    on Closed(rejected) -> false
+                  end;
                   ready << admitted;
                   data << 2;
                   data << 3;

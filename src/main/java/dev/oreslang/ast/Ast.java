@@ -60,14 +60,27 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts, List<Decl> declarations) {
+    public record ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts,
+                             List<Decl> declarations, Visibility visibility) {
         public ModuleDecl {
+            java.util.Objects.requireNonNull(name, "module name");
+            java.util.Objects.requireNonNull(visibility, "module visibility");
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), List.of(), declarations); }
-        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
+        // An unmarked module is public (the v1 library form), matching the
+        // parser; `define private module` is the explicit opt-out.
+        public ModuleDecl(String name, List<Annotation> annotations, List<TypeRef> contracts,
+                          List<Decl> declarations) {
+            this(name, annotations, contracts, declarations, Visibility.PUBLIC);
+        }
+        public ModuleDecl(String name, List<Decl> declarations) {
+            this(name, List.of(), List.of(), declarations, Visibility.PUBLIC);
+        }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+            this(name, annotations, List.of(), declarations, Visibility.PUBLIC);
+        }
     }
 
     /**
@@ -1548,9 +1561,49 @@ public final class Ast {
         }
     }
 
+
+    /**
+     * Value-producing static select (atto-spec ch. 6):
+     * {@code select { when readch a: val x -> x + 1, ... }} suspends until one
+     * arm commits and evaluates to that arm's value ({@code T});
+     * {@code nb select { ... }} registers the arms and returns a
+     * {@code Future<T>} immediately; {@code try select { ... }} probes once
+     * and yields {@code Option<T>}. The procedural statement form
+     * {@code do select { ... }} produces no value. {@code armValues} is
+     * parallel to {@code select.arms()}; arm bodies are empty.
+     */
+    public record SelectExpr(SelectStmt select, List<Expr> armValues) implements Expr {
+        public SelectExpr {
+            java.util.Objects.requireNonNull(select, "select");
+            armValues = List.copyOf(armValues);
+            if (armValues.size() != select.arms().size()) {
+                throw new IllegalArgumentException("select expression requires one value per arm");
+            }
+            if (select.explicitDo()) {
+                throw new IllegalArgumentException("'do select' is a statement and produces no value");
+            }
+        }
+
+        /**
+         * The same select with each arm body {@code [value;]}: the procedural
+         * shape that ownership and capture analyses already understand.
+         */
+        public SelectStmt asStatement() {
+            List<SelectArm> arms = new java.util.ArrayList<>(select.arms().size());
+            for (int i = 0; i < select.arms().size(); i++) {
+                SelectArm arm = select.arms().get(i);
+                arms.add(new SelectArm(arm.operation(), arm.channel(), arm.value(),
+                        arm.bindingKind(), arm.bindingName(),
+                        List.of(new ExprStmt(armValues.get(i))),
+                        arm.mutableReferent(), arm.bindingType()));
+            }
+            return new SelectStmt(select.mode(), select.policy(), arms, false);
+        }
+    }
+
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, WithExpr, ClosedRecurExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr, NamedArgExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr, SelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
             TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
 
