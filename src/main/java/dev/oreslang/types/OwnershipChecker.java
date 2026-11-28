@@ -2146,10 +2146,19 @@ public final class OwnershipChecker {
                 throw error(E_ACTOR_LOAN_ESCAPE, "cannot move actor-owned indexed state out of its mailbox turn");
             }
             rejectBorrowedProjectionConsumption(indexed.receiver(), receiver, elementKind, consuming, scope);
-            // Ordinary projection is an aliasing read, not an implicit partial
-            // move. Explicit ownership transfer remains spelled rt take; indexed
-            // rt take stays fail-closed below until projection-level move
-            // tracking can invalidate exactly the selected slot.
+            // Known Array/List elements and nominal fields remain in their
+            // source slots after an indexed read. Do not treat that read as
+            // a transfer of a move-only element. Unknown aggregate shapes
+            // retain their existing separately checked admission policy.
+            Ast.TypeRef container = receiver.type.isBorrow()
+                    ? receiver.type.borrowedTarget() : receiver.type;
+            boolean knownIndexedOwner = ((container.name().equals("Array")
+                    || container.name().equals("List")) && container.arguments().size() == 1)
+                    || findClass(container.name()) != null;
+            if (consuming && knownIndexedOwner && elementKind == ValueKind.MOVE_ONLY
+                    && !elementType.name().equals("$infer$")) {
+                throw error(E_MOVE_UNPROVEN, "cannot consume move-only indexed element without path-aware slot invalidation; borrow or replace it");
+            }
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
