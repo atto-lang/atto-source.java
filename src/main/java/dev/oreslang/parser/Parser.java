@@ -2857,6 +2857,13 @@ public final class Parser {
         boolean mutableReferent = match(MUT);
         Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
         String name = consume(IDENT, "expected class field name after type").lexeme();
+        // Explicit final fields may defer initialization to the constructor,
+        // using the same immutable storage and initialization checks as val.
+        // A literal semicolon is required; no implicit newline admission.
+        if (isFinal && match(SEMICOLON)) {
+            return new Ast.FieldDecl(name, visibility, Ast.BindingKind.VAL, type,
+                    annotations, null, mutableReferent);
+        }
         if (!match(COLON, EQUAL)) {
             throw error(peek(), "class field initializer requires ':' or '='");
         }
