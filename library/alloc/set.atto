@@ -119,6 +119,22 @@ define pub class BoundedIntSet as
     return true;
   }
 
+  // Non-mutating XOR: a new bounded owner, never a view into either input.
+  // The domain mismatch is rejected before allocation. Physical allocation
+  // failure follows the existing alloc provider contract; no partial result.
+  pub symmetric_difference(borrow BoundedIntSet other): BoundedIntSet {
+    if self.domain neq other.capacity(); do
+      rt fail("alloc/set: symmetric difference domain mismatch");
+    fi
+    let mut BoundedIntSet result = new BoundedIntSet(self.domain);
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      if self.contains(i) neq other.contains(i); do
+        if !result.insert(i); do rt fail("alloc/set: inconsistent fresh set"); fi
+      fi
+    done
+    return result;
+  }
+
   pub is_subset_of(borrow BoundedIntSet other): bool {
     if self.domain != other.capacity(); do return false; fi
     for (let int i = 0; i < self.domain; i = i + 1) do
