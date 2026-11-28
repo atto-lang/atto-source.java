@@ -74,7 +74,26 @@ public final class StateContainerAccessGate implements AutoCloseable {
         }
     }
 
+    /**
+     * Storage-side authority check. A valid loan from a different gate must
+     * never authorize this region, even when both gate epochs are identical.
+     * Check ownership before taking the monitor (no foreign lock acquisition).
+     * Caller still serializes access and physical release with its state lock.
+     */
+    public void requireOwnedActive(Lease lease, Mode required) {
+        Objects.requireNonNull(required, "required");
+        if (lease == null || lease.owner != this)
+            throw new IllegalStateException("foreign or missing state-container lease");
+        synchronized (monitor) {
+            if (closed || lease.released || (required == Mode.WRITE && lease.mode != Mode.WRITE)
+                    || (lease.mode == Mode.WRITE && writer != lease)) {
+                throw new IllegalStateException("inactive or insufficient state-container lease");
+            }
+        }
+    }
+
     public final class Lease implements AutoCloseable {
+        private final StateContainerAccessGate owner = StateContainerAccessGate.this;
         private final Mode mode;
         private final long version;
         private boolean released;
@@ -97,13 +116,7 @@ public final class StateContainerAccessGate implements AutoCloseable {
          * A stale or closed grant must not authorize a recycled arena slot.
          */
         public void requireActive(Mode required) {
-            Objects.requireNonNull(required, "required");
-            synchronized (monitor) {
-                if (closed || released || (required == Mode.WRITE && mode != Mode.WRITE)
-                        || (mode == Mode.WRITE && writer != this)) {
-                    throw new IllegalStateException("inactive or insufficient state-container lease");
-                }
-            }
+            owner.requireOwnedActive(this, required);
         }
 
         @Override public void close() {

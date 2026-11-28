@@ -32,7 +32,7 @@ public final class FuturePipelineTypingCheck {
                 async fnc source(): int { return 21; }
                 fnc save(int value): int { return value + 1; }
                 fnc main(): void {
-                  val Option<int> result = trap await (source() |> save());
+                  val Result<int, Error> result = trap await (source() |> save());
                   return;
                 }
                 """, "argument 1 has type Named[name=Future", "but expected INT");
@@ -40,7 +40,7 @@ public final class FuturePipelineTypingCheck {
         TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 21; }
                 fnc main(): void {
-                  val Option<int> result = trap await (source());
+                  val Result<int, Error> result = trap await (source());
                   return;
                 }
                 """));
@@ -48,10 +48,10 @@ public final class FuturePipelineTypingCheck {
         rejected("""
                 async fnc source(): int { return 21; }
                 fnc main(): void {
-                  val Option<int> result = await trap (source());
+                  val Result<int, Error> result = await trap (source());
                   return;
                 }
-                """, "await requires Future<T> or ActorRef<T>", "name=Option");
+                """, "await requires Future<T> or ActorRef<T>", "name=Result");
     }
 
     private static void rejected(String source, String... diagnosticFragments) {

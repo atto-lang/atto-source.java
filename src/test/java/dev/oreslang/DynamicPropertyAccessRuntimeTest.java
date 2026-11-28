@@ -406,7 +406,7 @@ final class DynamicPropertyAccessRuntimeTest {
                 }
 
                 pub async fnc main(): void {
-                    const int value = (await load())["id"];
+                    val int value = (await load())["id"];
                     stdio.println(value);
                     return;
                 }
@@ -445,7 +445,7 @@ final class DynamicPropertyAccessRuntimeTest {
                 end
 
                 pub fnc main(): void {
-                    const int fromMatch = (match<Parent> true over {
+                    val int fromMatch = (match<Parent> true over {
                         on true { return new Child(); }
                         on false { return new Parent(); }
                     })["id"];

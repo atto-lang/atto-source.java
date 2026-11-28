@@ -292,6 +292,14 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 throw new IllegalStateException(
                         "activation worker stopped or lost supervisor ownership during admission");
             }
+            // Logical keys must not alias one mutable physical worker. The
+            // bounded directory owns at most one binding per exact ActorId;
+            // check and publish under the same lock as physical retirement.
+            if (bindings.values().stream().anyMatch(existing ->
+                    existing.actor().id().equals(actor.id()))) {
+                abortPlanUnderLock(plan);
+                throw new IllegalStateException("physical worker already bound to another logical actor");
+            }
             Binding binding = new Binding(actor, plan.activation);
             if (bindings.putIfAbsent(plan.logical.identity(), binding) != null) {
                 abortPlanUnderLock(plan);
@@ -380,7 +388,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 terminals.put(identity, new TerminalRecord(expected.actor().id(),
                         expected.actor().generation(), expected.actor().kind(),
                         failureClass, cancelled, Instant.now()));
-            } catch (RuntimeException | Error reconciliationFailure) {
+            } catch (RuntimeException | Error accountingFailure) {
                 // Retain the binding as a quarantined record for explicit
                 // reconciliation; never report passivation if accounting failed.
             }
@@ -417,9 +425,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             Grant grant, Object authenticatedSession,
             VirtualActorActivationRegistry.Identity identity,
             long timeoutNanos) {
-        runtime.supervisorRegistryForObservation();
-        requireGrant(grant, authenticatedSession);
-        VirtualActorActivationRegistry.validateLookupIdentity(identity);
+        Objects.requireNonNull(identity, "identity");
         if (!tenant.equals(identity.domain())
                 || !runtime.ownsVirtualActor(identity, supervisor))
             throw new SecurityException("virtual actor identity outside supervisor scope");
@@ -430,8 +436,6 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
     public CompletionStage<Optional<Snapshot>> requestInspectAddress(
             Grant grant, Object authenticatedSession, String address,
             long timeoutNanos) {
-        runtime.supervisorRegistryForObservation();
-        requireGrant(grant, authenticatedSession);
         VirtualActorActivationRegistry.Identity identity = VirtualActorAddressV1.decode(address);
         return requestInspect(grant, authenticatedSession, identity, timeoutNanos);
     }
@@ -440,8 +444,6 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             Grant grant, Object authenticatedSession,
             VirtualActorActivationRegistry.LogicalRef logical,
             long timeoutNanos) {
-        runtime.supervisorRegistryForObservation();
-        requireGrant(grant, authenticatedSession);
         Objects.requireNonNull(logical, "logical");
         if (!tenant.equals(logical.identity().domain())
                 || !runtime.ownsVirtualActor(logical.identity(), supervisor))
@@ -471,11 +473,8 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
             VirtualActorActivationRegistry.Identity after,
             long timeoutNanos) {
         runtime.supervisorRegistryForObservation();
-        requireGrant(grant, authenticatedSession);
         if (limit < 1 || limit > 128)
             throw new IllegalArgumentException("supervisor virtual actor page size must be 1..128");
-        if (after != null)
-            VirtualActorActivationRegistry.validateLookupIdentity(after);
         if (after != null && (!tenant.equals(after.domain())
                 || !runtime.ownsVirtualActor(after, supervisor)))
             throw new SecurityException("virtual actor page cursor outside supervisor scope");
@@ -521,18 +520,14 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 case CLOSED -> Lifecycle.CLOSED;
             };
             if (terminal != null) {
-                // Preserve historical terminal diagnostics, but do not expose
-                // the previous incarnation's ActorId/generation as if they
-                // belonged to a newly reserved, still unpublished activation.
+                actorId = Optional.of(terminal.actorId());
+                actorKind = Optional.of(terminal.actorKind());
+                actorGeneration = terminal.actorGeneration();
                 terminalFailure = Optional.ofNullable(terminal.failureClass());
                 terminalAt = Optional.of(terminal.terminalAt());
-                if (lifecycle == Lifecycle.PASSIVATED) {
-                    actorId = Optional.of(terminal.actorId());
-                    actorKind = Optional.of(terminal.actorKind());
-                    actorGeneration = terminal.actorGeneration();
-                    if (terminal.failureClass() != null) lifecycle = Lifecycle.FAILED;
-                    else if (terminal.cancelled()) lifecycle = Lifecycle.CANCELLED;
-                }
+                if (terminal.failureClass() != null) lifecycle = Lifecycle.FAILED;
+                else if (terminal.cancelled()) lifecycle = Lifecycle.CANCELLED;
+                else lifecycle = Lifecycle.PASSIVATED;
             }
             if (binding != null) {
                 actorId = Optional.of(binding.actor().id());

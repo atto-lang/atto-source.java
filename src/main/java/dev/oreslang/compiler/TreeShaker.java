@@ -228,6 +228,7 @@ public final class TreeShaker {
             if (expression instanceof Ast.LambdaExpr) return true;
             if (expression instanceof Ast.TypeTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.PatternTestExpr test) return containsLambda(test.value());
+            if (expression instanceof Ast.CaptureExpr capture) return containsLambda(capture.value());
             if (expression instanceof Ast.CastExpr cast) return containsLambda(cast.value());
             if (expression instanceof Ast.SpreadExpr spread) return containsLambda(spread.expression());
             if (expression instanceof Ast.BinaryExpr binary) {
@@ -346,6 +347,9 @@ public final class TreeShaker {
                 return new Ast.PatternTestExpr(
                         substitute(test.value(), substitutions, shadowed),
                         test.pattern());
+            }
+            if (expression instanceof Ast.CaptureExpr capture) {
+                return new Ast.CaptureExpr(substitute(capture.value(), substitutions, shadowed), capture.name());
             }
             if (expression instanceof Ast.CastExpr cast) {
                 return new Ast.CastExpr(
@@ -515,16 +519,10 @@ public final class TreeShaker {
         }
 
         private boolean constantEquals(Object left, Object right) {
+            if (left instanceof Number a && right instanceof Number b)
+                return dev.oreslang.types.NumericValueEquality.equals(a, b);
             if (left == right) return true;
             if (left == null || right == null) return false;
-            if (left instanceof Number a && right instanceof Number b) {
-                boolean aIntegral = a instanceof Byte || a instanceof Short
-                        || a instanceof Integer || a instanceof Long;
-                boolean bIntegral = b instanceof Byte || b instanceof Short
-                        || b instanceof Integer || b instanceof Long;
-                if (aIntegral && bIntegral) return a.longValue() == b.longValue();
-                return a.doubleValue() == b.doubleValue();
-            }
             return Objects.equals(left, right);
         }
 
@@ -547,7 +545,9 @@ public final class TreeShaker {
                 if (operand == UNKNOWN) return UNKNOWN;
                 if (unary.operator().equals("!") && operand instanceof Boolean value) return !value;
                 if (unary.operator().equals("+") && operand instanceof Number) return operand;
-                if (unary.operator().equals("-") && operand instanceof Long value) return -value;
+                // Never erase a possible checked overflow; leave it to runtime.
+                if (unary.operator().equals("-") && operand instanceof Long value)
+                    return value == Long.MIN_VALUE ? UNKNOWN : -value;
                 if (unary.operator().equals("-") && operand instanceof Double value) return -value;
                 return UNKNOWN;
             }
@@ -580,7 +580,8 @@ public final class TreeShaker {
 
         private Object compare(Object left, Object right, java.util.function.IntPredicate predicate) {
             if (left instanceof Number l && right instanceof Number r) {
-                return predicate.test(Double.compare(l.doubleValue(), r.doubleValue()));
+                int c = dev.oreslang.types.NumericValueOrdering.compare(l, r);
+                return c != dev.oreslang.types.NumericValueOrdering.UNORDERED && predicate.test(c);
             }
             if (left instanceof String l && right instanceof String r) {
                 return predicate.test(l.compareTo(r));
@@ -685,7 +686,11 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.actorConcurrency(),
+                        klass.sealedStateFields(),
+                        klass.annotations(),
+                        klass.actorMessageContract());
             }
             return declaration;
         }
@@ -773,10 +778,11 @@ public final class TreeShaker {
                 List<Ast.Stmt> elseBody = rewriteStatements(
                         conditional.elseBody(), module, new LinkedHashMap<>(locals));
                 for (Ast.IfBranch branch : conditional.branches()) {
-                    Ast.Expr condition = rewriteExpression(branch.condition(), module, locals);
-                    Object known = evaluate(condition, module, locals);
+                    Map<String, Object> conditionLocals = new LinkedHashMap<>(locals);
+                    Ast.Expr condition = rewriteExpression(branch.condition(), module, conditionLocals);
+                    Object known = evaluate(condition, module, conditionLocals);
                     List<Ast.Stmt> body = rewriteStatements(
-                            branch.body(), module, new LinkedHashMap<>(locals));
+                            branch.body(), module, new LinkedHashMap<>(conditionLocals));
                     if (known instanceof Boolean value) {
                         if (!value) continue;
                         if (branches.isEmpty()) {
@@ -940,6 +946,11 @@ public final class TreeShaker {
                         rewriteExpression(test.value(), module, locals),
                         test.pattern());
             }
+            if (expression instanceof Ast.CaptureExpr capture) {
+                Ast.Expr value = rewriteExpression(capture.value(), module, locals);
+                locals.put(capture.name(), UNKNOWN);
+                return new Ast.CaptureExpr(value, capture.name());
+            }
             if (expression instanceof Ast.CastExpr cast) {
                 return new Ast.CastExpr(
                         rewriteExpression(cast.value(), module, locals),
@@ -1041,7 +1052,7 @@ public final class TreeShaker {
                                 task.body(),
                                 module,
                                 new LinkedHashMap<>(locals)),
-                        task.legacyNb());
+                        task.legacyNb(), task.typedDefaultSelectI64(), task.typedCountedSelectI64(), task.zeroCountSourceName(), task.dynamicCountName(), task.zeroCountWitnesses(), task.payloadType());
             }
             if (expression instanceof Ast.ChannelOpExpr operation) {
                 return new Ast.ChannelOpExpr(
@@ -1240,6 +1251,16 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 for (Ast.TypeRef parent : klass.parents()) scanType(parent);
                 for (Ast.TypeRef iface : klass.interfaces()) scanType(iface);
+                // Actor DATA contracts and sealed-state types are part of its
+                // immutable public/behavioral ABI. They must keep their nominal
+                // dependencies reachable even when no body mentions them.
+                scanType(klass.actorMessageContract().receives());
+                scanType(klass.actorMessageContract().sends());
+                for (Ast.ProtectedStateField field : klass.sealedStateFields()) {
+                    scanType(field.type());
+                    scanExpression(module, field.initializer(), Set.of("self"));
+                }
+                for (Ast.Annotation annotation : klass.annotations()) scanAnnotation(annotation);
                 for (Ast.FieldDecl field : klass.fields()) {
                     scanType(field.type());
                     scanExpression(module, field.initializer(), Set.of("self"));
@@ -1326,8 +1347,9 @@ public final class TreeShaker {
                     scanExpression(module, loop.condition(), locals);
                 } else if (statement instanceof Ast.IfStmt conditional) {
                     for (Ast.IfBranch branch : conditional.branches()) {
-                        scanExpression(module, branch.condition(), locals);
-                        scanStatements(module, branch.body(), new LinkedHashSet<>(locals));
+                        Set<String> conditionLocals = new LinkedHashSet<>(locals);
+                        scanExpression(module, branch.condition(), conditionLocals);
+                        scanStatements(module, branch.body(), new LinkedHashSet<>(conditionLocals));
                     }
                     scanStatements(module, conditional.elseBody(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.MatchStmt matched) {
@@ -1440,6 +1462,9 @@ public final class TreeShaker {
             } else if (expression instanceof Ast.PatternTestExpr test) {
                 scanExpression(module, test.value(), locals);
                 scanPatternTypes(test.pattern());
+            } else if (expression instanceof Ast.CaptureExpr capture) {
+                scanExpression(module, capture.value(), locals);
+                locals.add(capture.name());
             } else if (expression instanceof Ast.CastExpr cast) {
                 scanExpression(module, cast.value(), locals);
                 scanType(cast.targetType());
@@ -1515,6 +1540,12 @@ public final class TreeShaker {
                 locals.put(typed.binding(), UNKNOWN);
             } else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
                 locals.put(structural.binding(), UNKNOWN);
+            } else if (pattern instanceof Ast.SequencePattern sequence) {
+                for (Ast.SequenceElement element : sequence.elements())
+                    if (element.binding() != null && !element.binding().equals("_"))
+                        locals.put(element.binding(), UNKNOWN);
+                if (sequence.tail() != null && !sequence.tail().equals("_"))
+                    locals.put(sequence.tail(), UNKNOWN);
             } else if (pattern instanceof Ast.TuplePattern tuple) {
                 for (Ast.Pattern nested : tuple.elements()) addPatternLocals(nested, locals);
             } else if (pattern instanceof Ast.ConstructorPattern constructor) {
@@ -1529,6 +1560,12 @@ public final class TreeShaker {
                 locals.add(typed.binding());
             } else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
                 locals.add(structural.binding());
+            } else if (pattern instanceof Ast.SequencePattern sequence) {
+                for (Ast.SequenceElement element : sequence.elements())
+                    if (element.binding() != null && !element.binding().equals("_"))
+                        locals.add(element.binding());
+                if (sequence.tail() != null && !sequence.tail().equals("_"))
+                    locals.add(sequence.tail());
             } else if (pattern instanceof Ast.TuplePattern tuple) {
                 for (Ast.Pattern nested : tuple.elements()) addPatternLocalNames(nested, locals);
             } else if (pattern instanceof Ast.ConstructorPattern constructor) {

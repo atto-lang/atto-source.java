@@ -411,6 +411,30 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void explicitNewableFactoryExecutesOnTheStaticClassPath() throws Exception {
+        String output = run("""
+                define pub class Cart implements Newable[Cart] as
+                  val int quantity = 42;
+
+                  pub fnc new(): Cart {
+                    return new Cart();
+                  }
+
+                  pub get(): int {
+                    return self.quantity;
+                  }
+                end
+
+                pub routine main(): void {
+                  val cart = Cart.new();
+                  stdio.stdout.write(cart.get());
+                  return;
+                }
+                """);
+        assertEquals("42", output);
+    }
+
+    @Test
     void actorsRejectClassConstructors() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,

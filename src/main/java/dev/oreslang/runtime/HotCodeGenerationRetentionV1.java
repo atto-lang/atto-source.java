@@ -18,7 +18,8 @@ import java.util.Map;
 final class HotCodeGenerationRetentionV1 {
     enum Phase { STAGED, SERVING, DRAINING, QUARANTINED }
 
-    record Blocker(long generation, String imageSha256, long reservedBytes, Phase phase) { }
+    record Blocker(long generation, String imageSha256, long reservedBytes,
+                   Phase phase, long liveCodeLeases) { }
     record Status(int maxImages, long maxBytes, long heldBytes,
                   List<Blocker> retained) { }
 
@@ -28,6 +29,7 @@ final class HotCodeGenerationRetentionV1 {
         private final String imageSha256;
         private final long reservedBytes;
         private Phase phase = Phase.STAGED;
+        private long liveCodeLeases;
 
         private Ticket(HotCodeGenerationRetentionV1 owner, long generation,
                        String imageSha256, long reservedBytes) {
@@ -39,6 +41,40 @@ final class HotCodeGenerationRetentionV1 {
 
         long generation() { return generation; }
         String imageSha256() { return imageSha256; }
+    }
+
+    /**
+     * Explicit pin for a non-HTTP code user: a suspended source frame, actor
+     * callback, FFI operation or tracing-code entry. The caller must acquire
+     * it before exposing executable code and close it only after physical
+     * quiescence, never merely after a cancellation request.
+     *
+     * This is a control-plane building block. Existing runtime call sites do
+     * NOT all pin this ledger, so a zero count is not by itself a proof that
+     * a guest image is safe to unload.
+     */
+    static final class CodeLease implements AutoCloseable {
+        private final HotCodeGenerationRetentionV1 owner;
+        private final Ticket ticket;
+        private boolean closed;
+
+        private CodeLease(HotCodeGenerationRetentionV1 owner, Ticket ticket) {
+            this.owner = owner;
+            this.ticket = ticket;
+        }
+
+        long generation() { return ticket.generation; }
+
+        @Override public void close() {
+            synchronized (owner) {
+                if (closed) return;
+                owner.require(ticket);
+                if (ticket.liveCodeLeases <= 0)
+                    throw new IllegalStateException("non-HTTP code lease underflow");
+                --ticket.liveCodeLeases;
+                closed = true;
+            }
+        }
     }
 
     private final int maxImages;
@@ -76,6 +112,18 @@ final class HotCodeGenerationRetentionV1 {
         return ticket;
     }
 
+    /** No new code leases may enter a quarantined or physically retired image. */
+    synchronized CodeLease pinCode(Ticket ticket) {
+        require(ticket);
+        if (ticket.phase == Phase.QUARANTINED)
+            throw new IllegalStateException("quarantined code image cannot admit new leases");
+        if (ticket.liveCodeLeases == Long.MAX_VALUE)
+            throw new IllegalStateException("non-HTTP code lease budget exhausted");
+        CodeLease lease = new CodeLease(this, ticket);
+        ++ticket.liveCodeLeases;
+        return lease;
+    }
+
     /** Call only AFTER external route publisher commits; no second route pointer. */
     synchronized void activated(Ticket ticket) {
         require(ticket, Phase.STAGED);
@@ -110,6 +158,8 @@ final class HotCodeGenerationRetentionV1 {
         require(ticket);
         if (!loaderConfirmed)
             throw new IllegalStateException("physical code-image cleanup has not completed");
+        if (ticket.liveCodeLeases != 0)
+            throw new IllegalStateException("non-HTTP code leases are still pinned");
         if (ticket.phase == Phase.SERVING)
             throw new IllegalStateException("cannot reclaim serving code");
         if (ticket.phase != Phase.STAGED) {
@@ -124,7 +174,7 @@ final class HotCodeGenerationRetentionV1 {
     synchronized Status status() {
         List<Blocker> blockers = retained.values().stream()
                 .map(t -> new Blocker(t.generation, t.imageSha256,
-                                      t.reservedBytes, t.phase))
+                                      t.reservedBytes, t.phase, t.liveCodeLeases))
                 .toList();
         return new Status(maxImages, maxBytes, heldBytes, blockers);
     }

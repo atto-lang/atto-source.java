@@ -1,0 +1,6 @@
+// Semantic rejection: Some without None cannot exhaust Option<int>.
+fnc bad(Option<int> value): int {
+  return match value over {
+    on Some(n) { return n; }
+  };
+}
