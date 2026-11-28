@@ -170,6 +170,7 @@ final class AttoAllocGuestTest {
         for (String name : new String[]{
                 "arc-shared-owner-negative.atto",
                 "set-generic-hash-negative.atto",
+                "set-hash-xor-private-helper-negative.atto",
                 "allocator-physical-handle-negative.atto",
                 "alloc-internal-scope-negative.atto",
                 "alloc-internal-loan-negative.atto",
