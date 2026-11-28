@@ -124,6 +124,16 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    @Timeout(30)
+    void typedTryPublishFullRollsBackGuestDeliveryAndSequence() throws Exception {
+        // The separate gate prevents subscriber consumption until the
+        // second publication has been refused; no timing-based sleeps.
+        assertEquals("ready|1|full|first|2|next",
+                run(pinnedFixture("actor-pubsub-try-publish-full-rollback.atto",
+                        "dec04036310a0d1e81700147cfff78fedd466b44"), "actor-pubsub-try-publish-full-rollback.atto"));
+    }
+
+    @Test
     void typedTryPublishRefusesLossyPolicyInActualGuest() throws Exception {
         PolyglotException denied = assertThrows(PolyglotException.class,
                 () -> run(pinnedFixture("actor-pubsub-try-publish-policy-denied.atto",
