@@ -200,6 +200,40 @@ final class GenericHasFutureAwaitTest {
     }
 
     @Test
+    void scheduledExplicitFutureMethodPreservesSingleFuturePayload() throws Exception {
+        String source = """
+                async fnc answer(): int { return 42; }
+                define class Provider as
+                    pub get_future(): Future<int> {
+                        stdio.stdout.write("M");
+                        return answer();
+                    }
+                    pub static fnc supply(): Future<int> {
+                        stdio.stdout.write("S");
+                        return answer();
+                    }
+                end
+                pub fnc main(): void {
+                    let Provider p = new Provider();
+                    val Future<int> first = p.get_future();
+                    val int a = await first;
+                    val Future<int> second = Provider.supply();
+                    val int b = await second;
+                    stdio.stdout.write(a + b);
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(stdout).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "method-future-envelope.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("MS84", stdout.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void allowsRepeatedAwaitOfNamedCapabilityWithoutMovingItsReceiver() throws Exception {
         String source = """
                 define trait HasFuture<T> as
@@ -385,7 +419,29 @@ final class GenericHasFutureAwaitTest {
                         end
                         fnc read(Child child): int { return await child; }
                         """));
-        assertTrue(error.getMessage().contains("effective HasFuture"), error.getMessage());
+        // Visibility is rejected by the earlier nominal override checker.
+        // Keep the exact member and access violation as the assertion; a
+        // generic parse failure or unrelated ownership error is insufficient.
+        assertTrue(error.getMessage().contains("private method 'Child.get_future'"), error.getMessage());
+        assertTrue(error.getMessage().contains("cannot override inherited public method"), error.getMessage());
+    }
+
+    @Test
+    void affineFutureFieldCannotBeReturnedThroughReadonlyReceiver() {
+        for (String contract : new String[]{"", " implements HasFuture<int>"}) {
+            String source = """
+                    define trait HasFuture<T> as
+                        get_future(): Future<T>;
+                    end
+                    define class Provider%s as
+                        pub val Future<int> pending;
+                        pub get_future(): Future<int> { return self.pending; }
+                    end
+                    """.formatted(contract);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(failure.getMessage().contains("E_BORROW"), failure.getMessage());
+        }
     }
 
     @Test

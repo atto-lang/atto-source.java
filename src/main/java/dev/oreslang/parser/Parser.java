@@ -1750,6 +1750,11 @@ public final class Parser {
             java.util.Set<String> pending = new java.util.LinkedHashSet<>(deferredFinals);
             java.util.Set<String> parameters = new java.util.HashSet<>();
             for (Ast.Param param : constructor.parameters()) parameters.add(param.name());
+            // Permit the same narrow fresh-empty Array<int> prefix as the
+            // native LLVM profile. This is syntactic admission only; ordinary
+            // type, ownership, constructor and runtime checks remain mandatory.
+            int lastFreshArray = -1;
+            Ast.TypeRef intArray = new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false);
             for (Ast.Stmt statement : constructor.body()) {
                 if (pending.isEmpty()) break;
                 if (!(statement instanceof Ast.ExprStmt expr
@@ -1757,10 +1762,25 @@ public final class Parser {
                         && assignment.target() instanceof Ast.MemberExpr member
                         && member.receiver() instanceof Ast.NameExpr receiver
                         && receiver.name().equals("self")
-                        && pending.contains(member.member())
-                        && (assignment.value() instanceof Ast.NameExpr value
+                        && pending.contains(member.member()))) {
+                    throw error(previous(), "E_INIT: deferred final fields require definite prefix initialization: " + pending);
+                }
+                if (assignment.value() instanceof Ast.NewExpr fresh) {
+                    int index = -1;
+                    for (int i = 0; i < fields.size(); i++) {
+                        if (fields.get(i).name().equals(member.member())) { index = i; break; }
+                    }
+                    if (index < 0 || index <= lastFreshArray
+                            || !fields.get(index).mutableReferent()
+                            || !fields.get(index).type().equals(intArray)
+                            || !fresh.type().equals(intArray)
+                            || !fresh.arguments().isEmpty()) {
+                        throw error(previous(), "E_CONSTRUCTOR_ARRAY_INIT: requires fresh empty mutable Array<int> in declaration order");
+                    }
+                    lastFreshArray = index;
+                } else if (!(assignment.value() instanceof Ast.NameExpr value
                             && parameters.contains(value.name()) && !value.name().equals("self")
-                            || assignment.value() instanceof Ast.LiteralExpr))) {
+                            || assignment.value() instanceof Ast.LiteralExpr)) {
                     throw error(previous(), "E_INIT: deferred final fields require direct parameter or literal initialization before other statements: " + pending);
                 }
                 pending.remove(member.member());
@@ -2322,7 +2342,7 @@ public final class Parser {
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
-            Modifiers mods = parseModifiers();
+            Modifiers mods = parseModifiers(true);
             if (match(DEFINE)) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
@@ -3416,7 +3436,9 @@ public final class Parser {
         return result;
     }
 
-    private Modifiers parseModifiers() {
+    private Modifiers parseModifiers() { return parseModifiers(false); }
+
+    private Modifiers parseModifiers(boolean actorBareCriticalAstOnly) {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
         boolean suspends = false;
@@ -3450,6 +3472,14 @@ public final class Parser {
             // A method literally named critical(...) is left to the normal
             // callable-name path during migration.
             if (isContextualIdentifier("critical") && !checkNext(LPAREN)) {
+                // The narrow actor-local legacy AST lane retains the critical
+                // bit for checked rejection. Never enable the generic modifier,
+                // return-first signatures, or critical-read/write here.
+                if (actorBareCriticalAstOnly && checkNext(IDENT)
+                        && current + 2 < tokens.size()
+                        && tokens.get(current + 2).type() == LPAREN
+                        && !isAdjacentCompoundKeyword("critical", "read")
+                        && !isAdjacentCompoundKeyword("critical", "write")) break;
                 if (suspends || checkNext(SUSPENDS)) {
                     throw error(peek(), "E_CALLABLE_MODIFIERS: critical suspends callable is forbidden");
                 }

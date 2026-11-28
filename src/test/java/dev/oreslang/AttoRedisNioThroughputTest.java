@@ -326,6 +326,25 @@ final class AttoRedisNioThroughputTest {
                 baseline, optimized, optimized / baseline);
     }
 
+    /**
+     * One checked real Atto actor guest process on whichever exact source
+     * ChannelRuntime/ActorRuntime blobs the CI runner installed. The runner
+     * alternates original/private-mailbox source pairs ABBA, and each JVM
+     * process owns its compiler and guest. Do not claim a speedup from noise.
+     */
+    @Test
+    @Timeout(value = 200, unit = TimeUnit.SECONDS)
+    void measureRealAttoMailboxTransportWithoutProfiling() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("ATTO_REDIS_MAILBOX_AB_ENABLED")),
+                "only for exact-source independent mailbox ABBA");
+        CorePerf.configure(false);
+        double rate = runGuest("redis_actor_nio_fast.atto", "atto_mailbox_transport");
+        assertTrue(Double.isFinite(rate) && rate > 0);
+        System.out.printf("ATTO_REDIS_MAILBOX_TRANSPORT rate=%.1f "
+                + "warm=%d measured=%d trials=%d correctness=PASS profiling=OFF%n",
+                rate, WARM, MEASURED, TRIALS);
+    }
+
     @Test
     @Timeout(value = 240, unit = TimeUnit.SECONDS)
     void compareRealAttoNioBeforeAfterAndOfficialRedisMemoryOnly() throws Exception {
