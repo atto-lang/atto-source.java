@@ -18,4 +18,29 @@ final class SymbolConstructorCandidateTest {
         for (String body : List.of("Symbol(1)", "Symbol()", "Symbol(\"x\",\"y\")", "Symbol(#ready)", "Symbol<int>(\"x\")"))
             assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse("pub fnc tag(): Symbol { return " + body + "; }")));
     }
+
+    @Test void linkedGuestConstructsRuntimeAndLiteralSymbols() throws Exception {
+        java.nio.file.Path dir = java.nio.file.Files.createTempDirectory("atto-symbol-constructor-");
+        java.nio.file.Path entry = dir.resolve("symbol.atto");
+        try {
+            java.nio.file.Files.writeString(entry, """
+                fnc tag(String key): Symbol { return Symbol(key); }
+                pub fnc main(): int {
+                    val Symbol first = tag("x y z zzz");
+                    val Symbol second = Symbol('x y z zzz');
+                    if first eq #'x y z zzz' then
+                        if second eq first then return 42; fi
+                    fi
+                    return 0;
+                }
+                """);
+            var result = LinkedProgramRunner.runWithExitStatus(entry, IsolatePolicy.developer(),
+                    ExecutionProfile.serverJit(), new java.io.ByteArrayOutputStream(),
+                    new java.io.ByteArrayOutputStream());
+            assertEquals(42, result.exitStatus());
+        } finally {
+            java.nio.file.Files.deleteIfExists(entry);
+            java.nio.file.Files.deleteIfExists(dir);
+        }
+    }
 }
