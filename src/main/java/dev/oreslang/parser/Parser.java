@@ -9571,14 +9571,14 @@ public final class Parser {
                 args.add(new Ast.SpreadExpr(parseExpression()));
                 continue;
             }
-            if (check(IDENT) && checkNext(COLON)) {
+            if (check(IDENT) && (checkNext(COLON) || (canonicalAttoSource && checkNext(EQUAL)))) {
                 namedStarted = true;
                 String name = advance().lexeme();
-                consume(COLON, "expected ':' after named argument");
+                advance(); // The lookahead proved the named argument separator.
                 if (!seenLabels.add(name)) {
                     throw error(previous(), "duplicate named argument '" + name + "'");
                 }
-                args.add(new Ast.NamedArgExpr(name, parseExpression()));
+                args.add(new Ast.NamedArgExpr(name, canonicalAttoSource ? parseRecordFieldValue() : parseExpression()));
                 continue;
             }
             if (namedStarted) {
