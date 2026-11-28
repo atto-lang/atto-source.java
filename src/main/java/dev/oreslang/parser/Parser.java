@@ -3167,8 +3167,17 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseOr() {
         Ast.Expr expr = parseBitwiseXor();
-        while (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
-            expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+        while (true) {
+            // Contextual actor pipeline composition. Keep this distinct from
+            // the symbolic bitwise/logical '|' token and flatten it later in
+            // the checker/runtime under the bounded 2..16 stage contract.
+            if (matchContextualIdentifier("pipe")) {
+                expr = new Ast.BinaryExpr("pipe", expr, parseBitwiseXor());
+            } else if (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
+                expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+            } else {
+                break;
+            }
         }
         return expr;
     }

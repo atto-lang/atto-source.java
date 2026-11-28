@@ -1,0 +1,52 @@
+// Authenticated source ActorStream: Source -> Transform -> Sink -> Transform -> Source.
+// Positive values move forward; negative values move backward.
+define actor Source as
+    receive(ActorMail<int> mail): void {
+        if mail.value > 0 then
+            self.forward(mail.value + 1);
+        else
+            stdio.stdout.write(mail.value);
+            self.end();
+        fi
+        return;
+    }
+end
+
+define actor Transform as
+    receive(ActorMail<int> mail): void {
+        if mail.value > 0 then
+            self.forward(mail.value + 1);
+        else
+            self.backward(mail.value - 1);
+            self.end();
+        fi
+        return;
+    }
+end
+
+define actor Sink as
+    receive(ActorMail<int> mail): void {
+        if mail.value > 0 then
+            self.backward(0 - mail.value - 1);
+            self.end();
+        else
+            self.end();
+        fi
+        return;
+    }
+end
+
+pub fnc make_actor_pipeline(): ActorStream<int> {
+    return ActorUtils.pipe(
+        spawn Source(),
+        spawn Transform(),
+        spawn Sink()
+    );
+}
+
+pub async routine main(): void {
+    val route = make_actor_pipeline();
+    route.send(1);
+    await route.get_done();
+    return;
+}
