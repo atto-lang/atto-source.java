@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.CriticalAnnotationPolicy;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -848,7 +849,8 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        private final class SourceTask implements OresScheduler.Task<Object>,
+                OresScheduler.PhysicalRetirementListener {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             private static final int LOOP_SAFEPOINT_INTERVAL = 32;
@@ -863,6 +865,13 @@ public final class OresEvalRootNode extends RootNode {
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
             private final CriticalGate.Ticket criticalTicket;
+            private final CriticalAnnotationPolicy criticalPolicy;
+            // Budget includes admission and all suspensions from source
+            // invocation creation. The timer never enters guest code.
+            private final long criticalInvocationStartNanos = System.nanoTime();
+            private volatile java.util.concurrent.ScheduledFuture<?> totalDeadlineTimer;
+            private volatile java.util.concurrent.ScheduledFuture<?> executionDeadlineTimer;
+            private volatile OresFuture<?> pendingOwnedChannelWait;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -873,6 +882,9 @@ public final class OresEvalRootNode extends RootNode {
                     List<?> arguments) {
                 this.function = Objects.requireNonNull(function, "function");
                 this.criticalTicket = function.critical() ? fileCriticalGate.newTicket() : null;
+                this.criticalPolicy = function.critical()
+                        ? CriticalAnnotationPolicy.from(function.annotations(), true,
+                                function.suspends() || function.async(), function.name()) : null;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
@@ -887,6 +899,9 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = Objects.requireNonNull(method, "method");
                 this.criticalTicket = method.critical()
                         ? methodGate(method, receiver).newTicket() : null;
+                this.criticalPolicy = method.critical()
+                        ? CriticalAnnotationPolicy.from(method.annotations(), true,
+                                method.suspends() || method.async(), method.name()) : null;
                 this.receiver = receiver;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
@@ -899,7 +914,70 @@ public final class OresEvalRootNode extends RootNode {
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
                 this.criticalTicket = null;
+                this.criticalPolicy = null;
                 this.arguments = List.of();
+            }
+
+            /**
+             * Arm a cooperative task failure with the scheduler that owns
+             * this physical invocation. Cancellation does not release the
+             * critical permit until physical task retirement.
+             */
+            private java.util.concurrent.ScheduledFuture<?> armCriticalDeadline(
+                    java.time.Duration limit, boolean fromInvocation) {
+                long nanos;
+                try {
+                    nanos = limit.toNanos();
+                } catch (ArithmeticException overflow) {
+                    nanos = Long.MAX_VALUE;
+                }
+                if (fromInvocation) {
+                    long elapsed = Math.max(0L,
+                            System.nanoTime() - criticalInvocationStartNanos);
+                    nanos = Math.max(0L, nanos - elapsed);
+                }
+                String scope = fromInvocation ? "total" : "execution";
+                if (nanos == 0L) {
+                    throw new IllegalStateException(
+                            "critical " + scope + " deadline exceeded",
+                            new java.util.concurrent.TimeoutException(
+                                    "critical " + scope + " deadline exceeded"));
+                }
+                OresScheduler.DeadlineController controller =
+                        OresScheduler.currentDeadlineController();
+                // Child tasks created inside this critical invocation inherit
+                // the earliest parent execution/total budget. Their timer is
+                // scheduler-owned even when the child has no @Critical policy.
+                controller.publishChildDeadline(nanos, context.criticalAdmissionTimer());
+                try {
+                    return context.criticalAdmissionTimer().schedule(
+                            () -> controller.failAtDeadline(
+                                    new java.util.concurrent.TimeoutException(
+                                            "critical " + scope + " deadline exceeded")),
+                            nanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+                } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                    throw new IllegalStateException(
+                            "critical " + scope + " deadline could not be scheduled",
+                            rejected);
+                }
+            }
+
+            private OresFuture<Object> criticalChannelRead(
+                    ChannelRuntime.Channel<Object> channel) {
+                return criticalPolicy == null || criticalPolicy.channelWaitTimeout() == null
+                        ? channel.readAsync()
+                        : channel.readAsyncWithin(
+                                criticalPolicy.channelWaitTimeout(),
+                                context.criticalAdmissionTimer());
+            }
+
+            private OresFuture<Void> criticalChannelWrite(
+                    ChannelRuntime.Channel<Object> channel, Object value) {
+                return criticalPolicy == null || criticalPolicy.channelWaitTimeout() == null
+                        ? channel.writeAsync(value)
+                        : channel.writeAsyncWithin(
+                                value, criticalPolicy.channelWaitTimeout(),
+                                context.criticalAdmissionTimer());
             }
 
             @Override
@@ -924,16 +1002,24 @@ public final class OresEvalRootNode extends RootNode {
                 nextStep = null;
 
                 if (resume.initial()) {
+                    if (criticalPolicy != null && criticalPolicy.totalTimeout() != null) {
+                        totalDeadlineTimer =
+                                armCriticalDeadline(criticalPolicy.totalTimeout(), true);
+                    }
                     if (criticalTicket != null) {
-                        OresFuture<Void> ready = criticalTicket.enterAsync();
-                        // Declaring suspend critical is a guaranteed logical
-                        // suspension boundary even when entry is uncontended.
-                        // Awaiting an already-completed Future still gives the
-                        // carrier back: OresScheduler.armAwait() requeues only
-                        // after the current guest turn has fully unwound.
-                        boolean alwaysYield = function != null && function.suspends()
-                                || method != null && method.suspends();
-                        if (ready.isDone() && !alwaysYield) {
+                        // The source annotation is statically validated by
+                        // AnnotationExpander before execution. The admission
+                        // timer is owned by this VM context and never runs
+                        // guest code, even if an admission times out.
+                        OresFuture<Void> ready = criticalPolicy == null
+                                || criticalPolicy.queueTimeout() == null
+                                ? criticalTicket.enterAsync()
+                                : criticalTicket.enterAsyncWithin(
+                                        criticalPolicy.queueTimeout(), context.criticalAdmissionTimer());
+                        // Fast-path admission is synchronous even for a
+                        // suspends callable: only actual contention or a
+                        // suspending body operation unwinds this task turn.
+                        if (ready.isDone() && criticalTicket.isHeld()) {
                             if (!criticalTicket.isHeld()) {
                                 throw new IllegalStateException(
                                         "critical admission settled without a live ownership ticket");
@@ -955,6 +1041,7 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
+                    pendingOwnedChannelWait = null;
                     if (continuation == null) {
                         throw new IllegalStateException(
                                 "source task resumed without a pending source continuation");
@@ -980,6 +1067,18 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private void startInitialBody() {
+                    // Admission may have consumed the total/inherited budget
+                    // while its timer was delayed. Ownership alone is not
+                    // permission to enter an expired guest segment.
+                    try {
+                        OresScheduler.currentDeadlineController().checkDeadline();
+                    } catch (java.util.concurrent.TimeoutException expired) {
+                        throw sourceFailure(expired);
+                    }
+                    if (criticalPolicy != null && criticalPolicy.executionTimeout() != null) {
+                        executionDeadlineTimer =
+                                armCriticalDeadline(criticalPolicy.executionTimeout(), false);
+                    }
                     Env params;
                     if (blockBody != null) {
                         params = initialBlockEnv != null
@@ -1031,8 +1130,25 @@ public final class OresEvalRootNode extends RootNode {
                             this::finishSourceFlow);
             }
 
-            private void releaseCriticalOnCompletion(OresFuture<?> completion) {
-                if (criticalTicket != null) criticalTicket.releaseOnCompletion(completion);
+            @Override
+            public void onPhysicallyRetired() {
+                // Retire timer capabilities before releasing critical ownership.
+                // Timer callbacks already racing retirement observe terminal
+                // scheduler state and cannot preempt a new ticket owner.
+                java.util.concurrent.ScheduledFuture<?> overall = totalDeadlineTimer;
+                java.util.concurrent.ScheduledFuture<?> execution = executionDeadlineTimer;
+                totalDeadlineTimer = null;
+                executionDeadlineTimer = null;
+                if (overall != null) overall.cancel(false);
+                if (execution != null) execution.cancel(false);
+                // Blocking readch/writech registrations belong to the source
+                // frame. When the frame is cancelled while waiting, retract
+                // the private channel operation before releasing exclusion.
+                // NB registrations returned to callers are not owned here.
+                OresFuture<?> owned = pendingOwnedChannelWait;
+                pendingOwnedChannelWait = null;
+                if (owned != null) owned.cancel(false);
+                if (criticalTicket != null) criticalTicket.close();
             }
 
             private void scheduleLoopContinuation(
@@ -1188,7 +1304,6 @@ public final class OresEvalRootNode extends RootNode {
                         ? current
                         : context.vm().rootScheduler()).start(task);
             }
-            task.releaseCriticalOnCompletion(future);
             return future;
         }
 
@@ -1221,7 +1336,6 @@ public final class OresEvalRootNode extends RootNode {
                         ? current
                         : context.vm().rootScheduler()).start(task);
             }
-            task.releaseCriticalOnCompletion(future);
             return future;
         }
 
@@ -2966,10 +3080,18 @@ public final class OresEvalRootNode extends RootNode {
                                             null,
                                             failure);
                                 } else {
+                                    // An inline await of a freshly registered
+                                    // nb channel operation owns that registration.
+                                    // A Future first stored in a variable might
+                                    // be shared, and must only be observed.
+                                    boolean ownedChannelRegistration =
+                                            awaited.expression() instanceof Ast.ChannelOpExpr op
+                                            && op.mode() == Ast.WaitMode.NONBLOCKING;
                                     suspendOnAwaitable(
                                             t,
                                             value,
-                                            continuation);
+                                            continuation,
+                                            ownedChannelRegistration);
                                 }
                             });
                     return;
@@ -3567,7 +3689,8 @@ public final class OresEvalRootNode extends RootNode {
         private void suspendOnAwaitable(
                 SourceTask task,
                 Object value,
-                SourceValueCont continuation) {
+                SourceValueCont continuation,
+                boolean ownedChannelRegistration) {
             OresFuture<?> future;
             if (value instanceof OresFuture<?> oresFuture) {
                 future = oresFuture;
@@ -3590,6 +3713,10 @@ public final class OresEvalRootNode extends RootNode {
                         new IllegalStateException(
                                 "awaitable projected a null Future"));
                 return;
+            }
+
+            if (ownedChannelRegistration && !future.isDone()) {
+                task.pendingOwnedChannelWait = future;
             }
 
             if (future.isDone()) {
@@ -3667,7 +3794,7 @@ public final class OresEvalRootNode extends RootNode {
                             }
 
                             OresFuture<Object> future =
-                                    channel.readAsync();
+                                    t.criticalChannelRead(channel);
                             if (operation.mode()
                                     == Ast.WaitMode.NONBLOCKING) {
                                 if (ActorRuntime.inActorExecution()) {
@@ -3691,6 +3818,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                 }
                             } else {
+                                t.pendingOwnedChannelWait = future;
                                 t.suspend(
                                         future,
                                         (t2, value, failure) ->
@@ -3722,7 +3850,7 @@ public final class OresEvalRootNode extends RootNode {
                                                         "nb cb writech requires actor execution");
                                             }
                                             OresFuture<Void> completion =
-                                                    channel.writeAsync(value);
+                                                    t2.criticalChannelWrite(channel, value);
                                             ActorRuntime.ContinuationTarget target =
                                                     context.actors()
                                                             .captureCurrentContinuationTarget();
@@ -3773,7 +3901,7 @@ public final class OresEvalRootNode extends RootNode {
                                     }
 
                                     OresFuture<Void> future =
-                                            channel.writeAsync(value);
+                                            t2.criticalChannelWrite(channel, value);
                                     if (operation.mode()
                                             == Ast.WaitMode.NONBLOCKING) {
                                         if (ActorRuntime.inActorExecution()) {
@@ -3801,6 +3929,7 @@ public final class OresEvalRootNode extends RootNode {
                                                     failure);
                                         }
                                     } else {
+                                        t2.pendingOwnedChannelWait = future;
                                         t2.suspend(
                                                 future,
                                                 (t3, ignored, failure) ->
@@ -4534,7 +4663,12 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             CriticalGate.Ticket critical = fn.critical() ? fileCriticalGate.newTicket() : null;
-            if (critical != null) critical.enterSync();
+            if (critical != null) {
+                CriticalAnnotationPolicy policy = CriticalAnnotationPolicy.from(
+                        fn.annotations(), true, fn.name());
+                if (policy == null || policy.queueTimeout() == null) critical.enterSync();
+                else critical.enterSyncWithin(policy.queueTimeout());
+            }
             try {
                 Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
                 bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
@@ -4622,7 +4756,12 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             CriticalGate.Ticket critical = method.critical()
                     ? methodGate(method, receiver).newTicket() : null;
-            if (critical != null) critical.enterSync();
+            if (critical != null) {
+                CriticalAnnotationPolicy policy = CriticalAnnotationPolicy.from(
+                        method.annotations(), true, method.name());
+                if (policy == null || policy.queueTimeout() == null) critical.enterSync();
+                else critical.enterSyncWithin(policy.queueTimeout());
+            }
             try {
                 Env env = new Env(null, false, declaringClass(method));
                 if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
@@ -6948,7 +7087,12 @@ public final class OresEvalRootNode extends RootNode {
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
             CriticalGate.Ticket critical = fn.critical()
                     ? methodGate(fn, null).newTicket() : null;
-            if (critical != null) critical.enterSync();
+            if (critical != null) {
+                CriticalAnnotationPolicy policy = CriticalAnnotationPolicy.from(
+                        fn.annotations(), true, fn.name());
+                if (policy == null || policy.queueTimeout() == null) critical.enterSync();
+                else critical.enterSyncWithin(policy.queueTimeout());
+            }
             try {
                 Env env = new Env(null, false, declaringClass(fn));
                 bindCallableArguments(env, fn.parameters(), args, "static function " + fn.name());

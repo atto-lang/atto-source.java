@@ -102,8 +102,12 @@ public final class AnnotationExpander {
                 if (declaration instanceof Ast.FieldDecl field && fromJsonKey(field) != null) {
                     throw new IllegalArgumentException("@FromJson is only valid on class fields, not module binding '" + field.name() + "'");
                 }
-                if (declaration instanceof Ast.FunctionDecl function && hasAnnotation(function.annotations(), FROM_JSON)) {
-                    throw new IllegalArgumentException("@FromJson is only valid on class fields, not callable '" + function.name() + "'");
+                if (declaration instanceof Ast.FunctionDecl function) {
+                    if (hasAnnotation(function.annotations(), FROM_JSON)) {
+                        throw new IllegalArgumentException("@FromJson is only valid on class fields, not callable '" + function.name() + "'");
+                    }
+                    CriticalAnnotationPolicy.from(function.annotations(), function.critical(),
+                            function.suspends() || function.async(), function.name());
                 }
                 declarations.add(declaration);
             }
@@ -115,6 +119,8 @@ public final class AnnotationExpander {
         List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
         Map<String, Ast.MethodDecl> signatures = new HashMap<>();
         for (Ast.MethodDecl method : methods) {
+            CriticalAnnotationPolicy.from(method.annotations(), method.critical(),
+                    method.suspends() || method.async(), klass.name() + "." + method.name());
             if (hasAnnotation(method.annotations(), FROM_JSON)) {
                 throw new IllegalArgumentException("@FromJson is only valid on class fields, not method '" + klass.name() + "." + method.name() + "'");
             }

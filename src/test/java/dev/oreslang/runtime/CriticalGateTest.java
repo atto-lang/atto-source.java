@@ -161,4 +161,164 @@ final class CriticalGateTest {
         assertEquals(0, gate.queuedCount());
         owner.close();
     }
+
+    @Test void admissionTimeoutRetractsQueuedTicketWithoutStealingLaterHandoff() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        try (var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()) {
+            var owner = gate.newTicket();
+            var expired = gate.newTicket();
+            var survivor = gate.newTicket();
+            assertTrue(owner.enterAsync().isDone());
+            var timed = expired.enterAsyncWithin(java.time.Duration.ofMillis(25), timer);
+            var waiting = survivor.enterAsync();
+            assertEquals(2, gate.queuedCount());
+            var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> timed.get(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertInstanceOf(java.util.concurrent.TimeoutException.class, failed.getCause());
+            assertEquals(1, gate.queuedCount());
+            assertFalse(expired.isHeld());
+            owner.close();
+            assertTrue(waiting.isDone());
+            assertTrue(survivor.isHeld());
+            survivor.close();
+            assertFalse(gate.held());
+        }
+    }
+
+    @Test void zeroBudgetFastPathAdmitsImmediatelyButDoesNotLeaveAQueuedWaiter() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        try (var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()) {
+            var first = gate.newTicket();
+            var zero = first.enterAsyncWithin(java.time.Duration.ZERO, timer);
+            assertTrue(zero.isDone());
+            assertTrue(first.isHeld());
+            var second = gate.newTicket();
+            var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> second.enterAsyncWithin(java.time.Duration.ZERO, timer)
+                            .get(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertInstanceOf(java.util.concurrent.TimeoutException.class, failed.getCause());
+            assertEquals(0, gate.queuedCount());
+            assertFalse(second.isHeld());
+            first.close();
+            assertFalse(gate.held());
+        }
+    }
+
+    @Test void timerFailureFailsClosedAndCannotLeaveAnUnboundedWaiter() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.newTicket();
+        owner.enterAsync();
+        var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        timer.shutdownNow();
+        var pending = gate.newTicket();
+        var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pending.enterAsyncWithin(java.time.Duration.ofSeconds(1), timer)
+                        .get(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertTrue(failed.getCause().getMessage().contains("could not be scheduled"));
+        assertEquals(0, gate.queuedCount());
+        assertFalse(pending.isHeld());
+        owner.close();
+        assertFalse(gate.held());
+    }
+
+    @Test void admissionWinningBeforeTimerDoesNotLoseItsPermit() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        try (var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()) {
+            var owner = gate.newTicket();
+            owner.enterAsync();
+            var candidate = gate.newTicket();
+            var admission = candidate.enterAsyncWithin(java.time.Duration.ofMillis(75), timer);
+            owner.close();
+            admission.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(candidate.isHeld());
+            Thread.sleep(125);
+            assertTrue(candidate.isHeld(), "deadline must not revoke an admitted owner");
+            candidate.close();
+            assertFalse(gate.held());
+        }
+    }
+
+
+    @Test void timedHostWaitFailsWithoutParkingAnActorCarrier() {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.newTicket();
+        owner.enterAsync();
+        var timed = gate.newTicket();
+        var failed = assertThrows(IllegalStateException.class,
+                () -> timed.enterSyncWithin(java.time.Duration.ofMillis(20)));
+        assertInstanceOf(java.util.concurrent.TimeoutException.class, failed.getCause());
+        assertEquals(0, gate.queuedCount());
+        owner.close();
+    }
+
+    @Test void expiredTicketIsRejectedAtHandoffEvenWhenTimerThreadIsBusy() throws Exception {
+        CriticalGate gate = new CriticalGate();
+        try (var timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()) {
+            var blockerStarted = new java.util.concurrent.CountDownLatch(1);
+            var unblockTimer = new java.util.concurrent.CountDownLatch(1);
+            timer.execute(() -> {
+                blockerStarted.countDown();
+                try {
+                    unblockTimer.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(blockerStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            try {
+                var owner = gate.newTicket();
+                owner.enterAsync();
+                var stale = gate.newTicket();
+                var staleWait = stale.enterAsyncWithin(java.time.Duration.ofMillis(20), timer);
+                var next = gate.newTicket();
+                next.enterAsync();
+                Thread.sleep(50);
+                owner.close();
+                var rejected = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> staleWait.get(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertInstanceOf(java.util.concurrent.TimeoutException.class, rejected.getCause());
+                assertFalse(stale.isHeld());
+                assertTrue(next.isHeld());
+                next.close();
+                assertEquals(0, gate.queuedCount());
+                assertFalse(gate.held());
+            } finally {
+                unblockTimer.countDown();
+            }
+        }
+    }
+
+
+    @Test void admissionFutureCannotRevokeAnAlreadyGrantedPermit() {
+        CriticalGate gate = new CriticalGate();
+        var owner = gate.newTicket();
+        OresFuture<Void> admission = owner.enterAsync();
+        assertTrue(admission.isDone());
+        assertTrue(owner.isHeld());
+        assertFalse(admission.cancel(false),
+                "a settled or granted admission cannot cancel the executing critical body");
+        var waiter = gate.newTicket();
+        var pending = waiter.enterAsync();
+        assertFalse(pending.isDone());
+        assertTrue(owner.isHeld());
+        owner.close();
+        assertTrue(waiter.isHeld());
+        waiter.close();
+        assertEquals(0, gate.queuedCount());
+    }
+
+    @Test void cancelledQueuedAdmissionNeverClaimsPermit() {
+        CriticalGate gate = new CriticalGate();
+        var first = gate.newTicket();
+        first.enterAsync();
+        var discarded = gate.newTicket();
+        OresFuture<Void> wait = discarded.enterAsync();
+        assertTrue(wait.cancel(false));
+        assertTrue(wait.isCancelled());
+        first.close();
+        assertFalse(discarded.isHeld());
+        assertFalse(gate.held());
+        assertEquals(0, gate.queuedCount());
+    }
+
 }

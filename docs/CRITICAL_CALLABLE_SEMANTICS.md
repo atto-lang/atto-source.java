@@ -73,12 +73,12 @@ pub critical fnc file_counter(): int {
   It is not a JVM-global lock crossing separate tenants or isolated VMs.
 - `critical static fnc` uses one gate per declaring class.
 - `suspend` and `suspends` are equivalent suspension-effect spellings.
-- `suspend critical` **always** yields one logical scheduler turn before
-  starting its body, even when its permit is immediately available. The
-  already-completed admission Future is still awaited; the scheduler requeues
-  the same continuation **after** its current guest turn has left the carrier.
-  This removes observable fast-path Zalgo at the declared suspension boundary.
-  No physical thread sleeps and no OS mutex spans the handoff.
+- `suspend critical` / `critical suspends` **can enter inline** when
+  uncontended. The declared suspension effect is a *possibility*, not an
+  unconditional handoff: actual channel backpressure, `await`, or contended
+  critical admission suspends the logical task without parking its carrier.
+  This supersedes the legacy always-yield behavior proposed in Java PR #632;
+  the change needs an instrumented execution-turn regression before merge.
 - A plain synchronous `critical` callable enters immediately when free.
   When contended on an actor/scheduler carrier it fails fast (no invisible
   promotion of a sync call into async); external host sync calls retain their
@@ -88,7 +88,124 @@ pub critical fnc file_counter(): int {
   continuation migration must never release or reacquire exclusion.
 - Queue is FIFO, bounded to 8192 waiting invocations. Overflow fails closed.
 - On normal return, exception, cancellation, and actor/task teardown, the
-  runtime releases the invocation ticket and wakes the next waiter.
+  runtime releases the invocation ticket at physical task retirement and
+  wakes the next waiter. Public result cancellation alone does not transfer
+  ownership or establish quiescence.
+
+
+## Critical annotations and bounded waits (October 27, 2026 increment)
+
+Timeouts are configured on the declaration rather than changing its return
+type dynamically. First compiler/runtime slice:
+
+```ores
+@Critical(queue_timeout_ms=75)
+pub critical suspends fnc process(Channel<int> requests): int {
+    const next = await (nb readch requests);
+    return next;
+}
+```
+
+**Implemented on this draft branch (still unexecuted):**
+
+- `@Critical(queue_timeout_ms=N)` applies to synchronous and
+  asynchronous critical file/functions and instance methods, with FIFO
+  expiration checks at handoff even if the timer is delayed.
+- `@Critical(channel_wait_timeout_ms=N)` applies only to `suspends`
+  or `async` critical callables. The Graal SourceTask lowering attaches
+  a deadline to each directly registered `readch` / `writech` operation,
+  including `nb` registrations and deferred channel callbacks.
+  It preserves the logical critical ticket while the channel task suspends.
+  The SourceTask cancels its privately owned direct blocking channel waits and
+  syntactically inline `await (nb readch/writech ...)` registrations during
+  physical retirement. Separately stored/shared Future observations are only
+  detached, never implicitly producer-cancelled.
+- Either field may be independently supplied; both may be combined.
+  All fields require nonnegative signed-64 integer millisecond metadata.
+  Unknown/duplicate/invalid fields or a channel deadline without a
+  suspending declaration are rejected, never silently ignored.
+- The private channel selection's atomic cancellation arbiter determines
+  whether a timeout may withdraw a pending read/write. A committed
+  delivery wins over timeout; a withdrawn sender/receiver cannot later
+  perform channel I/O. The timer is context-owned and never executes
+  Oreslang guest code.
+
+Example:
+
+```ores
+@Critical(queue_timeout_ms=100, channel_wait_timeout_ms=500)
+pub critical suspends fnc process(Channel<int> requests): int {
+    return await (nb readch requests);
+}
+```
+
+**Additional Java/Graal draft implementation (October 28):**
+`execution_timeout_ms=N` and `total_timeout_ms=N` are now accepted only
+on suspending/async critical callables. A total budget begins when the
+source invocation frame is created (including admission); an execution
+budget begins when the critical body starts after admission. Timers request
+a `TimeoutException` through the task's scheduler-owned deadline
+controller. Runtime success and deadline failure are published only after
+the carrier unwinds and the retirement callback finishes,
+and the critical permit is retained until physical retirement. Timers are
+cancelled when the task retires; timer callbacks never execute guest code.
+A zero remaining budget fails closed before starting the body.
+
+**These timers are cooperative, NOT preemptive.** A running non-cooperative
+CPU loop/native function can exceed its budget while still holding the
+critical permit. A timer cannot abort arbitrary host code or roll back
+remote side effects. Full bounded-work, safe-point and sandbox termination
+proofs remain necessary for real-time or untrusted FaaS workloads.
+
+**Additional scheduler and channel hardening (October 28):**
+the earliest total/execution deadline active on a scheduler task is
+snapshotted when it spawns a nested task, even if that child has no
+`@Critical` annotation. Each child gets its own scheduler-owned expiration
+registration; parent cancellation does not release a still-running child
+critical region before physical retirement. Existing children are not yet
+retroactively tightened if parent policies change after child creation.
+
+A timed channel selection now records its monotonic budget **before**
+entering the atomic select coordinator. The coordinator rejects expired
+single-channel reads/writes and rendezvous peers even if its timer executor
+is starved. Zero duration is an immediate attempt: commit only if ready,
+otherwise fail without leaving a waiting registration. This closes the
+stale-delivery gap that a timer-only cancellation could miss.
+
+**Still NOT IMPLEMENTED:** complete structured child cancellation ownership,
+critical timeouts on static-select arms and arbitrarily composed select
+operations, dynamic wait-for graph coverage, and full source actor
+`handle_state` loan/lifecycle integration. These are separate release gates.
+A full `@Critical` duration-literal syntax is future work; `=N` is
+integer milliseconds. Code and tests are authored, but exact-head
+Maven/Graal/Native Image tests have not executed.
+
+The planned full policy distinguishes:
+
+| Clock | Starts | What may time out | Safe outcome |
+| --- | --- | --- | --- |
+| Queue | At invocation admission | Queued ticket only | Remove waiter; no ownership granted |
+| Execution | After admission | Owner task and its awaited operations | Request cancellation, await safe exit; **do not** release permit early |
+| Channel | At each potentially blocking `readch` / `writech` | Channel registration | Atomic delivered-vs-cancelled outcome, no ghost receive/late send |
+| Total | At invocation start | Queue + execution + channel waits | Earliest inherited deadline, safe termination and cleanup |
+
+A `critical fnc` may use a synchronous channel read/write only on an
+explicitly blocking-eligible host thread. A carrier/reactor cannot park.
+A `critical suspends fnc` can instead perform channel send/receive as
+compiler-lowered suspension points, retaining its **logical** exclusive
+ticket but never retaining an unsafe physical mutable-state borrow across
+the wait. Channel sends/receives must have a linear cancellation/commit
+outcome and bounded backpressure; actor deadlock cycles must fail closed.
+A pending asynchronous channel read cannot be mistaken for an immediate
+`try readch` probe. Cross-gate wait cycles, callbacks that reenter the same
+critical region, and downstream channel dependencies require static checks
+where possible and runtime cycle/deadline enforcement otherwise.
+
+The queue timer is not a hard interrupt: it cannot revoke an already
+admitted critical invocation. Its deadline engine is a Java slice, not
+backend parity or a hard-real-time certification. Cancellation settlement,
+remote side effects, exact actor-state loans, and hot-reload generation
+quiescence remain separate release gates.
 
 ## Blocking and notification protocol (capacity-one logical queue)
 
@@ -103,8 +220,8 @@ machinery but retain a separate internal admission queue.
 2. Otherwise append a distinct, cancellation-aware ticket to a bounded FIFO
    queue; park the **logical continuation** in the scheduler's WAITING state.
    Never occupy a worker/carrier thread to wait on a permit.
-3. On return, throw, panic, cancellation or teardown, release the invocation's
-   token exactly once. Under the short mutex, atomically transfer the permit
+3. After physical retirement on return, throw, panic, cancellation or teardown,
+   release the invocation's token exactly once. Under the short mutex, transfer the permit
    to the oldest non-cancelled ticket, then unlock.
 4. Publish the admitted ticket to the scheduler's **internal control/resume
    queue**, not the actor's ordinary user-message mailbox. This must not be
@@ -113,10 +230,10 @@ machinery but retain a separate internal admission queue.
 5. On resume, verify the ticket still owns the gate (cancellation may have won
    after handoff). Never run guest code directly from a Future completion or
    while holding the host mutex.
-6. Waiting-ticket cancellation removes the ticket from FIFO. If cancellation
-   races with ownership handoff, it must release the newly acquired permit and
-   wake the next eligible caller. Capacity excludes the single owner; 8192
-   waiting tickets are permitted.
+6. Waiting-ticket cancellation removes the ticket from FIFO. If ownership
+   handoff has already won, cancellation of the admission Future must fail;
+   only the owning invocation's physical retirement may close the granted
+   ticket. Capacity excludes the single owner; 8192 waiting tickets are permitted.
 7. Host/embedder *synchronous* callers may use a targeted blocking signal.
    Synchronous **actor** and scheduler callers must never park a carrier;
    without compiler-lowered suspension, contention fails closed with a
@@ -216,5 +333,40 @@ admission/handoff. The frontend currently accepts a narrow i64-only language
 subset and rejects actor and async lowering. Compiler lowering, actor class
 allocation, source task continuations, cleanup/unwind integration, and
 cross-thread stress testing are still required before enabling `critical`
-declarations. Use the exact-source-tree funded CI mirror when original GitHub
-Actions cannot allocate a runner.
+declarations. Do not transfer private source between GitHub organizations without explicit security approval, protected-main governance, an approved carrier contract and an independently reviewed test plan. Zero-step Actions are NOT_EXECUTED; no private-source CI proof is claimed here.
+
+## Retirement and deadline refinement (draft implementation; not validated)
+
+The scheduler now fences runtime terminal publication on completion of its
+retirement callback, serializes carrier claim with retirement eligibility,
+and checks effective task deadlines at dispatch. Source body entry checks
+the deadline again after admission. Focused tests are authored but unexecuted.
+The following contract still includes unresolved release gates.
+
+- Distinguish result cancellation, terminal intent, carrier exit, and completed
+  physical retirement. Public cancellation may settle immediately; it is not a
+  quiescence receipt. Runtime success/deadline failure must be published only
+  after carrier exit and completion of retirement cleanup.
+- A claimed carrier turn remains in flight even before its execution flag is
+  published. Retirement is complete only after its callback returns, not when
+  a notification-once flag is set. Cleanup failure must produce an observable
+  terminal failure and retain exclusion if protected state is not safe.
+- Withdraw privately owned pending channel operations before ticket handoff.
+  A committed channel operation is not rolled back by invocation timeout.
+  Shared Future observation detaches without cancelling its producer.
+- Retaining a critical ticket does not extend ordinary borrows or MutexGuard
+  lifetimes. Actor self is permitted only under the actor execution-lease
+  contract; aliases and handle_state loans require independent checking.
+- The effective invocation deadline must be checked before post-admission
+  body entry and each resumed guest segment. Inherited deadlines must also be
+  checked at child dispatch. Timers provide wakeups, not the sole expiration
+  authority. These checks do not promise interruption within an atomic segment.
+- Omitted queue/channel fields currently mean no local limit at this lowering
+  site. Only total/execution task deadlines are propagated by the current
+  scheduler snapshot. Do not claim general annotation-policy inheritance.
+- Structured task cancellation, child retirement barriers, select-arm budgets,
+  actor supervision/restart generation fences, and backend conformance remain
+  required before readiness. Unsupported combinations must fail closed.
+- Inline admission means no additional admission-only scheduler handoff.
+  It does not promise execution on the caller's carrier: source invocation
+  creation may already have scheduled a separate task.

@@ -39,6 +39,17 @@ public final class OresContext implements AutoCloseable {
     public NativeHttp http() { return http; }
 
     private final UUID contextId = UUID.randomUUID();
+    // One VM-context-owned admission timer, with zero live threads until the
+    // first timed critical call. No critical callback executes guest code.
+    private final java.util.concurrent.ScheduledThreadPoolExecutor criticalAdmissionTimers =
+            new java.util.concurrent.ScheduledThreadPoolExecutor(1, action -> {
+                Thread timer = new Thread(action, "oreslang-critical-deadline-" + contextId);
+                timer.setDaemon(true);
+                return timer;
+            });
+    public java.util.concurrent.ScheduledExecutorService criticalAdmissionTimer() {
+        return criticalAdmissionTimers;
+    }
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final AtomicLong sourceLoopCooperates = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
@@ -72,6 +83,8 @@ public final class OresContext implements AutoCloseable {
     }
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
+        criticalAdmissionTimers.setRemoveOnCancelPolicy(true);
+        criticalAdmissionTimers.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         long contextPerf = CorePerf.start();
         this.language = language;
         this.env = env;
@@ -441,6 +454,8 @@ public final class OresContext implements AutoCloseable {
             if (failure == null) failure = vmFailure;
             else failure.addSuppressed(vmFailure);
         } finally {
+            // No late timer callback may outlive the owning execution context.
+            criticalAdmissionTimers.shutdownNow();
             synchronized (this) {
                 linkedCodeUnits.clear();
                 linkedImportResolutions.clear();
