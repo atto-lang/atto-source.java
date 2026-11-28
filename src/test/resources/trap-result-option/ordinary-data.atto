@@ -1,0 +1,33 @@
+// Existing Result values pass through. Option.None remains a successful value.
+fnc result_value(bool success): Result<int, String> {
+  if success then
+    return Ok(7);
+  fi
+  return Err("ordinary-data");
+}
+fnc optional_value(): Option<int> {
+  return None;
+}
+trap! fnc trapped_result(): Result<int, String> {
+  return Err("still-data");
+}
+pub fnc main(): void {
+  val Result<int, Error | String> failed = trap result_value(false);
+  val Result<int, Error | String> succeeded = trap! result_value(true);
+  val Result<Option<int>, Error> absent = trap! optional_value();
+  val Result<int, Error | String> twice = trap trapped_result();
+  stdio.stdout.write(failed.is_err());
+  stdio.stdout.write(":");
+  stdio.stdout.write(failed.unwrap_or(19) eq 19);
+  stdio.stdout.write(":");
+  stdio.stdout.write(succeeded.is_ok());
+  stdio.stdout.write(":");
+  stdio.stdout.write(succeeded.unwrap() eq 7);
+  stdio.stdout.write(":");
+  stdio.stdout.write(absent.is_ok());
+  stdio.stdout.write(":");
+  stdio.stdout.write(absent.unwrap().is_none());
+  stdio.stdout.write(":");
+  stdio.stdout.write(twice.is_err());
+  return;
+}

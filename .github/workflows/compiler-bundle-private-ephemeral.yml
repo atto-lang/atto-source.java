@@ -1,0 +1,212 @@
+name: Immutable JVM compiler bundle - approved private ephemeral runner
+
+# This is deliberately push-only. Never execute untrusted pull-request workflow
+# code on a persistent runner, and never export source to a different org.
+on:
+  push:
+    branches:
+      - ci/immutable-jvm-compiler-bundle-20261018
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oreslang-private-compiler-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deny-unapproved:
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.repository_id != '1400792274' || github.event.repository.private != true || github.event.repository.fork == true || github.ref != 'refs/heads/ci/immutable-jvm-compiler-bundle-20261018' || github.ref_protected != true || vars.ORESLANG_COMPILER_PRIVATE_RUNNER != 'true' || vars.ORESLANG_COMPILER_APPROVED_SHA == '' || vars.ORESLANG_COMPILER_APPROVED_SHA != github.sha || vars.ORESLANG_COMPILER_APPROVED_TREE == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Fail closed unless exact protected private-source approval exists
+        shell: bash
+        run: |
+          echo 'DENIED: protected source-local ref, reviewed SHA/tree and isolated ephemeral runner required' >&2
+          exit 1
+
+  approved-compiler-build:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event.repository.private == true && github.event.repository.fork == false && github.ref == 'refs/heads/ci/immutable-jvm-compiler-bundle-20261018' && github.ref_protected == true && vars.ORESLANG_COMPILER_PRIVATE_RUNNER == 'true' && vars.ORESLANG_COMPILER_APPROVED_SHA != '' && vars.ORESLANG_COMPILER_APPROVED_SHA == github.sha && vars.ORESLANG_COMPILER_APPROVED_TREE != '' }}
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 120
+    env:
+      APPROVED_SHA: ${{ vars.ORESLANG_COMPILER_APPROVED_SHA }}
+      APPROVED_TREE: ${{ vars.ORESLANG_COMPILER_APPROVED_TREE }}
+      APPROVED_RUNNER: ${{ vars.ORESLANG_COMPILER_PRIVATE_RUNNER }}
+      # Applied by Actions before Bash or Node actions start on the isolated runner.
+      BASH_ENV: ''
+      ENV: ''
+      NODE_OPTIONS: ''
+      NODE_PATH: ''
+      LD_PRELOAD: ''
+      LD_AUDIT: ''
+      LD_DEBUG: ''
+    steps:
+      - name: Reject exported Bash functions before any Bash step
+        # An isolated Python process sees BASH_FUNC_* before a shell can discard it.
+        shell: python -I {0}
+        run: |
+          import os, sys
+          forbidden = sorted(k for k, v in os.environ.items()
+                             if v and (k.startswith('BASH_FUNC_') or
+                                       k in ('BASHOPTS', 'SHELLOPTS')))
+          if forbidden:
+              print('DENIED: inherited shell function/options: ' +
+                    ', '.join(forbidden), file=sys.stderr)
+              raise SystemExit(1)
+      - name: Verify protected source authorization before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$GITHUB_REPOSITORY_ID" = '1400792274'
+          test "$GITHUB_REF" = 'refs/heads/ci/immutable-jvm-compiler-bundle-20261018'
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$APPROVED_RUNNER" = true
+          test "$GITHUB_SHA" = "$APPROVED_SHA"
+          [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$APPROVED_TREE" =~ ^[0-9a-f]{40}$ ]]
+      - name: Reject ambient launch overrides before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in MAVEN_OPTS MAVEN_ARGS JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_COUNT PYTHONPATH PYTHONHOME; do
+            if [[ -v "$key" && -n "${!key}" ]]; then
+              printf 'DENIED: ambient pre-checkout override %s\n' "$key" >&2
+              exit 1
+            fi
+          done
+          # Deny unlisted Git config/object-store/SSH overrides, not only common variables.
+          for key in "${!GIT_@}"; do
+            if [[ -n "${!key}" ]]; then
+              printf 'DENIED: unreviewed Git environment override %s\n' "$key" >&2
+              exit 1
+            fi
+          done
+      - name: Checkout approved SHA from original private repository only
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # pinned v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
+          fetch-depth: 1
+      - name: Verify exact SHA and tree and reject hidden/dirty workspace state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -c core.fsmonitor=false rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git -c core.fsmonitor=false rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+          test -z "$(git -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none)"
+          if git -c core.fsmonitor=false ls-files -v | grep -v '^H '; then
+            echo 'DENIED: masked tracked Git index entry' >&2
+            exit 1
+          fi
+          python3 -m unittest discover -s scripts/ci -p 'test_compiler_bundle.py' -v
+          python3 -m unittest discover -s scripts/ci -p 'test_compiler_ephemeral_policy.py' -v
+          python3 -m unittest discover -s scripts/ci -p 'test_compiler_runner_environment.py' -v
+      - name: Install existing GraalVM JDK25 without shared dependency cache
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned setup action
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+      - name: Refuse ambient compiler and Git process overrides
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in MAVEN_OPTS MAVEN_ARGS JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_CONFIG_COUNT PYTHONPATH PYTHONHOME; do
+            if [[ -v "$key" && -n "${!key}" ]]; then
+              printf 'DENIED: unexpected runner environment override %s\n' "$key" >&2
+              exit 1
+            fi
+          done
+          # Deny unlisted Git config/object-store/SSH overrides, not only common variables.
+          for key in "${!GIT_@}"; do
+            if [[ -n "${!key}" ]]; then
+              printf 'DENIED: unreviewed Git environment override %s\n' "$key" >&2
+              exit 1
+            fi
+          done
+          for config in .mvn/maven.config .mvn/jvm.config .mvn/extensions.xml; do
+            if [[ -e "$config" || -L "$config" ]]; then
+              printf 'DENIED: repository Maven override %s\n' "$config" >&2
+              exit 1
+            fi
+          done
+          echo 'CLEAN_COMPILER_PROCESS_ENVIRONMENT=PASS'
+      - name: Build and run full actual Java compiler tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${JAVA_HOME:-}" && test -x "$JAVA_HOME/bin/java"
+          "$JAVA_HOME/bin/java" --version
+          java --version
+          mvn --version
+          mvn -B -ntp -Dores.runtime.carriers=native clean verify
+          mvn -B -ntp org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/compiler-runtime-deps
+      - name: Create and verify bundle using approved source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/compiler_bundle.py create \
+            --source-dir "$GITHUB_WORKSPACE" \
+            --source-commit "$APPROVED_SHA" \
+            --source-tree "$APPROVED_TREE" \
+            --main-jar "$GITHUB_WORKSPACE/target/oreslang-source-0.1.0-SNAPSHOT.jar" \
+            --dependency-dir "$GITHUB_WORKSPACE/target/compiler-runtime-deps" \
+            --out-dir "$RUNNER_TEMP/oreslang-compiler-bundle"
+          manifest_sha="$(sha256sum "$RUNNER_TEMP/oreslang-compiler-bundle/manifest.json" | awk '{print $1}')"
+          python3 scripts/ci/compiler_bundle.py verify \
+            --bundle "$RUNNER_TEMP/oreslang-compiler-bundle" \
+            --source-commit "$APPROVED_SHA" \
+            --source-tree "$APPROVED_TREE" \
+            --expected-manifest-sha256 "$manifest_sha" \
+            --probe-launcher
+          echo "BUNDLE_MANIFEST_SHA256=$manifest_sha"
+      - name: Validate actual positive and negative OresMain source checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import os, pathlib, re, subprocess, tempfile
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          exe = pathlib.Path(os.environ['RUNNER_TEMP']) / 'oreslang-compiler-bundle/run-oreslang'
+          java_home = pathlib.Path(os.environ.get('JAVA_HOME', ''))
+          if not java_home.is_absolute() or not (java_home / 'bin/java').is_file():
+              raise SystemExit('required GraalVM JAVA_HOME unavailable')
+          env = {'PATH': str(java_home / 'bin') + os.pathsep + os.defpath,
+                 'LC_ALL': 'C', 'LANG': 'C', 'TZ': 'UTC'}
+          pos = root / 'examples/together.ores'
+          if not pos.is_file() or pos.is_symlink():
+              raise SystemExit('pinned positive .ores file absent or symlinked')
+          good = subprocess.run([str(exe), '--check', str(pos)], cwd=root, env=env,
+                                capture_output=True, timeout=90)
+          if good.returncode != 0 or good.stdout != b'':
+              raise SystemExit('positive compiler check failed')
+          with tempfile.TemporaryDirectory(prefix='oreslang-negative-') as tmp:
+              bad_source = pathlib.Path(tmp) / 'parse-negative.ores'
+              bad_source.write_bytes(b'pub routine main( {\n')
+              bad = subprocess.run([str(exe), '--check', str(bad_source)],
+                                   cwd=root, env=env, capture_output=True, timeout=90)
+              pattern = rb'^' + re.escape(os.fsencode(bad_source)) + rb':[1-9][0-9]*:[1-9][0-9]*: error: '
+              if bad.returncode != 1 or bad.stdout or not re.search(pattern, bad.stderr, re.M):
+                  raise SystemExit('negative compiler diagnostic check failed')
+          print('REAL_JAVA_CLI_POSITIVE_NEGATIVE_PASS; ml_guest_executed=false')
+          PY
+      - name: Verify immutable source tree after all tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -c core.fsmonitor=false rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git -c core.fsmonitor=false rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+          test -z "$(git -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none)"
+          echo 'PRIVATE_SOURCE_EXPORT=NONE; independent_provenance_attested=false'
+      - name: Retain compiler only in original private source repository (1 day)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-source-local-jvm-bundle-unattested
+          path: ${{ runner.temp }}/oreslang-compiler-bundle/
+          retention-days: 1
+          if-no-files-found: error

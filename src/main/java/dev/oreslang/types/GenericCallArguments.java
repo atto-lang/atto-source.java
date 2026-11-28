@@ -29,8 +29,13 @@ final class GenericCallArguments {
 
     record Bound(Map<String, Ast.TypeRef> explicitTypes, Set<String> inferenceHoles) {
         Bound {
-            explicitTypes = Map.copyOf(explicitTypes);
-            inferenceHoles = Set.copyOf(inferenceHoles);
+            // Preserve lexical call-site order for deterministic resolution and diagnostics.
+            // Map.copyOf/Set.copyOf do not guarantee traversal order, even when
+            // the binder supplied a LinkedHashMap/LinkedHashSet.
+            explicitTypes = java.util.Collections.unmodifiableMap(
+                    new LinkedHashMap<>(explicitTypes));
+            inferenceHoles = java.util.Collections.unmodifiableSet(
+                    new LinkedHashSet<>(inferenceHoles));
         }
     }
 
@@ -82,6 +87,17 @@ final class GenericCallArguments {
     }
 
     private static void requireConcreteExplicitType(Ast.TypeRef value, String label) {
+        // A sequence dimension is not itself a type argument. In particular,
+        // the parser represents Box[int] as Box with a synthetic shape slot.
+        // Never allow that slot to masquerade as an ordinary nominal generic.
+        // Nested designated collection shapes (e.g. Box<Array[int]>) remain
+        // valid and are checked by the normal collection type resolver.
+        if (value.isSequenceShape() || value.isRepeatExact() || value.isRepeatMany()
+                || value.isIntLiteral()) {
+            throw new IllegalArgumentException(label
+                    + " requires a type generic argument, not a sequence shape or const value; "
+                    + "use '<...>' for generic specialization");
+        }
         Deque<Ast.TypeRef> pending = new ArrayDeque<>();
         pending.add(value);
         while (!pending.isEmpty()) {

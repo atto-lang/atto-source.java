@@ -1,0 +1,64 @@
+name: Atto allocation parity seven JVM guests exact source
+on:
+  pull_request:
+    paths:
+      - 'tests/fixtures/alloc-java-guest/alloc-parity-v1.tsv'
+      - 'tests/fixtures/alloc-java-guest/parity-v1/**'
+      - 'src/test/java/dev/oreslang/AttoAllocParityGuestTest.java'
+      - '.github/workflows/atto-alloc-parity-jvm-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  seven-linked-guest-cases:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Verify exact source and tree
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --quiet
+          git diff --cached --quiet
+          echo "ATTO_ALLOC_SOURCE_HEAD=$EXPECTED_SHA"
+          echo "ATTO_ALLOC_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Setup GraalVM 25 JVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute allocation conformance guest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AttoAllocParityGuestTest -DfailIfNoTests=true test
+          report=target/surefire-reports/TEST-dev.oreslang.AttoAllocParityGuestTest.xml
+          test -s "$report"
+          grep -Fq 'name="executeSevenLinkedGuestCasesWithExactFixtureReceipts"' "$report"
+          count=0
+          while IFS=$'\t' read -r case_id phase outcome path; do
+            [[ -z "$case_id" || "$case_id" == \#* ]] && continue
+            test -f "$path"
+            blob="$(git hash-object "$path")"
+            receipt="ATTO_ALLOC_CASE $case_id $phase $outcome $blob"
+            grep -Fq "$receipt" "$report"
+            printf '%s\n' "$receipt"
+            count=$((count+1))
+          done < tests/fixtures/alloc-java-guest/alloc-parity-v1.tsv
+          test "$count" -eq 7
+          echo 'ATTO_ALLOC_GUEST_EXECUTED'
+      - name: Evidence boundary
+        if: always()
+        run: |
+          echo 'Seven Java-linked logical-policy guest tests only; not automatic drop lowering, physical allocation, LLVM/Rust, Native Image or all-backend parity.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A queued or zero-step job is NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"

@@ -22,8 +22,8 @@ final class AttoRedisMutationAuditProbeTest {
 
     @Test
     void closedMapDomainIsMandatoryEvenForUnreachableParameters() {
-        rejects("proven String/Symbol key", "pub fnc update(Map<int,int> db): void { db.set(4,41); return; } pub fnc main(): int { return 42; }");
-        rejects("proven String/Symbol key", "pub fnc update(Map<string,Map<string,int>> db): void { db.set(\"k\", ~map<string,int>()); return; } pub fnc main(): int { return 42; }");
+        rejects("proven String/Symbol/Bytes key", "pub fnc update(Map<int,int> db): void { db.set(4,41); return; } pub fnc main(): int { return 42; }");
+        rejects("proven String/Symbol/Bytes key", "pub fnc update(Map<string,Map<string,int>> db): void { db.set(\"k\", ~map<string,int>()); return; } pub fnc main(): int { return 42; }");
     }
 
     @Test
@@ -59,7 +59,7 @@ final class AttoRedisMutationAuditProbeTest {
         rejects("direct-call-only",
                 "pub fnc main(): int { let Map<string,int> db = ~map<string,int>(); "
                 + "const f = db.get_optional; return 42; }");
-        rejects("proven String/Symbol key",
+        rejects("proven String/Symbol/Bytes key",
                 "pub fnc probe(Map<int,int> db): bool { "
                 + "return db.get_optional(42).is_some(); } "
                 + "pub fnc main(): int { return 42; }");

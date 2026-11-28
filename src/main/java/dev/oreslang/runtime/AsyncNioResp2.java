@@ -64,7 +64,40 @@ final class AsyncNioResp2 {
      * absolute buffer offset immediately after the frame (pipeline-safe).
      * Incomplete frames must not move the buffer position or consume data.
      */
+    record BinaryParsed(String opcode, List<OresBytes> bulk, int consumed) { }
+
+    private record DecodedFrame(String opcode, List<byte[]> bulk, int consumed) { }
+
+    /**
+     * Binary-safe codec path: no intermediate hex strings and no boxed
+     * List<int>. Each bulk payload is copied once from the network read
+     * buffer into detached immutable OresBytes storage. Consumers must take
+     * or close every returned OresBytes handle.
+     */
+    static BinaryParsed parseBinary(ByteBuffer bytes) throws IOException {
+        DecodedFrame frame = decode(bytes);
+        if (frame == null) return null;
+        ArrayList<OresBytes> bulk = new ArrayList<>(frame.bulk().size());
+        for (byte[] payload : frame.bulk()) bulk.add(OresBytes.fromDetached(payload));
+        return new BinaryParsed(frame.opcode(), List.copyOf(bulk), frame.consumed());
+    }
+
+    /** Existing public guest wire contract; retains legacy hex compatibility. */
     static Parsed parse(ByteBuffer bytes) throws IOException {
+        DecodedFrame frame = decode(bytes);
+        if (frame == null) return null;
+        ArrayList<String> result = new ArrayList<>(frame.bulk().size() + 1);
+        result.add(frame.opcode());
+        // Measure the legacy hex conversion independently of RESP header
+        // scanning. This exposes the cost of the non-Bytes ABI.
+        long hexStarted = CorePerf.start();
+        for (byte[] payload : frame.bulk()) result.add(HEX.formatHex(payload));
+        CorePerf.end(CorePerf.REDIS_RESP_HEX, hexStarted);
+        return new Parsed(List.copyOf(result), frame.consumed());
+    }
+
+    /** One validation engine used by both the legacy and binary result paths. */
+    private static DecodedFrame decode(ByteBuffer bytes) throws IOException {
         int start = bytes.position();
         int pos = start;
         int line = endOfLine(bytes, pos);
@@ -74,7 +107,7 @@ final class AsyncNioResp2 {
         if (argc < 1) throw new IOException("empty RESP2 array");
         pos = line + 2;
         String opcode = null;
-        ArrayList<String> args = new ArrayList<>(argc);
+        ArrayList<byte[]> args = new ArrayList<>(Math.max(0, argc - 1));
         for (int arg = 0; arg < argc; arg++) {
             line = endOfLine(bytes, pos);
             if (line < 0) return null;
@@ -92,32 +125,64 @@ final class AsyncNioResp2 {
             if (bytes.get(pos + len) != '\r' || bytes.get(pos + len + 1) != '\n') {
                 throw new IOException("bad RESP bulk trailer");
             }
+            byte[] payload = new byte[len];
+            ByteBuffer source = bytes.duplicate();
+            source.position(pos);
+            source.get(payload);
             if (arg == 0) {
-                byte[] raw = new byte[len];
-                for (int n = 0; n < len; n++) {
-                    byte item = bytes.get(pos + n);
+                for (byte item : payload) {
                     if (item < 33 || item > 126) {
                         throw new IOException("RESP opcode must be ASCII");
                     }
-                    raw[n] = item;
                 }
-                opcode = new String(raw, StandardCharsets.US_ASCII)
+                opcode = new String(payload, StandardCharsets.US_ASCII)
                         .toUpperCase(Locale.ROOT);
-                args.add(opcode);
             } else {
-                // Measure the temporary byte[] + hex conversion independently of
-                // RESP header scanning. This exposes the cost of the non-Bytes ABI.
-                long hexStarted = CorePerf.start();
-                byte[] payload = new byte[len];
-                ByteBuffer source = bytes.duplicate();
-                source.position(pos);
-                source.get(payload);
-                args.add(HEX.formatHex(payload));
-                CorePerf.end(CorePerf.REDIS_RESP_HEX, hexStarted);
+                args.add(payload);
             }
             pos += len + 2;
         }
-        return new Parsed(List.copyOf(args), pos);
+        return new DecodedFrame(opcode, List.copyOf(args), pos);
+    }
+
+    /** Encode an owned binary value directly into a RESP frame, without hex. */
+    static byte[] encodeBinary(String status, OresBytes payload) throws IOException {
+        if (!"VALUE".equals(status)) {
+            if (payload != null) throw new IOException("non-VALUE reply cannot carry binary payload");
+            return encode(status, "");
+        }
+        if (payload == null) throw new IOException("VALUE needs owned byte payload");
+        try (OresBytes.ReadLease lease = payload.readLease()) {
+            ByteBuffer value = lease.buffer();
+            int n = value.remaining();
+            if (n > MAX_VALUE) throw new IOException("RESP value exceeds cap");
+            byte[] header = ("$" + n + "\r\n").getBytes(StandardCharsets.US_ASCII);
+            byte[] frame = new byte[header.length + n + 2];
+            System.arraycopy(header, 0, frame, 0, header.length);
+            value.get(frame, header.length, n);
+            frame[frame.length - 2] = '\r';
+            frame[frame.length - 1] = '\n';
+            return frame;
+        }
+    }
+
+
+    // One actor-output reply per command. A VALUE reply carries lowercase
+    // hex data after a reserved delimiter, not raw binary or arbitrary text.
+    // Bounds are checked before substring/hex decoding or frame allocation.
+    static byte[] encodeCompositeReply(String reply) throws IOException {
+        if (reply == null) throw new IOException("missing reply");
+        if (reply.startsWith("VALUE:")) {
+            if (reply.length() > MAX_VALUE * 2 + 6) {
+                throw new IOException("RESP reply payload exceeds bound");
+            }
+            return encode("VALUE", reply.substring(6));
+        }
+        return switch (reply) {
+            case "OK", "PONG", "NIL", "ONE", "ZERO", "ERR" ->
+                    encode(reply, "");
+            default -> throw new IOException("invalid actor reply envelope");
+        };
     }
 
     static byte[] encode(String status, String hexPayload) throws IOException {

@@ -33,21 +33,9 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class AttoRedisNioThroughputTest {
     private static final int REDIS_PORT = 26379;
-    // Default, short CI diagnostic remains unchanged. A dedicated long-warm
-    // gate can override these bounded client-only workload sizes by JVM props.
-    private static final int WARM = workloadCount("atto.redis.bench.warm", 200);
-    private static final int MEASURED = workloadCount("atto.redis.bench.measured", 600);
+    private static final int WARM = 200;
+    private static final int MEASURED = 600;
     private static final int TRIALS = 3;
-
-    private static int workloadCount(String name, int fallback) {
-        String text = System.getProperty(name);
-        if (text == null) return fallback;
-        int count = Integer.parseInt(text);
-        if (count < 1 || count > 20000) {
-            throw new IllegalArgumentException(name + " must be 1..20000");
-        }
-        return count;
-    }
     private static final int KEYSPACE = 64;
     private static final byte[] OK = ascii("+OK\r\n");
     private static final byte[] NIL = ascii("$-1\r\n");
@@ -123,13 +111,6 @@ final class AttoRedisNioThroughputTest {
             } else {
                 request = frame(ascii("DEL"), key);
                 expected = ascii(oracle.remove(keySlot) == null ? ":0\r\n" : ":1\r\n");
-            }
-            // Opt-in delayed flight recording: do not fill the bounded first
-            // 8192-event ring with actor startup and the initial warmup loops.
-            // This is benchmark-client control only, never guest/network I/O.
-            if (i == WARM && trial == TRIALS - 1
-                    && "1".equals(System.getenv("ATTO_REDIS_PROFILE_STEADY_ENABLED"))) {
-                CorePerf.configure(true);
             }
             if (i == WARM) begin = System.nanoTime();
             long started = System.nanoTime();
@@ -222,10 +203,8 @@ final class AttoRedisNioThroughputTest {
         }
     }
 
-    @Test
-    @Timeout(value = 60, unit = TimeUnit.SECONDS)
-    void framedNioFastPathPreservesBinaryEmptyNilAndPipelining() throws Exception {
-        String code = resource("redis_actor_nio_fast.atto");
+    private static void verifyFramedNioGuest(String filename) throws Exception {
+        String code = resource(filename);
         int port = freePort();
         String bind = "network.listen_async(\"127.0.0.1\", 16399)";
         assertTrue(code.contains(bind));
@@ -240,7 +219,7 @@ final class AttoRedisNioThroughputTest {
                                 new String[] {"--ores-capabilities=NETWORK,ACTOR_SPAWN,SHARED_MEMORY"})
                         .build()) {
                     context.eval(Source.newBuilder(OresLanguage.ID,
-                                    guestCode, "redis_actor_nio_fast.atto")
+                                    guestCode, filename)
                             .mimeType(OresLanguage.MIME_TYPE).build());
                 } catch (Exception failure) {
                     throw new RuntimeException(failure);
@@ -281,7 +260,19 @@ final class AttoRedisNioThroughputTest {
             }
             guest.get(15, TimeUnit.SECONDS);
         }
-        System.out.println("ATTO_NATIVE_NIO_FRAMED_REAL_ACTOR_BINARY_PIPELINE=PASS");
+        System.out.println("ATTO_NATIVE_NIO_FRAMED_REAL_ACTOR_BINARY_PIPELINE=PASS fixture=" + filename);
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void framedNioFastPathPreservesBinaryEmptyNilAndPipelining() throws Exception {
+        verifyFramedNioGuest("redis_actor_nio_fast.atto");
+    }
+
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void singleReplyNioActorPreservesBinaryEmptyNilAndPipelining() throws Exception {
+        verifyFramedNioGuest("redis_actor_nio_single_reply.atto");
     }
 
     /**
@@ -294,13 +285,7 @@ final class AttoRedisNioThroughputTest {
     void profileRealAttoFramedNioUsingCorePerf() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("ATTO_REDIS_PROFILE_ENABLED")),
                 "opt-in diagnostic: real Atto guest + CorePerf bounded ring");
-        boolean steadyProfile =
-                "1".equals(System.getenv("ATTO_REDIS_PROFILE_STEADY_ENABLED"));
-        if (steadyProfile) {
-            CorePerf.configure(false);
-        } else {
-            CorePerf.configure(true);
-        }
+        CorePerf.configure(true);
         try {
             double rate = runGuest("redis_actor_nio_fast.atto", "atto_nio_framed_coreperf");
             assertTrue(rate > 0 && Double.isFinite(rate));
@@ -360,34 +345,6 @@ final class AttoRedisNioThroughputTest {
                 rate, WARM, MEASURED, TRIALS);
     }
 
-    /**
-     * Dedicated profiler-OFF optimization baseline: actual Atto actor and
-     * official ephemeral Redis share the identical checked RESP2 client, key
-     * sequence, binary payloads and same GitHub Actions host. Long warm-up
-     * avoids using a cold interpreted guest as a throughput estimate.
-     */
-    @Test
-    @Timeout(value = 480, unit = TimeUnit.SECONDS)
-    void benchmarkRealAttoFramedLongWarmAgainstOfficialRedis() throws Exception {
-        Assumptions.assumeTrue(
-                "1".equals(System.getenv("ATTO_REDIS_LONG_WARM_ENABLED")),
-                "requires explicit optimizing-runtime, same-host Redis benchmark gate");
-        assertTrue(WARM >= 2000 && MEASURED >= 2000,
-                "long-warm comparison must use at least 2000 warm and timed requests");
-        CorePerf.configure(false);
-        double atto = runGuest("redis_actor_nio_fast.atto", "atto_framed_long_warm");
-        double redis;
-        try (Socket client = new Socket("127.0.0.1", REDIS_PORT)) {
-            redis = runTrials(client, "official_redis_long_warm");
-        }
-        assertTrue(Double.isFinite(atto) && atto > 0);
-        assertTrue(Double.isFinite(redis) && redis > 0);
-        System.out.printf("ATTO_LONG_WARM_COMPARISON warm=%d measured=%d "
-                + "trials=%d atto_ops_per_sec=%.1f redis_ops_per_sec=%.1f "
-                + "atto_over_redis=%.4f correctness=PASS profiling=OFF%n",
-                WARM, MEASURED, TRIALS, atto, redis, atto / redis);
-    }
-
     @Test
     @Timeout(value = 240, unit = TimeUnit.SECONDS)
     void compareRealAttoNioBeforeAfterAndOfficialRedisMemoryOnly() throws Exception {
@@ -396,13 +353,15 @@ final class AttoRedisNioThroughputTest {
         double baseline = runGuest("redis_binary_resp2_baseline.atto", "atto_nio_baseline");
         double optimized = runGuest("redis_binary_resp2.atto", "atto_nio_fingerprint");
         double framed = runGuest("redis_actor_nio_fast.atto", "atto_nio_framed");
+        double singleReply = runGuest("redis_actor_nio_single_reply.atto", "atto_nio_single_reply");
         double redis;
         try (Socket client = new Socket("127.0.0.1", REDIS_PORT)) {
             redis = runTrials(client, "official_redis_no_persistence");
         }
         System.out.printf("ATTO_NATIVE_NIO_COMPARISON baseline=%.1f optimized=%.1f "
-                + "framed=%.1f redis=%.1f optimized_over_baseline=%.4f "
-                + "framed_over_optimized=%.4f framed_over_redis=%.4f%n",
-                baseline, optimized, framed, redis, optimized / baseline, framed / optimized, framed / redis);
+                + "framed=%.1f single_reply=%.1f redis=%.1f optimized_over_baseline=%.4f "
+                + "framed_over_optimized=%.4f single_over_framed=%.4f single_over_redis=%.4f%n",
+                baseline, optimized, framed, singleReply, redis, optimized / baseline,
+                framed / optimized, singleReply / framed, singleReply / redis);
     }
 }

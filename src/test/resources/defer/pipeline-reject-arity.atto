@@ -1,0 +1,4 @@
+pub fnc main(): int {
+    defer (1, 2) |> (|int x| -> || -> { stdio.println(x); });
+    return 42;
+}

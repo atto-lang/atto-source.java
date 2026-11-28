@@ -66,12 +66,14 @@ final class ActorReadinessLifecycleTest {
             ExecutionException ready = assertThrows(
                     ExecutionException.class,
                     () -> ref.ready().get(5, TimeUnit.SECONDS));
-            assertEquals("constructor failed", ready.getCause().getMessage());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, ready.getCause());
+            assertEquals("constructor failed", ref.failure().orElseThrow().getMessage());
 
             ExecutionException done = assertThrows(
                     ExecutionException.class,
                     () -> ref.done().get(5, TimeUnit.SECONDS));
-            assertEquals("constructor failed", done.getCause().getMessage());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, done.getCause());
+            assertEquals("constructor failed", ref.failure().orElseThrow().getMessage());
         }
     }
 

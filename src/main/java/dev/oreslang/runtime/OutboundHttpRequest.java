@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,7 +35,7 @@ public final class OutboundHttpRequest {
 
     private OutboundHttpRequest() { }
 
-    private record Owner(
+    record Owner(
             ActorRuntime runtime,
             ActorRuntime.ActorId actorId) {
         static Owner capture(OresContext context) {
@@ -146,40 +147,52 @@ public final class OutboundHttpRequest {
         }
     }
 
-    private record PendingRead(int maxBytes, OresFuture<List<Integer>> future) { }
+    private record PendingRead<T>(int maxBytes, OresFuture<T> future,
+            java.util.function.Function<byte[], T> decode, AtomicBoolean claimed) {
+        boolean claimDelivery() { return claimed.compareAndSet(false, true); }
+        void complete(byte[] raw) {
+            T value = decode.apply(raw);
+            if (!future.completeFromRuntime(value) && value instanceof OresBytes owned) {
+                // Cancellation won the completion race: no guest owns this value.
+                owned.close();
+            }
+        }
+    }
 
     /**
      * One-producer / one-logical-reader bounded pipe. The native I/O worker may
      * block when the fixed byte budget is full; actor/root carriers never do.
      */
-    private static final class BodyPipe {
+    static final class BodyPipe {
         private final long deadlineNanos;
         private final ArrayDeque<byte[]> queued = new ArrayDeque<>();
 
-        private BodyPipe(long deadlineNanos) {
+        BodyPipe(long deadlineNanos) {
             this.deadlineNanos = deadlineNanos;
         }
         private int firstOffset;
         private int bufferedBytes;
         private boolean eof;
         private Throwable failure;
-        private PendingRead pending;
+        private PendingRead<?> pending;
 
-        OresFuture<List<Integer>> read(Owner owner, int maxBytes) {
+        <T> OresFuture<T> read(Owner owner, int maxBytes,
+                java.util.function.Function<byte[], T> decode) {
             owner.requireOwner();
             if (maxBytes < 1 || maxBytes > MAX_READ_BYTES) {
                 throw new IllegalArgumentException(
                         "HttpClientBody.read_chunk max_bytes must be 1..65536");
             }
 
-            OresFuture<List<Integer>> ready;
+            OresFuture<T> ready;
             synchronized (this) {
+                if (pending != null && pending.future().isDone()) pending = null;
                 if (pending != null) {
                     throw new IllegalStateException(
                             "only one pending HttpClientBody.read_chunk is permitted");
                 }
                 if (bufferedBytes != 0) {
-                    ready = OresFuture.completed(drainLocked(maxBytes));
+                    ready = decodeReady(drainLocked(maxBytes), decode);
                     return owner.own(ready);
                 }
                 if (failure != null) {
@@ -187,20 +200,37 @@ public final class OutboundHttpRequest {
                     return owner.own(ready);
                 }
                 if (eof) {
-                    ready = OresFuture.completed(List.of());
+                    ready = decodeReady(new byte[0], decode);
                     return owner.own(ready);
                 }
 
-                AtomicReference<OresFuture<List<Integer>>> self =
+                AtomicReference<OresFuture<T>> self =
                         new AtomicReference<>();
-                ready = new OresFuture<>(() -> cancelPending(self.get()));
+                // Producer delivery and cancellation arbitrate before either
+                // removes stream bytes. A cancelled read must not lose data.
+                AtomicBoolean claimed = new AtomicBoolean();
+                ready = new OresFuture<>(() -> claimed.compareAndSet(false, true),
+                        () -> cancelPending(self.get()));
                 self.set(ready);
-                pending = new PendingRead(maxBytes, ready);
+                pending = new PendingRead<>(maxBytes, ready, decode, claimed);
+                notifyAll();
             }
             return owner.own(ready);
         }
 
-        private void cancelPending(OresFuture<List<Integer>> future) {
+        // A materialization failure cannot be retried after bytes have left
+        // the cursor. Fail closed rather than silently dropping stream bytes.
+        private <T> OresFuture<T> decodeReady(byte[] raw,
+                java.util.function.Function<byte[], T> decode) {
+            try {
+                return OresFuture.completed(decode.apply(raw));
+            } catch (RuntimeException materializationFailure) {
+                fail(materializationFailure, true);
+                return OresFuture.failed(materializationFailure);
+            }
+        }
+
+        private void cancelPending(OresFuture<?> future) {
             if (future == null) return;
             synchronized (this) {
                 if (pending != null && pending.future() == future) {
@@ -215,41 +245,40 @@ public final class OutboundHttpRequest {
             int cursor = offset;
             int remaining = length;
             while (remaining != 0) {
-                PendingRead reader = null;
-                List<Integer> direct = null;
+                PendingRead<?> reader = null;
+                byte[] direct = null;
                 synchronized (this) {
                     requireWritableLocked();
 
-                    if (pending != null && bufferedBytes == 0) {
-                        reader = pending;
-                        pending = null;
-                        int count = Math.min(remaining, reader.maxBytes());
-                        direct = bytes(source, cursor, count);
-                        cursor += count;
-                        remaining -= count;
-                    } else {
-                        while (failure == null && !eof
-                                && bufferedBytes + remaining > PIPE_BYTES) {
-                            long waitNanos =
-                                    deadlineNanos - System.nanoTime();
-                            if (waitNanos <= 0) {
-                                throw new IOException(
-                                        "HTTP response body backpressure exceeded overall deadline");
-                            }
-                            try {
-                                TimeUnit.NANOSECONDS.timedWait(
-                                        this,
-                                        waitNanos);
-                            } catch (InterruptedException interrupted) {
-                                Thread.currentThread().interrupt();
-                                throw new IOException(
-                                        "HTTP body producer interrupted while backpressured",
-                                        interrupted);
-                            }
+                    // Wait only for actual lack of room. Large producer writes
+                    // must make incremental progress even if larger than PIPE_BYTES.
+                    while (bufferedBytes == PIPE_BYTES) {
+                        long waitNanos = deadlineNanos - System.nanoTime();
+                        if (waitNanos <= 0) {
+                            throw new IOException("HTTP response body backpressure exceeded overall deadline");
+                        }
+                        try {
+                            TimeUnit.NANOSECONDS.timedWait(this, waitNanos);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException("HTTP body producer interrupted while backpressured", interrupted);
                         }
                         requireWritableLocked();
-                        int room = PIPE_BYTES - bufferedBytes;
-                        int count = Math.min(remaining, room);
+                    }
+                    if (pending != null && bufferedBytes == 0) {
+                        if (pending.claimDelivery()) {
+                            reader = pending;
+                            int count = Math.min(remaining, reader.maxBytes());
+                            direct = java.util.Arrays.copyOfRange(source, cursor, cursor + count);
+                            cursor += count;
+                            remaining -= count;
+                        } else {
+                            // Cancellation claimed this read before data was removed.
+                            pending = null;
+                        }
+                    }
+                    if (reader == null) {
+                        int count = Math.min(remaining, PIPE_BYTES - bufferedBytes);
                         byte[] copy = new byte[count];
                         System.arraycopy(source, cursor, copy, 0, count);
                         queued.addLast(copy);
@@ -260,30 +289,48 @@ public final class OutboundHttpRequest {
                     }
                 }
                 if (reader != null) {
-                    reader.future().completeFromRuntime(direct);
+                    completeDelivery(reader, direct);
                 }
             }
         }
 
         void finish() {
-            PendingRead reader = null;
+            PendingRead<?> reader = null;
             synchronized (this) {
                 if (failure != null || eof) return;
                 eof = true;
                 if (bufferedBytes == 0 && pending != null) {
-                    reader = pending;
-                    pending = null;
+                    if (pending.claimDelivery()) reader = pending;
+                    else pending = null;
                 }
                 notifyAll();
             }
-            if (reader != null) reader.future().completeFromRuntime(List.of());
+            if (reader != null) completeDelivery(reader, new byte[0]);
         }
 
-        void fail(Throwable cause) {
+        private void completeDelivery(PendingRead<?> reader, byte[] bytes) {
+            try {
+                reader.complete(bytes);
+            } catch (RuntimeException materializationFailure) {
+                // Settle the claimed reader before clearing it, even at EOF.
+                // The producer's outer failure path must still retire transport.
+                fail(materializationFailure, true);
+                throw materializationFailure;
+            } finally {
+                synchronized (this) {
+                    if (pending == reader) pending = null;
+                    notifyAll();
+                }
+            }
+        }
+
+        void fail(Throwable cause) { fail(cause, false); }
+
+        private void fail(Throwable cause, boolean revoke) {
             Objects.requireNonNull(cause, "cause");
-            PendingRead reader = null;
+            PendingRead<?> reader = null;
             synchronized (this) {
-                if (failure != null || eof) return;
+                if (failure != null || (eof && !revoke)) return;
                 failure = cause;
                 queued.clear();
                 bufferedBytes = 0;
@@ -294,11 +341,19 @@ public final class OutboundHttpRequest {
                 }
                 notifyAll();
             }
-            if (reader != null) settleFailure(reader.future(), cause);
+            if (reader != null) {
+                // A claimed delivery denies guest cancellation; explicit
+                // stream revocation can still settle failure before publication.
+                if (cause instanceof CancellationException) {
+                    if (!reader.future().cancel(false)) reader.future().failFromRuntime(cause);
+                } else {
+                    reader.future().failFromRuntime(cause);
+                }
+            }
         }
 
         void cancel() {
-            fail(new CancellationException("HTTP response body revoked"));
+            fail(new CancellationException("HTTP response body revoked"), true);
         }
 
         private void requireWritableLocked() throws IOException {
@@ -311,16 +366,14 @@ public final class OutboundHttpRequest {
             if (eof) throw new IOException("HTTP response body already finished");
         }
 
-        private List<Integer> drainLocked(int maxBytes) {
+        private byte[] drainLocked(int maxBytes) {
             int target = Math.min(maxBytes, bufferedBytes);
-            ArrayList<Integer> result = new ArrayList<>(target);
+            byte[] result = new byte[target];
             int remaining = target;
             while (remaining != 0) {
                 byte[] head = queued.getFirst();
                 int count = Math.min(remaining, head.length - firstOffset);
-                for (int i = 0; i < count; i++) {
-                    result.add(head[firstOffset + i] & 0xff);
-                }
+                System.arraycopy(head, firstOffset, result, target - remaining, count);
                 firstOffset += count;
                 bufferedBytes -= count;
                 remaining -= count;
@@ -330,14 +383,12 @@ public final class OutboundHttpRequest {
                 }
             }
             notifyAll();
-            return List.copyOf(result);
+            return result;
         }
 
-        private static List<Integer> bytes(byte[] source, int offset, int length) {
-            ArrayList<Integer> result = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) {
-                result.add(source[offset + i] & 0xff);
-            }
+        private static List<Integer> boxedBytes(byte[] source) {
+            ArrayList<Integer> result = new ArrayList<>(source.length);
+            for (byte value : source) result.add(value & 0xff);
             return List.copyOf(result);
         }
     }
@@ -379,7 +430,12 @@ public final class OutboundHttpRequest {
         }
 
         public OresFuture<List<Integer>> readChunk(int maxBytes) {
-            return pipe.read(owner, maxBytes);
+            return pipe.read(owner, maxBytes, BodyPipe::boxedBytes);
+        }
+
+        /** Alternative owned native chunk; same stream, cap and EOF semantics. */
+        public OresFuture<OresBytes> readOwnedBytes(int maxBytes) {
+            return pipe.read(owner, maxBytes, OresBytes::fromDetached);
         }
 
         public OresFuture<Void> closeAsync() {
@@ -487,10 +543,29 @@ public final class OutboundHttpRequest {
             String method,
             String url,
             List<?> rawHeaders) {
+        return request(context, method, url, rawHeaders, null);
+    }
+
+    /**
+     * Fourth argument is an immutable String (UTF-8) or list of 0..255
+     * integers (Bytes-compatible portable bootstrap). Copy the entire
+     * body before asynchronous admission; no live guest Array or mutable
+     * alias crosses the source Task to physical I/O worker.
+     */
+    public static OresFuture<Response> request(
+            OresContext context,
+            String method,
+            String url,
+            List<?> rawHeaders,
+            Object rawBody) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(url, "url");
-        List<Map.Entry<String, String>> headers = requestHeaders(rawHeaders);
+        if (!method.equals("GET") && !method.equals("HEAD")
+                && !method.equals("POST")) {
+            throw new IllegalArgumentException("http.request supports GET, HEAD or POST");
+        }
+        List<Map.Entry<String, String>> providedHeaders = requestHeaders(rawHeaders);
         URI target;
         try {
             target = URI.create(url);
@@ -499,10 +574,46 @@ public final class OutboundHttpRequest {
                     "http.request requires a canonical absolute URL", invalid));
         }
 
-        ProxyOutboundLoopback.validateTarget(target, method);
+        // Preserve the GET/HEAD proof harness public contract. A POST has
+        // exactly the same canonical loopback authority/path admission; its
+        // method and bounded body are checked independently above.
+        ProxyOutboundLoopback.validateTarget(
+                target, method.equals("POST") ? "GET" : method);
         String endpoint = "127.0.0.1:" + target.getPort();
         context.requirePermission(
                 RuntimePermissions.Permission.NET, endpoint, "http.request");
+
+        // Resolve permissions before copying up to 1 MiB of guest-owned
+        // memory. Unauthorized requests must not incur body traversal or
+        // borrow mutable source bytes across actor/task boundaries.
+        final byte[] requestBody = requestBodyBytes(rawBody);
+        if (!method.equals("POST") && requestBody.length != 0) {
+            throw new IllegalArgumentException("only POST may carry a request body");
+        }
+
+        // Read the immutable context on the *guest admission* carrier, not
+        // the later physical-I/O worker. No userland tracing call is required.
+        // The same immutable header list is then carried through async I/O.
+        final List<Map.Entry<String, String>> headers;
+        final SemanticTraceBuffer.Scope clientSpan;
+        if (context.autoTrace().enabled()) {
+            // A top-level client call without a logical parent is a genuine
+            // root span, not a synthetic child of an invisible span.
+            TraceParent activeParent = TaskContext.traceParent();
+            TraceParent outbound = activeParent == null
+                    ? TraceParent.newRoot(true) : activeParent.newChild();
+            headers = withTraceparentValue(providedHeaders, outbound);
+            clientSpan = context.semanticTrace().begin(outbound,
+                    activeParent == null ? "" : activeParent.spanId(),
+                    SemanticTraceBuffer.HTTP_CLIENT, SemanticTraceBuffer.Kind.CLIENT);
+        } else {
+            headers = providedHeaders;
+            clientSpan = null;
+        }
+        // Allocated only with sampling and trusted context; otherwise the
+        // CLIENT path incurs no new physical-operation bookkeeping.
+        final java.util.concurrent.atomic.AtomicInteger observedStatus =
+                clientSpan == null ? null : new java.util.concurrent.atomic.AtomicInteger();
 
         Owner owner = Owner.capture(context);
         Revocation revocation = new Revocation(context);
@@ -525,14 +636,21 @@ public final class OutboundHttpRequest {
                             target,
                             method,
                             headers,
+                            requestBody,
                             owner,
                             revocation,
                             exposed,
-                            lifetime);
+                            lifetime,
+                            observedStatus);
                     return null;
                 });
 
         physical.whenCompleteRuntime((ignored, failure) -> {
+            // An async CLIENT span follows actual physical network operation
+            // retirement, not the Future returned at source admission.
+            SemanticTraceBuffer.finish(clientSpan,
+                    observedStatus == null ? 0 : observedStatus.get(),
+                    failure != null);
             if (failure == null) {
                 if (!lifetime.isDone()) lifetime.completeFromRuntime(null);
                 return;
@@ -557,10 +675,12 @@ public final class OutboundHttpRequest {
             URI target,
             String method,
             List<Map.Entry<String, String>> headers,
+            byte[] requestBody,
             Owner owner,
             Revocation revocation,
             OresFuture<Response> exposed,
-            OresFuture<Void> lifetime) throws IOException {
+            OresFuture<Void> lifetime,
+            java.util.concurrent.atomic.AtomicInteger observedStatus) throws IOException {
         if (revocation.requested()) {
             throw new CancellationException(
                     "http.request revoked before native acquisition");
@@ -577,7 +697,8 @@ public final class OutboundHttpRequest {
         BodyPipe pipe = null;
         try (transport) {
             PinnedHttpTransport.Response upstream =
-                    transport.request(target, method, headers);
+                    transport.request(target, method, headers, requestBody);
+            if (observedStatus != null) observedStatus.set(upstream.status());
             try (upstream) {
                 if (revocation.requested()) {
                     throw new CancellationException(
@@ -626,6 +747,107 @@ public final class OutboundHttpRequest {
         } finally {
             revocation.clearTransport(transport);
         }
+    }
+
+    /**
+     * Trusted HTTP CLIENT boundary: inject a new W3C child parent-id from
+     * immutable logical task context. No sender-controlled traceparent can
+     * override the runtime-owned identity while tracing is enabled.
+     *
+     * This first slice does NOT create an OTLP CLIENT span, or copy tracestate.
+     * It is a standalone wire-propagation primitive with explicit budgets.
+     */
+    static List<Map.Entry<String, String>> withTraceparent(
+            List<Map.Entry<String, String>> provided,
+            TraceParent parent) {
+        Objects.requireNonNull(provided, "provided");
+        if (parent == null) return provided;
+        return withTraceparentValue(provided, parent.newChild());
+    }
+
+    /** Inject an already-minted root or child span ID exactly once. */
+    private static List<Map.Entry<String, String>> withTraceparentValue(
+            List<Map.Entry<String, String>> provided,
+            TraceParent outgoing) {
+        Objects.requireNonNull(provided, "provided");
+        Objects.requireNonNull(outgoing, "outgoing");
+
+        long bytes = 0L;
+        for (Map.Entry<String, String> header : provided) {
+            String key = header.getKey();
+            if (key.equalsIgnoreCase("traceparent") || key.equalsIgnoreCase("tracestate")) {
+                throw new IllegalArgumentException(
+                        "traceparent/tracestate are runtime-owned while auto tracing is enabled");
+            }
+            bytes += (long) key.length() + header.getValue().length() + 4L;
+        }
+        // "traceparent" (11) + ": " (2) + 55-byte W3C v00 value + CRLF (2)
+        if (provided.size() >= 100 || bytes > 32_768L - 70L) {
+            throw new IllegalArgumentException(
+                    "http.request trace propagation exceeds header budgets");
+        }
+        ArrayList<Map.Entry<String, String>> result =
+                new ArrayList<>(provided.size() + 1);
+        result.addAll(provided);
+        result.add(Map.entry("traceparent", outgoing.toHeader()));
+        return List.copyOf(result);
+    }
+
+    static byte[] requestBodyBytes(Object value) {
+        if (value == null) return new byte[0];
+        final int max = PinnedHttpTransport.MAX_REQUEST_BODY_BYTES;
+        if (value instanceof String text) {
+            if (text.length() > max) {
+                throw new IllegalArgumentException(
+                        "HTTP UTF-8 request body exceeds 1 MiB limit");
+            }
+            // Java's default UTF-8 encoder silently replaces malformed
+            // UTF-16. That corrupts signed/structured POST payloads and
+            // makes the bytes different from the guest's declared text.
+            for (int i = 0; i < text.length(); i++) {
+                char codeUnit = text.charAt(i);
+                if (Character.isHighSurrogate(codeUnit)) {
+                    if (i + 1 >= text.length()
+                            || !Character.isLowSurrogate(text.charAt(++i))) {
+                        throw new IllegalArgumentException(
+                                "HTTP request body contains unpaired surrogate");
+                    }
+                } else if (Character.isLowSurrogate(codeUnit)) {
+                    throw new IllegalArgumentException(
+                            "HTTP request body contains unpaired surrogate");
+                }
+            }
+            byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+            if (utf8.length > max) {
+                throw new IllegalArgumentException(
+                        "HTTP UTF-8 request body exceeds 1 MiB limit");
+            }
+            return utf8;
+        }
+        if (value instanceof List<?> bytes) {
+            if (bytes.size() > max) {
+                throw new IllegalArgumentException(
+                        "HTTP request body exceeds 1 MiB limit");
+            }
+            byte[] data = new byte[bytes.size()];
+            for (int i = 0; i < bytes.size(); i++) {
+                Object item = bytes.get(i);
+                if (!(item instanceof Byte || item instanceof Short
+                        || item instanceof Integer || item instanceof Long)) {
+                    throw new IllegalArgumentException(
+                            "HTTP Bytes require integral octets, index " + i);
+                }
+                long octet = ((Number) item).longValue();
+                if (octet < 0 || octet > 255) {
+                    throw new IllegalArgumentException(
+                            "HTTP Bytes octet outside 0..255, index " + i);
+                }
+                data[i] = (byte) octet;
+            }
+            return data;
+        }
+        throw new IllegalArgumentException(
+                "HTTP request body must be UTF-8 String or List<int> Bytes");
     }
 
     private static List<Map.Entry<String, String>> requestHeaders(List<?> raw) {

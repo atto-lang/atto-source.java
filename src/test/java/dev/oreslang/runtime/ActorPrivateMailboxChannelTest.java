@@ -50,6 +50,7 @@ final class ActorPrivateMailboxChannelTest {
     }
 
     @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
     void privateMailboxDrainRunsConsumerWithoutHoldingMailboxMonitor() {
         ChannelRuntime.Channel<Integer> mailbox =
                 ChannelRuntime.Channel.runtimePrivateMailbox(2);
@@ -58,9 +59,17 @@ final class ActorPrivateMailboxChannelTest {
         Set<Integer> observed = new HashSet<>();
         assertTrue(mailbox.drainOne(value -> {
             observed.add(value);
-            // This reentrant operation must be allowed, and the consumer must
-            // never be invoked while holding the private mailbox monitor.
-            assertTrue(mailbox.tryWrite(3));
+            // Use a distinct thread: monitor reentrancy on this thread would
+            // not prove that cleanup executes outside the mailbox monitor.
+            ExecutorService worker = Executors.newSingleThreadExecutor();
+            try {
+                var write = worker.submit(() -> mailbox.tryWrite(3));
+                assertTrue(write.get(3, TimeUnit.SECONDS));
+            } catch (Exception failure) {
+                throw new AssertionError("drain held the private mailbox monitor", failure);
+            } finally {
+                worker.shutdownNow();
+            }
         }));
         mailbox.close();
         assertTrue(mailbox.drainOne(observed::add));

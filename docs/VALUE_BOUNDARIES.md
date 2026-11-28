@@ -66,35 +66,85 @@ list; neither can a record. Destructure an array and pass selected values
 explicitly when the intended arity is known. There is no callable `.call`
 method; unknown members of a statically typed function are compile-time errors.
 
-## Inline condition bindings
+## Inline condition captures and patterns
+
+A capture is a value-preserving expression in an `if`/`while` condition:
 
 ```ores
-if some_call() as let value when value > 0 && value < 10 {
+if is_ready(some_call() as let value) {
   consume(value);
-} fi
+} elif other_condition {
+  handle_other();
+fi
 
-while some_call() as let value when value > 0 {
+if (some_call() as let value) > 0 then
+  consume(value);
+fi
+
+while is_ready(some_call() as let value) {
   consume(value);
 }
 ```
 
-`some_call()` may return any admitted value type; the `when` predicate must be
-boolean. There is no implicit truthiness. `as let` is distinct from the existing
-checked cast `as Type`; `>>` keeps its bit-shift meaning. Parenthesized condition
-heads and the `if ...; then ... fi` spelling are supported. `fi` remains required
-for brace-form `if` too.
+Each reached capture evaluates its initializer once, binds an ordinary `let`,
+and yields the same value to its surrounding expression. Calls and arguments
+keep their normal evaluation order. The complete condition must be bool; a
+false or zero payload can still satisfy an explicit predicate. `as Type`
+remains a checked cast, and `>>` remains bit shift. There is no semicolon binding
+form. Parentheses delimit captures used as comparison operands or receivers.
 
-Each reached initializer evaluates once before its predicate. An `elif`
-initializer runs only if earlier tests fail. The binding has normal `let`
-rebinding semantics and does not grant mutable access to the referent. Its
-lexical scope covers its predicate, branch, and remaining `elif`/`else` chain,
-but not statements after the whole `if`. This includes a false predicate's
-`else` branch. An `elif` binding is unavailable to earlier branches.
+The capture's lexical scope is the remainder of that condition and its matching
+body. It is unavailable in sibling `elif`/`else` branches or after the `if`.
+Each loop test has a fresh binding, including after `continue` and on the final
+false test. Captures on the right of short-circuit operators or in conditional
+arms are rejected until path-sensitive binding admission is implemented. A
+capture inside a lambda body is not part of its enclosing condition.
 
-A `while` binding is recreated before every predicate test, including after
-`continue`. Its initializer and predicate also run on the final unsuccessful
-test. The binding does not escape the loop. `break`, `return`, suspension,
-ownership and defer continue through the existing checked statement machinery.
+Capturing uses the ordinary binding ownership checker. Moving an owner into a
+capture invalidates the source on both true and false paths. Passing the
+captured owner by value moves it; the body cannot then reuse it. To inspect an
+owner and consume it in the body, explicitly borrow it for the predicate:
+
+```ores
+if is_ready(rt borrow (make_item() as let value)) {
+  consume(value);
+fi
+```
+
+The predicate's temporary loan lasts through the call and ends before the
+body. Capturing a borrow instead retains its original owner's lexical loan
+through the body. That loan prevents conflicting moves/mutable borrows and
+suspension, and cannot escape via returns, storage, or closures. `let` permits
+rebinding but grants no mutable referent capability. Mutable projected borrows
+and guard-bearing `let` captures remain rejected by existing rules. In a loop,
+repeatedly moving an outer owner is rejected; producing a fresh owner is valid.
+
+Refutable condition patterns reuse existing pattern-test ownership rules:
+
+```ores
+if let Some(value) = maybe_call() then
+  consume(value);
+fi
+if let Some(value) = maybe_call() && value > 0 {
+  consume(value);
+fi
+```
+
+This tests the constructor, not payload truthiness: `Some(false)` and `Some(0)`
+both match. Pattern bindings exist only on the matched path and are aliases
+with the existing ownership restrictions, not unchecked duplicate owners.
+Bare `if let value = expr` and wildcard-only heads are rejected. The same
+pattern head is accepted by `while`.
+
+The earlier explicit `expr as let value when predicate` head remains accepted.
+It lowers to an ordinary binding followed by the conditional; unlike expression
+captures, its binding covers the remaining branch chain (including `else`).
+Use the expression form when branch-local scope is desired.
+
+`{` can replace `then`; `} elif` / `} else` separate braced branches, and `fi`
+closes the final branch and the entire conditional. The historical `} fi`
+spelling remains accepted with a migration diagnostic. Braces for functions,
+loops, lambdas and explicit blocks close normally with `}`.
 
 ## Async and suspend boundaries
 
@@ -126,6 +176,7 @@ text or running dynamic evaluation is not an implementation of that contract.
 
 `ValueBoundaryAuditTest` executes indexing, returned aggregates, named record
 arguments, tuple spread, inline conditions and host-index rejection.
-`CallbackSchedulingAuditTest` tests ready/later success, failure and cancellation
+`CaptureExpressionAuditTest` covers capture evaluation, scopes, patterns, moves,
+borrow lifetimes and suspension. `CallbackSchedulingAuditTest` tests ready/later success, failure and cancellation
 with fresh dispatch and owning-context assertions. Existing destructuring,
 structural-record, scheduler, async and suspend suites remain required.

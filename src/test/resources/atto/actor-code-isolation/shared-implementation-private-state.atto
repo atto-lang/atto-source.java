@@ -1,0 +1,73 @@
+// Canonical AttoLang executable regression: the same routine is called by
+// two instances of Counter, an isolated actor, and root bookkeeping.
+// Each actor owns independent mutable fields; code reuse shares no objects.
+import fnc advance from "./advance.atto";
+
+define actor Counter as
+  let int total;
+
+  on_start(): void {
+    self.total = 0;
+    return;
+  }
+
+  receive(ActorMail<int> mail): void {
+    self.total = imports::advance(self.total, mail.value);
+    self.send(self.total);
+    self.end();
+    return;
+  }
+end
+
+
+// A private actor can reuse the same pure function body without inheriting
+// either shared actor's heap or shared-memory capabilities.
+define isoactor PrivateCounter as
+  let int total;
+
+  on_start(): void {
+    self.total = 0;
+    return;
+  }
+
+  receive(ActorMail<int> mail): void {
+    self.total = imports::advance(self.total, mail.value);
+    self.send(self.total);
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val left = spawn Counter();
+  val right = spawn Counter();
+  val isolated = spawn PrivateCounter();
+  await left.get_ready();
+  await right.get_ready();
+  await isolated.get_ready();
+
+  // Ordered output makes an illicit global/shared counter deterministically
+  // observable (3|10 instead of 3|7).
+  left.send(3);
+  val leftOutput = (await left.outputs.next()).value.unwrap();
+  stdio.stdout.write(leftOutput.value);
+  stdio.stdout.write("|");
+
+  right.send(7);
+  val rightOutput = (await right.outputs.next()).value.unwrap();
+  stdio.stdout.write(rightOutput.value);
+  stdio.stdout.write("|");
+
+  isolated.send(11);
+  val privateOutput = (await isolated.outputs.next()).value.unwrap();
+  stdio.stdout.write(privateOutput.value);
+  stdio.stdout.write("|");
+
+  await left.get_done();
+  await right.get_done();
+  await isolated.get_done();
+
+  val int supervisorTotal = imports::advance(40, 2);
+  stdio.stdout.write(supervisorTotal);
+  return;
+}

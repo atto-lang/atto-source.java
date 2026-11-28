@@ -31,7 +31,8 @@ final class NamespaceModuleBoundaryTest {
 
         var build = new IncrementalCompiler().compile(sources);
         assertEquals("source_api", build.units().get("provider.ores").namespace());
-        assertEquals("source_api", build.units().get("provider.ores").packageId());
+        assertEquals("file:provider.ores", build.units().get("provider.ores").packageId());
+        assertEquals("file:consumer.ores", build.units().get("consumer.ores").packageId());
         assertEquals("client", build.units().get("consumer.ores").namespace());
     }
 
@@ -50,7 +51,7 @@ final class NamespaceModuleBoundaryTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> new IncrementalCompiler().compile(sources));
-        assertTrue(failure.getMessage().contains("does not match an exported declaration"),
+        assertTrue(failure.getMessage().contains("reserved for file-root declarations"),
                 failure::getMessage);
     }
 
@@ -68,11 +69,32 @@ final class NamespaceModuleBoundaryTest {
     }
 
     @Test
-    void namespacesAreFlatAndAppearOnlyBeforeImportsAndDeclarations() {
+    void userCannotDeclareReservedRootNamespaceOrImportAlias() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                namespace __root__;
+                pub fnc answer(): int { return 42; }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                import * as __root__ from "./provider.ores";
+                pub fnc answer(): int { return 42; }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                import module math as __root__ from "./provider.ores";
+                pub fnc answer(): int { return 42; }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                import module * as __root__ from "./provider.ores";
+                pub fnc answer(): int { return 42; }
+                """));
+    }
+
+    @Test
+    void namespacesAreDottedAndAppearOnlyBeforeImportsAndDeclarations() {
+        // Namespace names use '.' separators; '/' belongs to import paths.
+        assertEquals("org.lib", Parser.parse("""
                 namespace org.lib;
                 pub routine main(): void { return; }
-                """));
+                """).namespace());
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub routine main(): void { return; }
                 namespace later;

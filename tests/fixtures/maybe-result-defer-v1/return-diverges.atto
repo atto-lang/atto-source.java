@@ -1,0 +1,19 @@
+// Candidate executable guest fixture. Exact-head Java/Graal and native
+// execution evidence is NOT_EXECUTED until a runner admits and runs the suite.
+fnc step(Result<int, String> input): Result<int, String> {
+  defer stdio.stdout.write("D");
+  return maybe
+    Ok(value) ?= input;
+    return Ok(value + 1)
+  else
+    Err(reason) -> {
+      stdio.stdout.write("E");
+      return Err(reason)
+    };
+  end;
+}
+
+pub fnc main(): void {
+  stdio.stdout.write(step(Ok(7)).unwrap());
+  return;
+}

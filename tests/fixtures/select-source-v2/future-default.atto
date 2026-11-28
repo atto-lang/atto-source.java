@@ -1,0 +1,1 @@
+suspends fnc main(): int { val Future<int> pending = select { default: -> { return 42; } }; return await pending; }

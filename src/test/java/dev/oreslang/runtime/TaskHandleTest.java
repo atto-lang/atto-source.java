@@ -536,11 +536,16 @@ public class TaskHandleTest {
             });
             try {
                 assertTrue(queued.cancel("queued"));
-                assertInstanceOf(TaskHandle.Cancelled.class, done(queued));
                 assertEquals(0, ran.get());
+                // An accepted but cancelled dispatch wrapper still owns a
+                // physical lease. On a single native carrier it cannot retire
+                // until the blocker releases the carrier. Do not await the
+                // physical getDone barrier while deliberately preventing it.
             } finally {
                 release.countDown();
             }
+            assertInstanceOf(TaskHandle.Cancelled.class, done(queued));
+            assertEquals(0, ran.get());
             assertEquals(new TaskHandle.Success<>(1), done(blocker));
         }
     }
