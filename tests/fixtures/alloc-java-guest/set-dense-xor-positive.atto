@@ -1,0 +1,28 @@
+// Actual compiler-owned dense set, no host reference algorithm.
+import class BoundedIntSet from "atto.alloc/set";
+pub fnc main(): int {
+  let mut BoundedIntSet a = new BoundedIntSet(8);
+  let mut BoundedIntSet b = new BoundedIntSet(8);
+  let mut BoundedIntSet empty = new BoundedIntSet(8);
+  a.insert(0);
+  a.insert(4);
+  b.insert(4);
+  b.insert(7);
+  let mut BoundedIntSet result = a.symmetric_difference(rt borrow b);
+  if result.len() neq 2 || !result.contains(0) || !result.contains(7) ||
+     result.contains(4) || result.capacity() neq 8; do return 1; fi
+  if a.len() neq 2 || b.len() neq 2 || !a.contains(4) || !b.contains(4); do return 2; fi
+  result.remove(0);
+  result.insert(3);
+  if !a.contains(0) || a.contains(3) || b.contains(3); do return 3; fi
+  a.remove(4);
+  b.insert(3);
+  if result.len() neq 2 || !result.contains(3) || !result.contains(7); do return 4; fi
+  let mut BoundedIntSet same = a.symmetric_difference(rt borrow a);
+  if !same.is_empty(); do return 5; fi
+  let mut BoundedIntSet copy = b.symmetric_difference(rt borrow empty);
+  if copy.len() neq b.len() || !copy.is_subset_of(rt borrow b); do return 6; fi
+  copy.clear();
+  if b.is_empty(); do return 7; fi
+  return 42;
+}
