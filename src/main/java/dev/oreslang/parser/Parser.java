@@ -8646,7 +8646,8 @@ public final class Parser {
                 if (name.isEmpty() || name.codePoints().anyMatch(Character::isISOControl))
                     throw error(label, "E_RECORD_LABEL: empty or control-character key outside this profile");
                 advance();
-                consume(COLON, "expected ':' after quoted Record field name");
+                if (!match(COLON, EQUAL))
+                    throw error(peek(), "expected ':' or '=' after quoted Record field name");
                 value = parseRecordFieldValue();
             }
             if (!names.add(name))

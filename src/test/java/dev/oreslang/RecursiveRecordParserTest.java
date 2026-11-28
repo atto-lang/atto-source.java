@@ -91,8 +91,23 @@ final class RecursiveRecordParserTest {
         reject("{foo := 1 bar := 2}", "fields require commas");
         reject("{foo = 1\nbar := 2}", "fields require commas");
         reject("{foo : 1\nbar := 2}", "fields require commas");
-        for (String s : new String[] {"(foo := 1)", "(foo := 1, bar := 2)", "(foo := (bar = 1), baz := 2)", "{foo : = 1}", "(foo := 1\nbar = 2)", "(\"foo\" := 1)", "(\"foo\" = 1)", "(foo := 1, \"bar\": 2)"})
+        for (String s : new String[] {"(foo := 1)", "(foo := 1, bar := 2)", "(foo := (bar = 1), baz := 2)", "{foo : = 1}", "(foo := 1\nbar = 2)", "(\"foo\" := 1)", "(foo := 1, \"bar\": 2)"})
             assertThrows(IllegalArgumentException.class, () -> parse(s), s);
+    }
+    @Test void quotedDynRecordSeparatorsAreEquivalentInParserSlice() {
+        assertEquals(parse("(\"name\" = \"Alice\", \"age\" = 30)"),
+                     parse("(\"name\": \"Alice\", \"age\": 30)"));
+        assertEquals(parse("(\"first name\" = 42, \"age\": 30)"),
+                     parse("(\"first name\": 42, \"age\" = 30)"));
+        assertEquals(parse("{x: (\"a\" = 42)}"), parse("{x: (\"a\": 42)}"));
+        assertEquals(parse("(\"user profile\" = {age: 42})"), parse("(\"user profile\": {age: 42})"));
+        assertEquals(parse("foo((\"x\" = 42, \"y\": 1))"), parse("foo((\"x\": 42, \"y\" = 1))"));
+        assertNotEquals(parse("foo(x = 42, y = 1)"), parse("foo((\"x\" = 42, \"y\" = 1))"));
+        reject("(\"name\" = \"Alice\", age = 30)", "E_RECORD_LABEL");
+        reject("(\"x\" = 1, \"x\": 2)", "E_DUPLICATE");
+        reject("(\"x\" = 1, \"\\u0078\": 2)", "E_DUPLICATE");
+        reject("(\"x\" := 1)", "expected ':' or '='");
+        reject("(\"x\" = y = 1)", "E_RECORD_FIELD");
     }
     @Test void groupingAndTupleArityAreDistinct() {
         assertEquals(parse("(1)"), parse("1"));
