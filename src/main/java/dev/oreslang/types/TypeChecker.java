@@ -14918,6 +14918,9 @@ public final class TypeChecker {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
                 for (Ast.TypeRef ref : klass.interfaces()) {
+                    // Static factory and actor-port witnesses are checked in
+                    // their dedicated paths, not runtime instance interfaces.
+                    if (ref.name().equals("Newable") || ref.name().equals("StreamOperator")) continue;
                     Type discovered = hasFutureResult(
                             concreteClassReference(ref, klass, named), seen);
                     result = mergeAwaitResult(result, discovered);
@@ -14958,6 +14961,7 @@ public final class TypeChecker {
         if (actual == null) return false;
 
         for (Ast.TypeRef ifaceRef : actual.interfaces()) {
+            if (ifaceRef.name().equals("Newable") || ifaceRef.name().equals("StreamOperator")) continue;
             Named ifaceType = concreteClassReference(ifaceRef, actual, actualType);
             if (interfaceTypeExtends(ifaceType, expectedInterfaceType, new LinkedHashSet<>())) {
                 return true;
