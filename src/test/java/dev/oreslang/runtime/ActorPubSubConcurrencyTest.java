@@ -476,14 +476,14 @@ final class ActorPubSubConcurrencyTest {
                 assertTrue(rejected.await(5, TimeUnit.SECONDS));
                 assertInstanceOf(SecurityException.class, oldFailure.get());
                 assertEquals(0, subscription.get().pending());
-                assertEquals(0L, runtime.sharedMemoryBytes());
+                assertSharedQuotaRetired(runtime);
                 publisher.send("fresh");
                 assertTrue(fresh.await(5, TimeUnit.SECONDS));
                 assertNull(freshFailure.get());
                 assertEquals(1L, receipt.get().sequence());
                 assertEquals(1, subscription.get().pending());
                 group.leave(observer);
-                assertEquals(0L, runtime.sharedMemoryBytes());
+                assertSharedQuotaRetired(runtime);
             } finally {
                 release.countDown();
                 observer.stop();
@@ -545,12 +545,29 @@ final class ActorPubSubConcurrencyTest {
                 assertNull(edge.get());
                 assertEquals(0, group.events().tryPublishReliableSystem(
                         "scope-fence", "no edge").orElseThrow().accepted());
-                assertEquals(0L, runtime.sharedMemoryBytes());
+                assertSharedQuotaRetired(runtime);
             } finally {
                 observer.stop();
                 publisher.stop();
             }
         }
+    }
+
+    /**
+     * Handler latches fire inside the active mailbox envelope; shared quota
+     * includes that envelope until its try-with-resources close. The existing
+     * latch and pending/sequence assertions still establish publication order.
+     * Require actual zero quota before continuing, with a bounded wait for
+     * physical retirement rather than assuming a latch means turn teardown.
+     */
+    private static void assertSharedQuotaRetired(ActorRuntime runtime)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (runtime.sharedMemoryBytes() != 0L && System.nanoTime() - deadline < 0L) {
+            Thread.sleep(1);
+        }
+        assertEquals(0L, runtime.sharedMemoryBytes(),
+                "all publication and active-mailbox reservations must retire");
     }
 
     private static ActorRuntime.ActorRef<String> publisher(
