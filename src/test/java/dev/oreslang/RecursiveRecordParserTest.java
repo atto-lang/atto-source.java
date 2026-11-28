@@ -103,4 +103,30 @@ final class RecursiveRecordParserTest {
         reject("(2, x = 1)", "E_LITERAL_KIND");
         reject("(x = y = 1)", "E_RECORD_FIELD");
     }
+
+    @Test void recordFactoryUsesSameIdentifierDomainAsLiteral() {
+        assertEquals(parse("Record.of(alpha: 42)"), parse("{alpha: 42}"));
+        assertEquals(parse("Record.of(\"alpha\": 42)"), parse("{alpha: 42}"));
+        assertEquals(parse("Record.of(\"alpha\" := 42)"), parse("{alpha: 42}"));
+        assertEquals(parse("Record.of(Pair.of(\"alpha\", 42))"), parse("{alpha: 42}"));
+        assertEquals(parse("Record.of(alpha: 40, Alpha: 2)"), parse("{alpha: 40, Alpha: 2}"));
+        for (String key : new String[] {"", "2x", "x-y", "x y", "x ", "x.y", "x/*c*/", "return", "x\\n"}) {
+            reject("Record.of(\"" + key + "\": 42)", "E_RECORD_LABEL");
+            reject("Record.of(\"" + key + "\" := 42)", "E_RECORD_LABEL");
+            reject("Record.of(Pair.of(\"" + key + "\", 42))", "E_RECORD_LABEL");
+        }
+        reject("Record.of(return: 42)", "E_RECORD_LABEL");
+        reject("Record.of(alpha: 4, \"alpha\": 2)", "duplicate named field");
+        reject("Record.of(\"x\" := 4, \"\\u0078\" := 2)", "duplicate named field");
+    }
+
+    @Test void recursiveProductsPreserveEachDelimiterLevel() {
+        assertEquals(parse("((5, 3), (a = 5), (a: 5))"),
+                     parse("((5, 3), {a: 5}, {a: 5})"));
+        assertNotEquals(parse("((5, 3), (a = 5), (a: 5))"),
+                        parse("((5, 3), {a: 5})"));
+        assertNotEquals(parse("((), ())"), parse("()"));
+        assertNotEquals(parse("foo(())"), parse("foo()"));
+        assertNotEquals(parse("foo(())"), parse("foo(...())"));
+    }
 }
