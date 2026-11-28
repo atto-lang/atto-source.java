@@ -115,7 +115,7 @@ public final class RealtimePrimitiveSmoke {
                 program(fn("branch", List.of(param("x")), List.of(
                         new Ast.IfStmt(List.of(new Ast.IfBranch(
                                 new Ast.BinaryExpr(">", name("x"), num(0)), List.of(ret(num(1))))),
-                                List.of(new Ast.ExprStmt(num(3)))))),
+                                List.of(new Ast.ExprStmt(num(3))))))),
                 "branch", 1, budget));
         rejects("excessive expression nesting", () -> {
             Ast.Expr nested = num(0);
