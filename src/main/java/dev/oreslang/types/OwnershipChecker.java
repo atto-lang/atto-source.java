@@ -214,6 +214,22 @@ public final class OwnershipChecker {
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<Ast.BindingStmt, String> validatedShortAliases) {
+        return checkWithImportedClasses(program, linkedClasses, validatedShortAliases, Map.of());
+    }
+
+    /**
+     * As above, plus the qualified signatures of imported modules (keyed by
+     * local alias), so a value returned by {@code alias.f()} carries its
+     * nominal type into receiver-mutability and move checks. Foreign bodies
+     * are never re-checked here.
+     */
+    public static Ast.Program checkWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<Ast.BindingStmt, String> validatedShortAliases,
+            Map<String, Ast.ModuleDecl> linkedModules) {
+        if (linkedModules == null) {
+            throw new IllegalArgumentException("linked modules cannot be null");
+        }
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
@@ -266,6 +282,20 @@ public final class OwnershipChecker {
             checker.rejectBorrowedFields(declaration);
             checker.classes.put(name, declaration);
             checker.linkedClassLayouts.add(declaration);
+        }
+        for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
+            String alias = entry.getKey();
+            if (checker.modules.contains(alias)) continue; // a local module wins
+            checker.modules.add(alias);
+            for (Ast.Decl declaration : entry.getValue().declarations()) {
+                // Generic calls keep the opaque path here: the type checker
+                // already instantiated them, and ownership has no inference.
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.genericParameters().isEmpty()) {
+                    checker.putFunctionSlot(alias + "." + fn.name(), fn);
+                }
+            }
         }
         checker.validate(program);
         checker.publishTaskAdmissions();
@@ -2366,6 +2396,19 @@ public final class OwnershipChecker {
             };
             return new ValueInfo(result, kindOfType(result), null);
         }
+        if (expr instanceof Ast.SelectExpr valueSelect) {
+            // Same registration, borrow-suspension, deferred-capture and
+            // per-arm move rules as the procedural select; each arm's value
+            // is checked in that arm's binding scope.
+            checkStatement(valueSelect.asStatement(), scope, Ast.TypeRef.inferred());
+            Ast.TypeRef element = Ast.TypeRef.inferred();
+            Ast.TypeRef result = switch (valueSelect.select().mode()) {
+                case BLOCKING -> element;
+                case NONBLOCKING -> new Ast.TypeRef("Future", List.of(element), false);
+                case IMMEDIATE -> new Ast.TypeRef("Option", List.of(element), false);
+            };
+            return new ValueInfo(result, kindOfType(result), null);
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             if (selected.mode() == Ast.WaitMode.BLOCKING) {
                 checkSuspensionBorrows(scope, "select from cases");
@@ -2865,12 +2908,19 @@ public final class OwnershipChecker {
                 requireUsable(handle, spanName.name(), false);
                 Ast.TypeRef result;
                 switch (spanCall.member()) {
-                    case "attribute" -> {
+                    case "attribute", "set_attribute" -> {
                         if (call.arguments().size() != 2) {
                             throw error(E_ARITY, "telemetry span attribute requires exactly two arguments");
                         }
                         checkExpr(call.arguments().get(0), scope, true);
                         checkExpr(call.arguments().get(1), scope, true);
+                        result = Ast.TypeRef.simple("void");
+                    }
+                    case "add_event" -> {
+                        if (call.arguments().size() != 1) {
+                            throw error(E_ARITY, "span.add_event requires exactly one string argument");
+                        }
+                        checkExpr(call.arguments().get(0), scope, true);
                         result = Ast.TypeRef.simple("void");
                     }
                     case "recording" -> {
@@ -4463,7 +4513,8 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             return;
         }
-        throw error(E_MUTABILITY, "mutation target must be rooted in a mutable local/parameter or exclusive borrow");
+        throw error(E_MUTABILITY, "mutation target must be rooted in a mutable local/parameter or exclusive borrow ("
+                + what + " on " + receiver.getClass().getSimpleName() + ")");
     }
 
     /**
@@ -5262,6 +5313,9 @@ public final class OwnershipChecker {
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) {
             scanExpr(e.cases(), locals, outer, recursiveBinding, captures, false);
+        }
+        else if (expr instanceof Ast.SelectExpr e) {
+            scanStatements(List.of(e.asStatement()), locals, outer, recursiveBinding, captures);
         }
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);

@@ -5,11 +5,11 @@
 // Compiler enforces loan lifetimes; this library cannot mint that authority.
 define module fmt as
   pub fnc decimal_digit_count(int value): int {
-    let int remaining = value;
+    let mut int remaining = value;
     if remaining > 0; do remaining = -remaining; fi
-    let int count = 1;
+    let mut int count = 1;
     while remaining <= -10; do
-      remaining = remaining / 10;
+      remaining = neg_div10(remaining);
       count = count + 1;
     done
     return count;
@@ -19,12 +19,12 @@ define module fmt as
     if position < 0 || position >= decimal_digit_count(value); do
       return Err(7);
     fi
-    let int remaining = value;
+    let mut int remaining = value;
     if remaining > 0; do remaining = -remaining; fi
     for (let int index = 0; index < position; index = index + 1) {
-      remaining = remaining / 10;
+      remaining = neg_div10(remaining);
     }
-    val int quotient = remaining / 10;
+    val int quotient = neg_div10(remaining);
     // quotient*10 is in range even for i64::MIN. Avoid abs(i64::MIN).
     val int digit = quotient * 10 - remaining;
     return Ok(48 + digit);
@@ -60,5 +60,25 @@ define module fmt as
     if index == 2; do return Ok(108); fi
     if index == 3; do return Ok(115); fi
     return Ok(101);
+  }
+
+  // Truncating division by 10 for value <= 0 (int / int is a float on this
+  // backend). For value <= -10, -(value + 10) cannot overflow, and
+  // floor(-value / 10) = floor((-value - 10) / 10) + 1.
+  fnc neg_div10(int value): int {
+    if value > -10; do return 0; fi
+    let mut int rest = 0 - (value + 10);
+    let mut int quotient = 0;
+    while rest >= 10; do
+      let mut int chunk = 10;
+      let mut int count = 1;
+      while chunk <= rest - chunk; do
+        chunk = chunk + chunk;
+        count = count + count;
+      done
+      rest = rest - chunk;
+      quotient = quotient + count;
+    done
+    return 0 - (quotient + 1);
   }
 end

@@ -77,6 +77,13 @@ public final class CoreLibrarySources {
             "http_response_phase_policy.atto",
             "admission_deadline_policy.atto",
             "env.atto",
+            "task.atto",
+            "time.atto",
+            "channel.atto",
+            "process.atto", "process_policy.atto",
+            "http.atto",
+            "sync.atto", "path_lexical.atto",
+            "telemetry_otlp.atto",
             "metrics.atto", "json.atto", "zorde.atto");
 
     private CoreLibrarySources() { }
@@ -253,6 +260,41 @@ public final class CoreLibrarySources {
     public static String attoAllocFileName(String importPath) { return allocFileName(importPath); }
     public static Set<String> packagedAttoAllocPaths() { return packagedAllocPaths(); }
 
+    /**
+     * The graph linker must never treat reserved library names as ordinary
+     * supplied source paths, or accept a caller-provided resolver mapping to an
+     * unrelated source unit. Only identities registered by this compiler can be
+     * bound. Null denotes a non-reserved import. This checks identity, not byte
+     * provenance: the runtime loader still supplies content from this registry.
+     */
+    public static String requiredRegisteredBuiltinUnitId(String importPath) {
+        Objects.requireNonNull(importPath, "importPath");
+        if (isLayeredLibraryImport(importPath)) {
+            return libraryUnit(importPath).unitId();
+        }
+        if (isStdImport(importPath)) {
+            String relative = canonicalStdRelativePath(importPath);
+            if (!STD_SOURCES.contains(relative)) {
+                throw new IllegalArgumentException(
+                        "unregistered compiler-owned std import: " + importPath);
+            }
+            return unitId(importPath);
+        }
+        if (isOresCoreImport(importPath)) {
+            String relative = canonicalCoreRelativePath(importPath);
+            if (!CORE_SOURCES.contains(relative)) {
+                throw new IllegalArgumentException(
+                        "unregistered compiler-owned core import: " + importPath);
+            }
+            return oresCoreUnitId(importPath);
+        }
+        if (isReservedOresLibraryImport(importPath)) {
+            throw new IllegalArgumentException(
+                    "unregistered reserved compiler-library identity: " + importPath);
+        }
+        return null;
+    }
+
     /** core -> core; alloc -> core|alloc; std -> core|alloc|std. */
     public static boolean layerMayDependOn(Layer importer, Layer dependency) {
         return dependency.ordinal() <= importer.ordinal();
@@ -291,6 +333,13 @@ public final class CoreLibrarySources {
         String normalized = importPath.replace('\\', '/');
         for (String root : new String[] {"ores.core", "ores.std", "atto.core", "atto.alloc", "atto.std", "atto.runtime.actor", "alloc"}) {
             if (normalized.equals(root) || normalized.startsWith(root + "/")) return true;
+        }
+        // Bare layer names are never package or project selectors, and a
+        // dotted namespace under a layer root (std.http) is still reserved:
+        // namespace names use '.', file paths '/'.
+        if (normalized.equals("core") || normalized.equals("std")) return true;
+        for (String root : new String[] {"core.", "alloc.", "std.", "atto."}) {
+            if (normalized.startsWith(root)) return true;
         }
         return false;
     }
@@ -377,15 +426,21 @@ public final class CoreLibrarySources {
                     canonicalPathBody(importPath, ATTO_STD_IMPORT_PREFIX, STD_SOURCES));
         }
         if (importPath.startsWith(STD_IMPORT_PREFIX)) {
-            return canonicalMigratedStdPath(
+            String relative = canonicalMigratedStdPath(
                     canonicalPathBody(importPath, STD_IMPORT_PREFIX, STD_SOURCES));
+            // Do not add new modules to the legacy ores.std namespace.
+            if (relative.equals("process.atto") || relative.equals("process_policy.atto")) {
+                throw new IllegalArgumentException(
+                        "Atto process modules use 'std/' or 'atto.std/', not 'ores.std/': " + importPath);
+            }
+            return relative;
         }
         if (importPath.startsWith(LEGACY_STD_IMPORT_PREFIX)) {
             return canonicalMigratedStdPath(
                     canonicalPathBody(importPath, LEGACY_STD_IMPORT_PREFIX, STD_SOURCES));
         }
         throw new IllegalArgumentException(
-                "hosted std imports must start with 'ores.std/' or 'std/': " + importPath);
+                "hosted std imports must start with 'atto.std/' or 'std/': " + importPath);
     }
 
     private static String canonicalMigratedStdPath(String relative) {

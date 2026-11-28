@@ -644,12 +644,15 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+                    if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                             || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
-                        throw error(previous(), "modules do not accept declaration modifiers");
+                        throw error(previous(), "modules accept only pub/private visibility; other declaration modifiers are forbidden");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
-                    modules.add(parseModule(annotations));
+                    // An unmarked `define module` stays a public unit (the
+                    // v1 library form); `define private module` opts out.
+                    modules.add(parseModule(annotations,
+                            modifiers.visibilitySeen ? modifiers.visibility : Ast.Visibility.PUBLIC));
                     continue;
                 }
                 if (match(CONTRACT)) {
@@ -887,6 +890,24 @@ public final class Parser {
                     namespace, packageImportPath(identity));
         }
 
+        // Canonical compact static namespace import:
+        //   import http from "std/http.atto";
+        // Equivalent to import * as http from "std/http.atto".
+        // A namespace is a checked linker binding, NEVER a runtime object,
+        // and this sugar cannot grant a host or package capability.
+        if (check(IDENT) && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == FROM) {
+            String alias = consumeImportAlias("expected import namespace alias");
+            consume(FROM, "expected 'from' in namespace import");
+            boolean packageSelector = check(IDENT) && "pkg".equals(peek().lexeme());
+            if (packageSelector) advance();
+            String path = consume(STRING, "expected quoted namespace source").lexeme();
+            if (path.isBlank()) throw error(previous(), "import path cannot be empty");
+            if (packageSelector) path = packageImportPath(path);
+            consume(SEMICOLON, "expected ';' after namespace import");
+            return new Ast.ImportDecl(Ast.ImportKind.ALL, List.of(), true, alias, path);
+        }
+
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
         boolean wildcard = false;
@@ -1001,7 +1022,7 @@ public final class Parser {
         }
     }
 
-    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         rejectModuleCompilerAnnotations(annotations);
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (ROOT_MODULE.equals(name)) {
@@ -1029,7 +1050,7 @@ public final class Parser {
         } finally {
             moduleForwards = enclosing;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
+        return new Ast.ModuleDecl(name, annotations, contracts, declarations, visibility);
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
@@ -5028,6 +5049,17 @@ public final class Parser {
         return next == READCH || next == WRITECH || next == SELECT;
     }
 
+    /** At index i (just after `select`): an optional policy, then `{` or `over`. */
+    private boolean looksLikeStaticSelectValue(int i) {
+        if (i < tokens.size() && (tokens.get(i).type() == FIRST
+                || (tokens.get(i).type() == IDENT && (tokens.get(i).lexeme().equals("first")
+                        || tokens.get(i).lexeme().equals("fair")
+                        || tokens.get(i).lexeme().equals("random"))))) i++;
+        return i < tokens.size() && (tokens.get(i).type() == LBRACE
+                || tokens.get(i).type() == OVER
+                || (tokens.get(i).type() == IDENT && tokens.get(i).lexeme().equals("over")));
+    }
+
     private boolean looksLikeStaticSelectStatement() {
         int i = current;
         if (i >= tokens.size()) return false;
@@ -5167,7 +5199,9 @@ public final class Parser {
                     throw error(peek(), "select arm permits exactly one slim arrow '->'");
                 }
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'");
+                    throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'; "
+                            + "a select with expression arms is a Future<T>: bind it, 'await select' it, "
+                            + "or use 'do select' with block arms");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 if (canonicalAttoSource && explicitDo && mode == Ast.WaitMode.BLOCKING) {
@@ -8145,6 +8179,16 @@ public final class Parser {
                     "Oreslang does not use '&' for borrowing (unary pointer syntax is not supported); use 'rt borrow value'");
         }
         if (match(AWAIT)) {
+            // `await select { ... }` with expression arms waits for the winning
+            // arm and evaluates it in place, so that arm's value may suspend.
+            // Block arms fall through to the closed default-only task lowering.
+            if (check(SELECT) && looksLikeStaticSelectValue(current + 1)) {
+                int beforeSelect = current;
+                advance();
+                Ast.SelectExpr valueSelect = parseSelectValue(Ast.WaitMode.BLOCKING, parseSelectPolicy());
+                if (valueSelect != null) return valueSelect;
+                current = beforeSelect;
+            }
             Ast.Expr operand = parseUnary();
             // First direct callable-await slice: a closed zero-argument
             // integer lambda, invoked through ordinary checked call lowering.
@@ -8556,8 +8600,20 @@ public final class Parser {
         // cases, arbitrary inferred effects, or immediate probes here.
         int policyStart = current;
         Ast.SelectPolicy policy = parseSelectPolicy();
-        if (check(LBRACE) || check(OVER)
-                || (check(IDENT) && peek().lexeme().equals("over"))) {
+        if (check(LBRACE) || check(OVER) || isContextualIdentifier("over")) {
+            // A value select is a Future<T> (`select { ... }`), awaited with
+            // `await select { ... }`; `try select { ... }` probes once. There
+            // is no `nb select` value form (atto-spec ch. 6).
+            if (mode == Ast.WaitMode.NONBLOCKING) {
+                throw error(previous(), "'nb select { ... }' is not a value form: 'select { ... }' "
+                        + "already returns a Future<T>; use 'await select { ... }' to wait for the result");
+            }
+            int armsStart = current;
+            Ast.SelectExpr valueSelect = parseSelectValue(
+                    mode == Ast.WaitMode.BLOCKING ? Ast.WaitMode.NONBLOCKING : mode, policy);
+            if (valueSelect != null) return valueSelect;
+            current = armsStart;
+            // Block arms: the closed default-only task lowering.
             if (mode == Ast.WaitMode.IMMEDIATE)
                 throw error(peek(), "static select expression requires tracked Future result lowering");
             current = policyStart;
@@ -8634,6 +8690,77 @@ public final class Parser {
             throw error(previous(), "Array.of() needs a checked element type; an empty untyped array cannot infer T");
         }
         return kind.equals("Tuple") ? new Ast.TupleExpr(elements) : new Ast.ListExpr(elements, true);
+    }
+
+    /**
+     * Value select (atto-spec ch. 6): {@code select}, {@code nb select} or
+     * {@code try select} in expression position with expression arms:
+     * {@code when readch ch: val x -> expr}, {@code when await f: v -> expr},
+     * {@code when writech ch, v: -> expr} and {@code default: -> expr},
+     * optionally separated by ',' or ';'. The statement form with block arms
+     * is {@code do select} and produces no value.
+     */
+    private Ast.SelectExpr parseSelectValue(Ast.WaitMode mode, Ast.SelectPolicy policy) {
+        boolean endDelimited = match(OVER) || matchContextualIdentifier("over");
+        if (!endDelimited) consume(LBRACE, "value select requires '{ ... }' or 'over ... end'");
+        List<Ast.SelectArm> arms = new ArrayList<>();
+        List<Ast.Expr> values = new ArrayList<>();
+        boolean seenDefault = false;
+        while (!(endDelimited ? check(END) : check(RBRACE)) && !check(EOF)) {
+            Ast.ChannelOperation operation;
+            Ast.Expr channel = null;
+            Ast.Expr written = null;
+            SelectReadBinding binding = null;
+            if (matchContextualKeyword("when", "case")) {
+                if (seenDefault) throw error(previous(), "select default arm must be last");
+                rejectPerArmChannelWaitModifier();
+                if (match(READCH) || match(AWAIT)) {
+                    Token.Type op = previous().type();
+                    operation = op == READCH ? Ast.ChannelOperation.READ : Ast.ChannelOperation.AWAIT;
+                    channel = parseExpression();
+                    consume(COLON, (op == READCH ? "readch" : "await") + " select arm requires ':'");
+                    binding = parseSelectReadBinding();
+                } else if (match(WRITECH)) {
+                    operation = Ast.ChannelOperation.WRITE;
+                    channel = parseExpression();
+                    consume(COMMA, "writech select arm requires 'channel, value'");
+                    written = parseExpression();
+                    consume(COLON, "writech select arm requires ':'");
+                } else {
+                    throw error(peek(), "value select arm requires 'when readch', 'when await' or 'when writech'");
+                }
+            } else if (match(DEFAULT)) {
+                if (seenDefault) throw error(previous(), "select permits at most one default arm");
+                seenDefault = true;
+                consume(COLON, "select default arm requires ':'");
+                operation = Ast.ChannelOperation.DEFAULT;
+            } else {
+                throw error(peek(), "expected when/case/default inside select");
+            }
+            if (check(FAT_ARROW)) {
+                throw error(peek(), "select arms use the slim arrow '->'; '=>' is not an arm delimiter");
+            }
+            consume(ARROW, "value select arm requires '-> expression'");
+            if (check(LBRACE)) {
+                // Block arms are not value arms: let the caller rewind to the
+                // closed task lowering (or its fail-closed diagnostics).
+                return null;
+            }
+            values.add(parseExpression());
+            if (!match(COMMA)) match(SEMICOLON);
+            arms.add(operation == Ast.ChannelOperation.DEFAULT
+                    ? new Ast.SelectArm(operation, null, null, null, null, List.of())
+                    : new Ast.SelectArm(operation, channel, written,
+                            binding == null ? null : binding.kind(),
+                            binding == null ? null : binding.name(),
+                            List.of(),
+                            binding != null && binding.mutableReferent(),
+                            binding == null ? null : binding.type()));
+        }
+        if (endDelimited) consume(END, "expected 'end' after select over");
+        else consume(RBRACE, "expected '}' after select");
+        if (arms.isEmpty()) throw error(previous(), "select requires at least one arm");
+        return new Ast.SelectExpr(new Ast.SelectStmt(mode, policy, arms, false), values);
     }
 
     private Ast.Expr parsePostfix() {

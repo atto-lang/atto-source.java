@@ -1,0 +1,12 @@
+// expect-runtime-error: channel closed
+// Closing a zero-capacity channel with an already-registered reader must
+// settle that Future with a terminal closed error, never park indefinitely.
+import module channel from "std/channel";
+
+pub async routine main(): void {
+  val Channel<int> ch = channel.rendezvous<int>();
+  val Future<int> pending = channel.receive_pending<int>(ch);
+  channel.close<int>(ch);
+  stdio.stdout.write(await pending);
+  return;
+}

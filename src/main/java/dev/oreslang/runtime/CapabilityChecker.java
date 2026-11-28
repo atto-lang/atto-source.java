@@ -335,12 +335,32 @@ public final class CapabilityChecker {
                 checkExpr(s.initializer(), policy);
             }
             else if (stmt instanceof Ast.DestructureStmt s) checkExpr(s.initializer(), policy);
-            else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
+            else if (stmt instanceof Ast.ReturnStmt s) {
+                // Bare `return;` is a control-only node with no nested effects.
+                if (s.value() != null) checkExpr(s.value(), policy);
+            }
             else if (stmt instanceof Ast.YieldStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.BlockStmt s) checkStatements(s.body(), policy);
-            else if (stmt instanceof Ast.TaskScopeStmt s) checkStatements(s.body(), policy);
+            else if (stmt instanceof Ast.TaskScopeStmt s) {
+                // Deadline expressions run with the actor's authority before
+                // children are admitted: they are not capability-free metadata.
+                if (s.deadlineMillis() != null) checkExpr(s.deadlineMillis(), policy);
+                checkStatements(s.body(), policy);
+            }
+            else if (stmt instanceof Ast.UsingBorrowStmt s) {
+                // Even when runtime borrow lowering is unavailable, static
+                // effect admission must not silently skip the resource or body.
+                checkExpr(s.resource(), policy);
+                checkStatements(s.body(), policy);
+            }
+            else if (stmt instanceof Ast.UsingTelemetrySpanStmt s) {
+                // The span name is evaluated with the actor's authority.
+                checkExpr(s.name(), policy);
+                checkStatements(s.body(), policy);
+            }
+            else if (stmt instanceof Ast.LocalTypeDeclStmt s) checkType(s.target(), policy);
             else if (stmt instanceof Ast.LoopStmt s) checkStatements(s.body(), policy);
             else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
@@ -385,6 +405,29 @@ public final class CapabilityChecker {
                 if (s.update() != null) checkExpr(s.update(), policy);
                 checkStatements(s.body(), policy);
             }
+        }
+    }
+
+    /** Pattern type references may contain restricted authority carriers. */
+    private void checkPattern(Ast.Pattern pattern, IsolatePolicy policy) {
+        if (pattern instanceof Ast.TypePattern p) {
+            checkType(p.type(), policy);
+        } else if (pattern instanceof Ast.StructuralPattern p) {
+            checkType(p.target(), policy);
+        } else if (pattern instanceof Ast.RecordPattern p) {
+            for (Ast.RecordFieldPattern field : p.fields()) checkPattern(field.value(), policy);
+        } else if (pattern instanceof Ast.TuplePattern p) {
+            for (Ast.Pattern item : p.elements()) checkPattern(item, policy);
+        } else if (pattern instanceof Ast.ConstructorPattern p) {
+            // Constructor names can resolve to nominal classes; do not skip
+            // the name just because the pattern has no nested arguments.
+            checkType(Ast.TypeRef.simple(p.constructor()), policy);
+            for (Ast.Pattern item : p.arguments()) checkPattern(item, policy);
+        } else if (!(pattern instanceof Ast.WildcardPattern)
+                && !(pattern instanceof Ast.LiteralPattern)
+                && !(pattern instanceof Ast.BindingPattern)) {
+            throw new SecurityException("capability checker does not support pattern: "
+                    + pattern.getClass().getSimpleName());
         }
     }
 
@@ -557,6 +600,13 @@ public final class CapabilityChecker {
             if (e.value() != null) checkExpr(e.value(), policy);
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) checkExpr(e.cases(), policy);
+        else if (expr instanceof Ast.SelectExpr e) {
+            for (Ast.SelectArm arm : e.select().arms()) {
+                if (arm.channel() != null) checkExpr(arm.channel(), policy);
+                if (arm.value() != null) checkExpr(arm.value(), policy);
+            }
+            for (Ast.Expr value : e.armValues()) checkExpr(value, policy);
+        }
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.ObjectExpr e) {
@@ -567,6 +617,21 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
+        } else if (expr instanceof Ast.TypedEmptyAggregateExpr e) {
+            checkType(e.aggregateType(), policy);
+        } else if (expr instanceof Ast.MapLiteralExpr e) {
+            checkType(e.mapType(), policy);
+            for (Ast.MapLiteralEntry entry : e.entries()) {
+                checkExpr(entry.key(), policy);
+                checkExpr(entry.value(), policy);
+            }
+        } else if (!(expr instanceof Ast.LiteralExpr)
+                && !(expr instanceof Ast.ContextualEmptyMapExpr) && expr != null) {
+            // AST extensions must never gain zero-authority admission just
+            // because a new expression node was forgotten in this visitor.
+            throw new SecurityException(
+                    "capability checker does not support expression: "
+                            + expr.getClass().getSimpleName());
         }
     }
 

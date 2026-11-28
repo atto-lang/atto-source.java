@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -25,6 +27,8 @@ public final class TelemetrySpanScope implements AutoCloseable {
     private static final int MAX_ATTRIBUTES = 16;
     private static final int MAX_ATTRIBUTE_KEY = 80;
     private static final int MAX_ATTRIBUTE_VALUE = 256;
+    private static final int MAX_EVENTS = 16;
+    private static final int MAX_EVENT_NAME = 80;
     private static final String HEX = "0123456789abcdef";
     private static final AtomicReference<Policy> POLICY =
             new AtomicReference<>(new Policy(false, 0, 0L, ""));
@@ -41,7 +45,11 @@ public final class TelemetrySpanScope implements AutoCloseable {
     /** Frozen at lexical close; never compute a closed span against the wall clock. */
     private long finishedDurationNanos;
     private final AtomicBoolean ended = new AtomicBoolean();
-    private final Map<String, String> attributes = new LinkedHashMap<>();
+    /** Disabled spans have no per-span mutable collections. */
+    private final Map<String, String> attributes;
+    /** Actor-owned, bounded observer events; no exporter runs on the scope path. */
+    private final List<String> events;
+    private int droppedEvents;
 
     private record Policy(boolean enabled, int samplePercent,
                           long expiresNanos, String prefix) {
@@ -60,6 +68,8 @@ public final class TelemetrySpanScope implements AutoCloseable {
         this.parent = parent;
         this.active = active;
         this.recording = recording;
+        this.attributes = recording ? new LinkedHashMap<>() : Map.of();
+        this.events = recording ? new ArrayList<>() : List.of();
         this.startNanos = recording ? System.nanoTime() : 0L;
     }
 
@@ -236,6 +246,62 @@ public final class TelemetrySpanScope implements AutoCloseable {
             return; // bounded drop, never expand an untrusted actor's allocation.
         }
         attributes.put(key, safe);
+    }
+
+    /** Canonical snake_case guest observer delegates to existing bounded attribute API. */
+    public void setAttribute(String key, Object value) {
+        attribute(key, value);
+    }
+
+    /** No event payloads or user data; the bounded name is pure diagnostic metadata. */
+    public void addEvent(String eventName) {
+        requireOwner();
+        if (ended.get()) {
+            throw new IllegalStateException("telemetry span is closed");
+        }
+        if (!recording) return;
+        if (TraceContext.current() != active) {
+            throw new IllegalStateException("span events require the owning logical task scope");
+        }
+        if (eventName == null || eventName.isEmpty()
+                || eventName.length() > MAX_EVENT_NAME) {
+            throw new IllegalArgumentException("telemetry event name must have 1..80 ASCII characters");
+        }
+        for (int i = 0; i < eventName.length(); i++) {
+            char c = eventName.charAt(i);
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_')) {
+                throw new IllegalArgumentException("telemetry event name is not safe ASCII");
+            }
+        }
+        String lower = eventName.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("password") || lower.contains("authorization")
+                || lower.contains("cookie") || lower.contains("secret")
+                || lower.contains("token") || lower.contains("credential")
+                || lower.contains("api_key") || lower.contains("apikey")
+                || lower.contains("private_key") || lower.contains("access_key")
+                || lower.contains("headers") || lower.contains("bearer")
+                || lower.contains("file.path") || lower.contains("url.query")
+                || lower.contains("baggage")) {
+            throw new SecurityException("sensitive telemetry event names are not allowed");
+        }
+        if (events.size() >= MAX_EVENTS) {
+            if (droppedEvents < Integer.MAX_VALUE) droppedEvents++;
+            return;
+        }
+        events.add(eventName);
+    }
+
+    /** Saturating drop counter: only the owning logical span may inspect it. */
+    public int droppedEvents() {
+        requireOwner();
+        return droppedEvents;
+    }
+
+    /** Trusted-host snapshot only; guest code cannot obtain the mutable event list. */
+    public List<String> eventsSnapshot() {
+        requireOwner();
+        return List.copyOf(events);
     }
 
     public String name() { requireOwner(); return name; }
