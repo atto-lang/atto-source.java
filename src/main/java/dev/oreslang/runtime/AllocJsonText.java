@@ -191,7 +191,28 @@ public final class AllocJsonText {
                 throw error("expected string");
             }
 
+            // Most JSON keys and values have no escape sequences. Scan and
+            // validate raw UTF-16 once, then take the exact slice. Allocate a
+            // builder only when an escape requires reconstruction.
+            int start = at;
+            while (!end()) {
+                char c = source.charAt(at);
+                if (c == '"') return source.substring(start, at++);
+                if (c == '\\') break;
+                at++;
+                if (c < 0x20) throw error("unescaped control character in string");
+                if (Character.isHighSurrogate(c)) {
+                    if (end() || !Character.isLowSurrogate(source.charAt(at))) {
+                        throw error("unpaired high surrogate in string");
+                    }
+                    at++;
+                } else if (Character.isLowSurrogate(c)) {
+                    throw error("unpaired low surrogate in string");
+                }
+            }
+            if (end()) throw error("unterminated JSON string");
             StringBuilder out = new StringBuilder();
+            out.append(source, start, at);
             while (!end()) {
                 char c = source.charAt(at++);
                 if (c == '"') return out.toString();
@@ -291,7 +312,9 @@ public final class AllocJsonText {
                 while (!end() && asciiDigit(source.charAt(at))) at++;
             }
 
+            boolean integral = true;
             if (!end() && source.charAt(at) == '.') {
+                integral = false;
                 at++;
                 int digits = at;
                 while (!end() && asciiDigit(source.charAt(at))) at++;
@@ -301,6 +324,7 @@ public final class AllocJsonText {
             }
 
             if (!end() && (source.charAt(at) == 'e' || source.charAt(at) == 'E')) {
+                integral = false;
                 at++;
                 if (!end()
                         && (source.charAt(at) == '+' || source.charAt(at) == '-')) {
@@ -317,9 +341,14 @@ public final class AllocJsonText {
                 throw error("JSON number exceeds character limit");
             }
 
-            String token = source.substring(start, at);
             try {
-                return OresJsonValue.of(new BigDecimal(token));
+                // At most 18 characters (including an optional minus) fit
+                // in signed long. Preserve exact decimal scale for fractions,
+                // exponents and longer integers through the original carrier.
+                if (integral && at - start <= 18) {
+                    return OresJsonValue.of(Long.parseLong(source, start, at, 10));
+                }
+                return OresJsonValue.of(new BigDecimal(source.substring(start, at)));
             } catch (NumberFormatException malformed) {
                 throw error("invalid JSON number");
             }

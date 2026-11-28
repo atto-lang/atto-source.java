@@ -109,6 +109,11 @@ public final class OwnershipChecker {
     private final List<String> copyWarnings = new ArrayList<>();
     /** Opt-in in-pass trace; never permits guest code emission. */
     private BorrowMirAuditV1.Collector borrowMirAudit;
+    private final RuntimeParkingLoanGraph runtimeParking = new RuntimeParkingLoanGraph();
+    private Object currentParkingCallable;
+    // Check-only provenance from the exact expanded/type-checked AST; null for legacy passes.
+    private Set<Ast.CallExpr> typedParkingSites;
+    private final Set<Ast.CallExpr> visitedTypedParkingSites = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -157,6 +162,18 @@ public final class OwnershipChecker {
 
     public static Ast.Program check(Ast.Program program) {
         return check(program, Map.of());
+    }
+
+    /** Check-only lane: no Task capability admission is published. */
+    static void checkCanonicalStdoutOnly(Ast.Program program, Map<Ast.BindingStmt, String> aliases,
+                                        Set<Ast.CallExpr> typedSites) {
+        OwnershipChecker checker = new OwnershipChecker(program, aliases);
+        checker.typedParkingSites = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        checker.typedParkingSites.addAll(java.util.Objects.requireNonNull(typedSites));
+        checker.validate(program);
+        if (checker.visitedTypedParkingSites.size() != checker.typedParkingSites.size()) {
+            throw error(E_LOAN_SUSPEND, "unvisited typed stdout runtime-parking site; ownership proof incomplete");
+        }
     }
 
     /** Called only after TypeChecker has proved which short forms create aliases. */
@@ -359,6 +376,8 @@ public final class OwnershipChecker {
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
             }
         }
+        String violation = runtimeParking.firstViolation();
+        if (violation != null) throw error(E_LOAN_SUSPEND, violation);
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
@@ -381,10 +400,13 @@ public final class OwnershipChecker {
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
         currentAsyncGenerator = fn.generator() && (fn.async() || fn.suspends());
+        Object previousParkingCallable = currentParkingCallable;
+        currentParkingCallable = fn;
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
+            currentParkingCallable = previousParkingCallable;
             scope.close();
             if (borrowMirAudit != null) {
                 borrowMirAudit.finishFunction();
@@ -521,10 +543,13 @@ public final class OwnershipChecker {
             defineImplicitArguments(scope, method.parameters());
             Ast.ClassDecl previousInstanceOwner = currentInstanceMethodOwner;
             currentInstanceMethodOwner = method.isStatic() ? null : klass;
+            Object previousParkingCallable = currentParkingCallable;
+            currentParkingCallable = method;
             try {
                 checkBlock(method.body(), scope, method.returnType());
             } finally {
                 currentInstanceMethodOwner = previousInstanceOwner;
+                currentParkingCallable = previousParkingCallable;
                 scope.close();
             }
         }
@@ -583,8 +608,170 @@ public final class OwnershipChecker {
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
         Scope scope = new Scope(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, scope, returnType);
+        int[] livenessFuel = {32_768};
+        Ast.BindingStmt loanCandidate = null;
+        VarState candidateState = null;
+        for (int i = 0; i < body.size(); i++) {
+            Ast.Stmt stmt = body.get(i);
+            checkStatement(stmt, scope, returnType);
+            if (stmt instanceof Ast.BindingStmt binding) {
+                releaseUnusedDirectLoan(binding, body, i + 1, scope, livenessFuel);
+                // A contiguous sequence of checked, detached primitive reads
+                // cannot retain a loan. Keep the exact binder identity across
+                // the sequence; any unknown statement or binding ends it.
+                if (loanCandidate != null && candidateState != null
+                        && scope.locals.get(loanCandidate.name()) == candidateState
+                        && isNonescapingScalarRead(binding, loanCandidate, scope)) {
+                    releaseUnusedDirectLoan(loanCandidate, body, i + 1, scope, livenessFuel);
+                    if (!candidateState.borrowLease || candidateState.moved) {
+                        loanCandidate = null;
+                        candidateState = null;
+                    }
+                } else {
+                    loanCandidate = binding;
+                    candidateState = scope.locals.get(binding.name());
+                }
+            } else {
+                loanCandidate = null;
+                candidateState = null;
+            }
+        }
         scope.close();
+    }
+
+    /**
+     * Bounded initial NLL slice: a newly created direct whole-owner loan or
+     * shared scalar-field loan with no possible subsequent use cannot have escaped or been
+     * transferred by its binder. This is not general last-use inference.
+     * Unknown syntax, calls, control flow, closures and cleanup retain the
+     * lexical lease. Never release a loan inherited from an outer scope.
+     */
+    private void releaseUnusedDirectLoan(Ast.BindingStmt binding, List<Ast.Stmt> body,
+                                         int next, Scope scope, int[] fuel) {
+        Ast.Expr operand;
+        if (binding.initializer() instanceof Ast.RuntimeCallExpr rt
+                && rt.operation().equals("borrow") && rt.arguments().size() == 1) {
+            operand = rt.arguments().getFirst();
+        } else if (binding.initializer() instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            operand = unary.operand();
+        } else return;
+        // Only a single stable field on a named local owner is eligible.
+        // No indexes, chains, computed receivers, or mutable field loans.
+        boolean projected = operand instanceof Ast.MemberExpr;
+        Ast.Expr base = projected ? ((Ast.MemberExpr) operand).receiver() : operand;
+        if (!(base instanceof Ast.NameExpr name)) return;
+        VarState loan = scope.locals.get(binding.name());
+        VarState owner = scope.lookup(name.name());
+        if (loan == null || owner == null || loan == owner
+                || loan.origin != Origin.LOCAL || owner.origin != Origin.LOCAL
+                || owner.kind != ValueKind.MOVE_ONLY || owner.aliasSource != null
+                || loan.aliasSource != null || loan.borrowSource != owner || !loan.borrowLease
+                || loan.moved || loan.rebindable
+                || (loan.kind != ValueKind.IMM_BORROW && loan.kind != ValueKind.MUT_BORROW)) return;
+        if (projected) {
+            if (loan.kind != ValueKind.IMM_BORROW || !loan.type.isBorrow()) return;
+            Ast.TypeRef target = loan.type.borrowedTarget();
+            if (!target.arguments().isEmpty()
+                    || !(target.name().equals("int") || target.name().equals("bool"))
+                    || hasLocalTypeAliasNamed(target.name())
+                    || findClass(target.name()) != null) return;
+        }
+        for (int i = next; i < body.size(); i++) {
+            if (!loanAbsentFromStatement(body.get(i), binding.name(), fuel, 0)) return;
+        }
+        // The same lease is released exactly once: scope.close observes
+        // borrowLease=false. Keep the binder's borrow provenance, and mark it
+        // unusable, never convert it into an owner.
+        if (loan.kind == ValueKind.MUT_BORROW) {
+            if (!owner.mutableBorrowed) throw new IllegalStateException("missing exclusive loan");
+            owner.mutableBorrowed = false;
+        } else {
+            if (owner.immutableBorrows <= 0) throw new IllegalStateException("missing shared loan");
+            --owner.immutableBorrows;
+        }
+        loan.borrowLease = false;
+        loan.moved = true;
+        shadowEvent("END_BORROW", owner);
+        if (borrowMirAudit != null) borrowMirAudit.unsupported("inferred loan expiry");
+    }
+
+    // The admitted read has already been checked by checkBinding. Require
+    // an inferred, non-rebindable primitive value (no annotated owner,
+    // alias, lease, callable or aggregate). The receiver must be exactly the
+    // contiguous direct loan's binder. The original release helper checks
+    // provenance and the entire remaining suffix before releasing.
+    private boolean isNonescapingScalarRead(Ast.BindingStmt read,
+                                            Ast.BindingStmt prior, Scope scope) {
+        // Java val is const mut. A proven primitive COPY result has no
+        // referent to alias, so its syntactic referent flag is irrelevant.
+        // Keep the fixed-slot, provenance and primitive checks below.
+        if (read.declaredType() != null || read.inferredTypeName() != null) return false;
+        Ast.Expr receiver;
+        boolean snapshot = false;
+        if (read.initializer() instanceof Ast.MemberExpr field) {
+            receiver = field.receiver();
+        } else if (read.initializer() instanceof Ast.RuntimeCallExpr rt
+                && rt.operation().equals("copy") && rt.arguments().size() == 1) {
+            // A checked copy of a primitive loan produces detached data.
+            // Do not infer through arbitrary calls or class copies.
+            receiver = rt.arguments().getFirst();
+            snapshot = true;
+        } else return false;
+        if (!(receiver instanceof Ast.NameExpr name) || !name.name().equals(prior.name())) return false;
+        VarState result = scope.locals.get(read.name());
+        VarState loan = scope.locals.get(prior.name());
+        if (result == null || loan == null || result == loan
+                || result.origin != Origin.LOCAL || result.moved || result.rebindable
+                || result.kind != ValueKind.COPY || result.borrowSource != null
+                || result.borrowLease || result.aliasSource != null
+                || loan.moved || !loan.borrowLease
+                || !isPrimitiveCopyType(result.type)) return false;
+        if (snapshot && (!loan.type.isBorrow()
+                || !result.type.equals(loan.type.borrowedTarget()))) return false;
+        // Narrow to built-in integer and bool value reads; other primitive
+        // or nominal kinds may require a distinct representation proof.
+        return (result.type.name().equals("int") || result.type.name().equals("bool"))
+                && !hasLocalTypeAliasNamed(result.type.name())
+                && findClass(result.type.name()) == null;
+    }
+
+    private static boolean loanAbsentFromStatement(Ast.Stmt stmt, String name,
+                                                    int[] fuel, int depth) {
+        if (depth > 64 || fuel[0] <= 0) return false;
+        --fuel[0];
+        if (stmt instanceof Ast.ReturnStmt ret)
+            return loanAbsentFromExpression(ret.value(), name, fuel, depth + 1);
+        if (stmt instanceof Ast.ExprStmt expr)
+            return loanAbsentFromExpression(expr.expression(), name, fuel, depth + 1);
+        if (stmt instanceof Ast.BindingStmt binding)
+            return !binding.name().equals(name)
+                    && loanAbsentFromExpression(binding.initializer(), name, fuel, depth + 1);
+        // Deliberately do not infer through nested or unfamiliar statement
+        // forms. In particular do not skip branch, loop or defer uses.
+        return false;
+    }
+
+    private static boolean loanAbsentFromExpression(Ast.Expr expr, String name,
+                                                     int[] fuel, int depth) {
+        if (depth > 64 || fuel[0] <= 0) return false;
+        --fuel[0];
+        if (expr == null || expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.NameExpr n) return !n.name().equals(name);
+        if (expr instanceof Ast.MemberExpr member)
+            return loanAbsentFromExpression(member.receiver(), name, fuel, depth + 1);
+        if (expr instanceof Ast.UnaryExpr unary)
+            return loanAbsentFromExpression(unary.operand(), name, fuel, depth + 1);
+        if (expr instanceof Ast.BinaryExpr binary)
+            return loanAbsentFromExpression(binary.left(), name, fuel, depth + 1)
+                    && loanAbsentFromExpression(binary.right(), name, fuel, depth + 1);
+        if (expr instanceof Ast.AssignExpr assign)
+            return loanAbsentFromExpression(assign.target(), name, fuel, depth + 1)
+                    && loanAbsentFromExpression(assign.value(), name, fuel, depth + 1);
+        if (expr instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("take")
+                && runtime.arguments().size() == 1)
+            return loanAbsentFromExpression(runtime.arguments().getFirst(), name, fuel, depth + 1);
+        return false;
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
@@ -633,7 +820,14 @@ public final class OwnershipChecker {
                 unpacked.forEach(scope::define);
                 return;
             }
-            ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            boolean scalarSnapshot = scalarArraySnapshotDestructure(destructure, scope);
+            ValueInfo source = checkExpr(destructure.initializer(), scope, !scalarSnapshot);
+            if (scalarSnapshot && (source.type == null || source.type.isBorrow()
+                    || !source.type.name().equals("Array") || source.type.arguments().size() != 1
+                    || !isPrimitiveCopyType(source.type.arguments().getFirst())
+                    || !isCopyType(source.type.arguments().getFirst()))) {
+                throw error(E_BORROW, "scalar array destructure requires a proven Copy element type");
+            }
             // Generic destructuring creates independent bindings without a
             // provenance-carrying scoped loan. The immediate tuple fast path
             // above individually checks lexical borrow bindings, but a
@@ -785,6 +979,21 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
+            Ast.CallExpr factory = defer.boundFactory();
+            if (factory != null) {
+                Ast.LambdaExpr outer = (Ast.LambdaExpr) factory.callee();
+                if (!collectCaptures(outer, scope, null).values.isEmpty()) {
+                    throw error(E_LIFETIME,
+                            "defer factory may capture only its explicit scalar parameters");
+                }
+                // Do not reinterpret a factory as a deferred borrow. Its
+                // arguments are evaluated once using the normal call rules.
+                ValueInfo produced = checkExpr(factory, scope, false);
+                if (isBorrowValue(produced) || containsMutexGuardType(produced.type)) {
+                    throw error(E_LIFETIME, "defer factory cannot retain a borrow or guard");
+                }
+                return;
+            }
             // A deferred lambda is executed synchronously at this lexical
             // scope's exit. Its captures must remain owned by the caller
             // until cleanup, rather than being moved into an escaping closure.
@@ -949,6 +1158,10 @@ public final class OwnershipChecker {
                     continue;
                 }
                 ValueInfo source = checkExpr(arm.channel(), scope, false);
+                if (selected.mode() != Ast.WaitMode.IMMEDIATE) {
+                    rejectRetainedOperandLoan(source, arm.operation() == Ast.ChannelOperation.AWAIT
+                            ? "borrowed Future operand" : "borrowed channel operand");
+                }
                 Ast.TypeRef element;
                 if (arm.operation() == Ast.ChannelOperation.AWAIT) {
                     if (!source.type.name().equals("Future")
@@ -1136,9 +1349,9 @@ public final class OwnershipChecker {
         }
     }
 
-    private void checkSuspensionBorrows(Scope scope, String operation) {
+    private String suspensionLoanViolation(Scope scope, String operation) {
         if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
-            throw error(E_LOAN_SUSPEND, "cannot " + operation + " while holding a MutexGuard; release the guard before suspension");
+            return "cannot " + operation + " while holding a MutexGuard; release the guard before suspension";
         }
         // Actor self is retained by the mailbox continuation under the same
         // execution lease. Ordinary user borrows (including aliases of self)
@@ -1148,9 +1361,19 @@ public final class OwnershipChecker {
                 && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
                     || state.immutableBorrows > 0 || state.mutableBorrowed
                     || containsBorrowType(state.type)))) {
-            throw error(E_LOAN_SUSPEND, "cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
+            return "cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension";
         }
+        return null;
+    }
+    private void checkSuspensionBorrows(Scope scope, String operation) {
+        String violation = suspensionLoanViolation(scope, operation);
+        if (violation != null) throw error(E_LOAN_SUSPEND, violation);
         shadowEvent("SUSPEND_SAFE", null);
+    }
+
+    private void recordRuntimeParkingCall(Object target, Scope scope, String label) {
+        runtimeParking.edge(currentParkingCallable, target,
+                suspensionLoanViolation(scope, "call potentially runtime-parking " + label));
     }
 
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
@@ -1268,6 +1491,9 @@ public final class OwnershipChecker {
         if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
             storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
         }
+        if (isBorrowValue(value) && !storedType.isBorrow()) {
+            throw error(E_LIFETIME, "borrowed value cannot be bound as an owned type; preserve the borrowed type and lifetime");
+        }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error(E_GUARD, "guard-bearing values are linear and cannot use let; bind them once with val");
         }
@@ -1335,11 +1561,8 @@ public final class OwnershipChecker {
                     ValueInfo value = checkExpr(arm.value(), armScope, consuming);
                     // Do not let branch-scoped loans become expression values:
                     // a returned borrow could outlive its pattern bindings.
-                    if (isBorrowValue(value) || value.borrowSource != null
-                            || containsBorrowType(value.type)) {
-                        throw error(E_LIFETIME, "value match cannot return a borrowed branch-local value (including nested borrows)");
-                    }
-                    if (result == null) result = value;
+                    requireOwnedDispatchResult(value, "value match");
+                    result = result == null ? value : joinOwnedDispatchResults(result, value);
                 } finally {
                     armScope.close();
                 }
@@ -1399,6 +1622,10 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(source.type,
                     recordCopy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+        }
+        if (expr instanceof Ast.ClosedRecurExpr) {
+            // Plan construction independently proves closed Copy primitive operands.
+            return new ValueInfo(inferLiteralType(0L), ValueKind.COPY, null);
         }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
@@ -1534,6 +1761,9 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    if (hasUnprovenCollectionRead(argument, scope, 0)) {
+                        throw error(E_MOVE_UNPROVEN, "rt take of projected move-only collection data requires invalidation proof");
+                    }
                     Ast.Expr transferPlace = unwrappedMoveProjection(argument);
                     if (transferPlace instanceof Ast.IndexExpr) {
                         throw error(E_MOVE_UNPROVEN, "rt take cannot move an indexed projection without an invalidation ledger; move the containing owner");
@@ -1583,21 +1813,27 @@ public final class OwnershipChecker {
                 }
                 case "copy", "copy!!" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
-                    // Main permits an explicit copy from an implicit immutable self receiver
-                    // (certified immutable fields); a nested borrow inside the copied type
-                    // is still never duplicated.
-                    if (containsBorrowType(source.type)) {
-                        throw error(E_LIFETIME, "rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
-                    }
                     CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
                     if (projected != null && projected.noCopy()) {
                         throw error(E_COPY_FORBIDDEN, "rt copy of @NoCopy field '" + projected.origin() + "'");
                     }
-                    if (source.type != null && source.type.isBorrow()
-                            && isPrimitiveCopyType(source.type.borrowedTarget())) {
-                        // Read the loan but return independent immutable data.
-                        // The source binding keeps its existing loan/lifetime.
-                        yield new ValueInfo(source.type.borrowedTarget(), ValueKind.COPY, null);
+                    // A direct, proven primitive snapshot does not duplicate a
+                    // capability. Keep the loan itself alive until the separate
+                    // last-use proof releases it. Never admit a nominal alias
+                    // merely because it has a primitive-looking name.
+                    if (runtime.operation().equals("copy")
+                            && source.type != null && source.type.isBorrow()
+                            && source.borrowSource != null) {
+                        Ast.TypeRef target = source.type.borrowedTarget();
+                        if (isPrimitiveCopyType(target)
+                                && !hasLocalTypeAliasNamed(target.name())
+                                && findClass(target.name()) == null
+                                && !containsBorrowType(target)) {
+                            yield new ValueInfo(target, ValueKind.COPY, null);
+                        }
+                    }
+                    if (containsBorrowType(source.type)) {
+                        throw error(E_LIFETIME, "rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
                     }
                     Ast.ClassDecl sourceClass = source.type == null ? null : findClass(source.type.name());
                     if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "NoCopy")) {
@@ -1691,6 +1927,16 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
+            // Forward-port the ownership boundary from #644. Optional
+            // wrapping cannot convert a live borrow into an owned payload.
+            if (cast.mode() == Ast.CastMode.OPTIONAL && isBorrowValue(source)) {
+                throw error(E_LIFETIME, "optional cast of borrowed value cannot acquire ownership or escape its lifetime");
+            }
+            // A cast is not a move, copy or lifetime conversion. Preserve
+            // the non-owning capability rather than manufacturing an owner.
+            if (isBorrowValue(source) && !cast.targetType().isBorrow()) {
+                throw error(E_LIFETIME, "borrowed value cannot be bound as an owned type or cast into owned data");
+            }
             Ast.TypeRef result = cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Ast.TypeRef("Option", List.of(cast.targetType()), false)
                     : cast.targetType();
@@ -1715,20 +1961,16 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
 
             ValueInfo left = checkExpr(conditional.whenTrue(), scope, consuming);
+            requireOwnedDispatchResult(left, "conditional");
             Map<VarState, StateSnapshot> leftExit = stateSnapshot(scope);
 
             restoreState(base);
             ValueInfo right = checkExpr(conditional.whenFalse(), scope, consuming);
+            requireOwnedDispatchResult(right, "conditional");
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
-            Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
-            return new ValueInfo(
-                    joinedType,
-                    left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
-                            ? ValueKind.COPY
-                            : ValueKind.MOVE_ONLY,
-                    null);
+            return joinOwnedDispatchResults(left, right);
         }
         if (expr instanceof Ast.SpreadExpr spread) {
             return checkExpr(spread.expression(), scope, consuming);
@@ -1835,6 +2077,7 @@ public final class OwnershipChecker {
                     throw error(E_UNKNOWN, "unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
+                rejectBorrowedProjectionConsumption(member.receiver(), receiverValue, valueKind, consuming, scope);
                 return new ValueInfo(valueType, valueKind, null);
             }
             // Built-in Array/List.size is a computed Copy scalar, not
@@ -1873,6 +2116,14 @@ public final class OwnershipChecker {
                         throw error(E_ACTOR_LOAN_ESCAPE, "cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
+                    rejectBorrowedProjectionConsumption(member.receiver(), receiverValue, fieldKind, consuming, scope);
+                    // A nominal field read does not invalidate its slot. Until
+                    // partial moves are proven, do not manufacture a second
+                    // owner from a consuming read of a move-only field.
+                    if (consuming && fieldKind == ValueKind.MOVE_ONLY) {
+                        throw error(E_MOVE_UNPROVEN, "cannot consume move-only class field '"
+                                + member.member() + "' without path-aware partial-move tracking; borrow or replace it");
+                    }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
                 if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())
@@ -1894,6 +2145,7 @@ public final class OwnershipChecker {
                     && isRootedAtActorSelf(indexed.receiver(), scope)) {
                 throw error(E_ACTOR_LOAN_ESCAPE, "cannot move actor-owned indexed state out of its mailbox turn");
             }
+            rejectBorrowedProjectionConsumption(indexed.receiver(), receiver, elementKind, consuming, scope);
             // Ordinary projection is an aliasing read, not an implicit partial
             // move. Explicit ownership transfer remains spelled rt take; indexed
             // rt take stays fail-closed below until projection-level move
@@ -2014,10 +2266,19 @@ public final class OwnershipChecker {
                         "same Task expression produced inconsistent capture admission");
             }
             Ast.TypeRef result = new Ast.TypeRef(
-                    "Future", List.of(Ast.TypeRef.inferred()), false);
+                    "Future", List.of(task.typedCountedSelectI64()
+                            ? new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false)
+                            : task.typedDefaultSelectI64()
+                                ? Ast.TypeRef.simple("int") : Ast.TypeRef.inferred()), false);
             return new ValueInfo(result, kindOfType(result), null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            Ast.TypeRef awaitWitness = syntacticType(awaited.expression(), scope);
+            if (awaitWitness != null && awaitWitness.name().equals("Future")
+                    && awaitWitness.arguments().size() == 1
+                    && containsBorrowType(awaitWitness.arguments().getFirst())) {
+                throw error(E_LOAN_SUSPEND, "cannot await Future containing borrowed data");
+            }
             checkSuspensionBorrows(scope, "await");
             // HasFuture.get_future() is a synchronous immutable receiver loan,
             // not an implicit ownership transfer of the capability object.
@@ -2028,6 +2289,7 @@ public final class OwnershipChecker {
                     operandType, new LinkedHashSet<>()) != null;
             ValueInfo awaitedValue = checkExpr(
                     awaited.expression(), scope, borrowCapability ? false : consuming);
+            rejectRetainedOperandLoan(awaitedValue, "cannot await a borrowed operand");
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -2046,6 +2308,9 @@ public final class OwnershipChecker {
                 throw error(E_LOAN_SUSPEND, "cannot register a channel waiter while holding a MutexGuard");
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
+            if (channelOp.mode() != Ast.WaitMode.IMMEDIATE) {
+                rejectRetainedOperandLoan(channel, "borrowed channel operand");
+            }
             Ast.TypeRef element = channelElementType(channel.type);
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
@@ -2108,7 +2373,10 @@ public final class OwnershipChecker {
                     && (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard())) {
                 throw error(E_LOAN_SUSPEND, "cannot register dynamic select while holding a MutexGuard");
             }
-            checkExpr(selected.cases(), scope, false);
+            ValueInfo cases = checkExpr(selected.cases(), scope, false);
+            if (selected.mode() != Ast.WaitMode.IMMEDIATE) {
+                rejectRetainedOperandLoan(cases, "borrowed case-set operand");
+            }
             Ast.TypeRef selectedResult = Ast.TypeRef.simple("SelectResult");
             Ast.TypeRef result = switch (selected.mode()) {
                 case BLOCKING -> selectedResult;
@@ -2372,11 +2640,12 @@ public final class OwnershipChecker {
             CallSignature signature = specializeCall(
                     fn.genericParameters(), fn.genericParameters(),
                     fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
+            if (!fn.async() && !fn.generator()) recordRuntimeParkingCall(fn, scope, fn.name());
             if (fn.suspends() && !fn.generator()) {
                 checkSuspensionBorrows(scope, "suspends call pkg::" + qualified.member());
             }
             checkArguments(call.arguments(), signature.parameters(), scope,
-                    "function pkg::" + qualified.member());
+                    "function pkg::" + qualified.member(), fn.suspends() && !fn.generator());
             Ast.TypeRef result = callableResultType(
                     signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
             return new ValueInfo(result, kindOfType(result), null);
@@ -2559,6 +2828,21 @@ public final class OwnershipChecker {
                 return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
             }
         }
+        if (typedParkingSites != null ? typedParkingSites.contains(call) : isCanonicalParkingStdoutCall(call, scope)) {
+            if (typedParkingSites != null) visitedTypedParkingSites.add(call);
+            if (call.arguments().size() != 1 || call.typeArgumentsPresent()
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr
+                    || call.arguments().getFirst() instanceof Ast.NamedArgExpr) {
+                throw error(E_ARITY, "canonical stdout.write requires one positional string");
+            }
+            ValueInfo text = checkExpr(call.arguments().getFirst(), scope, false);
+            if (isBorrowValue(text) || containsBorrowType(text.type)) {
+                throw error(E_LOAN_SUSPEND, "canonical stdout.write requires owned text");
+            }
+            checkSuspensionBorrows(scope, "runtime-park for stdout.write");
+            runtimeParking.markParking(currentParkingCallable);
+            return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
         if (isBuiltinFormattingCall(call, scope)) {
             checkFormattingArguments(call.arguments(), scope);
             boolean async = isBuiltinStdoutCall(call, "log_async", scope)
@@ -2650,10 +2934,22 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
+                if (!fn.async() && !fn.generator()) recordRuntimeParkingCall(fn, scope, fn.name());
                 if (fn.suspends() && !fn.generator()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
-                checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
+                checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name(), fn.suspends() && !fn.generator());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
+            }
+            if (call.origin() == Ast.CallOrigin.DIRECT
+                    && importedFncs.contains(name.name())
+                    && !functions.containsKey(name.name())
+                    && !functions.containsKey(dev.oreslang.parser.Parser.ROOT_MODULE + "." + name.name())) {
+                // Apply the same conservative cross-unit lifetime gate as
+                // imports::, even when the typechecker knows the signature.
+                return checkCall(call.rewrite(
+                                new Ast.MemberExpr(new Ast.NameExpr(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE), name.name()),
+                                call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                        scope);
             }
         }
 
@@ -2666,12 +2962,13 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
+                if (!fn.async() && !fn.generator()) recordRuntimeParkingCall(fn, scope, fn.name());
                 if (fn.suspends() && !fn.generator()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
                         scope,
-                        "function " + namespace.name() + "." + qualified.member());
+                        "function " + namespace.name() + "." + qualified.member(), fn.suspends() && !fn.generator());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
@@ -2786,12 +3083,13 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
+                    if (!staticFunction.async()) recordRuntimeParkingCall(staticFunction, scope, staticFunction.name());
                     if (staticFunction.suspends()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
                     checkArguments(
                             call.arguments(),
                             signature.parameters(),
                             scope,
-                            "static function " + staticClass.name() + "." + staticFunction.name());
+                            "static function " + staticClass.name() + "." + staticFunction.name(), staticFunction.suspends());
                     Ast.TypeRef callResult = callableResultType(signature.result(), staticFunction.async(), false);
                     return new ValueInfo(callResult, kindOfType(callResult), null);
                 }
@@ -3106,6 +3404,8 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
+                // Known declaration edge; virtual override closure remains a separate gate.
+                if (!method.async()) recordRuntimeParkingCall(method, scope, method.name());
                 if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
                 if (method.explicitReceiverType() != null
                         && method.explicitReceiverType().isBorrow()
@@ -3121,7 +3421,7 @@ public final class OwnershipChecker {
                     VarState root = ownershipRoot(receiver);
                     receiverReadReservations.merge(root, 1, Integer::sum);
                     try {
-                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                     } finally {
                         int left = receiverReadReservations.get(root) - 1;
                         if (left == 0) receiverReadReservations.remove(root);
@@ -3143,11 +3443,11 @@ public final class OwnershipChecker {
                         // root. Nested read-only receiver calls are permitted
                         // while building an argument, but no write or new
                         // exclusive loan may occur before outer activation.
-                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                     } else {
                         beginPersistentBorrow(receiver, false);
                         try {
-                            checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                            checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                         } finally {
                             if (root.immutableBorrows <= 0)
                                 throw new IllegalStateException("missing shared method receiver loan");
@@ -3167,13 +3467,13 @@ public final class OwnershipChecker {
                     beginPersistentBorrow(place.owner(), exclusive);
                     VarState root = ownershipRoot(place.owner());
                     try {
-                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                     } finally {
                         if (exclusive) root.mutableBorrowed = false;
                         else root.immutableBorrows--;
                     }
                 } else {
-                    checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                    checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name(), method.suspends());
                 }
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
@@ -3195,13 +3495,34 @@ public final class OwnershipChecker {
                 && !callableType.arguments().isEmpty()) {
             int parameterCount = callableType.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
-                for (int i = 0; i < call.arguments().size(); i++) {
-                    ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
-                    if (containsMutexGuardType(argument.type)) {
-                        throw error(E_GUARD, "guard-bearing values cannot cross a first-class Fnc call boundary");
+                List<VarState> callLoans = new ArrayList<>();
+                try {
+                    for (int i = 0; i < call.arguments().size(); i++) {
+                        Ast.Expr expression = call.arguments().get(i);
+                        boolean byReadLoan = !isCopyType(callableType.arguments().get(i));
+                        if (byReadLoan) rejectReadonlyInvocationTransfer(expression, "first-class Fnc");
+                        ValueInfo argument = checkExpr(expression, scope, false);
+                        if (containsMutexGuardType(argument.type)) {
+                            throw error(E_GUARD, "guard-bearing values cannot cross a first-class Fnc call boundary");
+                        }
+                        if (argument.kind == ValueKind.MUT_BORROW) {
+                            throw error(E_MUTABILITY, "ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                        }
+                        if (byReadLoan) {
+                            VarState root = readonlyInvocationRoot(expression, scope);
+                            if (root != null) {
+                                beginPersistentBorrow(root, false);
+                                callLoans.add(root);
+                            } else if (isBorrowValue(argument)) {
+                                throw error(E_BORROW, "first-class Fnc argument borrow requires known root provenance");
+                            }
+                        }
                     }
-                    if (argument.kind == ValueKind.MUT_BORROW) {
-                        throw error(E_MUTABILITY, "ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
+                } finally {
+                    for (int i = callLoans.size() - 1; i >= 0; i--) {
+                        VarState root = callLoans.get(i);
+                        if (root.immutableBorrows <= 0) throw new IllegalStateException("missing Fnc argument loan");
+                        root.immutableBorrows--;
                     }
                 }
                 Ast.TypeRef result = callableType.arguments().getLast();
@@ -3236,6 +3557,24 @@ public final class OwnershipChecker {
 
     private static boolean isBooleanIntrinsicName(String name) {
         return name.equals("And") || name.equals("Or") || name.equals("Xor");
+    }
+
+    // Staged ownership check for the two new canonical paths only.
+    // Existing stdio.stdout compatibility calls are not activated here.
+    private boolean isCanonicalParkingStdoutCall(Ast.CallExpr call, Scope scope) {
+        if (!(call.callee() instanceof Ast.MemberExpr write) || !write.member().equals("write")
+                || !(write.receiver() instanceof Ast.MemberExpr endpoint)
+                || !(endpoint.receiver() instanceof Ast.NameExpr root)
+                || scope.lookup(root.name()) != null
+                || modules.contains(root.name()) || importedFncs.contains(root.name())
+                || classes.containsKey(root.name()) || ambiguousClasses.contains(root.name())
+                || functions.containsKey(root.name()) || ambiguousFunctions.contains(root.name())
+                || interfaces.containsKey(root.name()) || ambiguousInterfaces.contains(root.name())) return false;
+        if (checkedProgram.imports().stream().anyMatch(i -> i.wildcard()
+                || i.names().stream().anyMatch(n -> ImportRules.localName(i, n).equals(root.name()))))
+            return false;
+        return root.name().equals("stdio") && endpoint.member().equals("out")
+                || root.name().equals("process") && endpoint.member().equals("stdout");
     }
 
     private static boolean isBuiltinFormattingCall(Ast.CallExpr call, Scope scope) {
@@ -3745,7 +4084,7 @@ public final class OwnershipChecker {
     // Argument-root comparison alone does not protect f(&mut q, q.method()).
     private record CallArgumentLoan(VarState root, boolean mutable) { }
 
-    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
+    private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable, boolean suspends) {
         int parameterIndex = 0;
         Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
         List<CallArgumentLoan> activeLoans = new ArrayList<>();
@@ -3788,8 +4127,9 @@ public final class OwnershipChecker {
 
                 if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
                 Ast.Param param = params.get(parameterIndex);
-                VarState loanOwner = param.type().isBorrow()
-                        ? invocationLoanRoot(argument, scope) : null;
+                boolean structuralRead = param.structural() && !param.type().isBorrow();
+                VarState loanOwner = structuralRead ? readonlyInvocationRoot(argument, scope)
+                        : param.type().isBorrow() ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
                 if (loanOwner != null) {
                     Boolean previous = invocationLoans.get(loanOwner);
@@ -3813,13 +4153,22 @@ public final class OwnershipChecker {
                             && runtime.arguments().size() == 1;
                     boolean forwarded = argument instanceof Ast.NameExpr name
                             && isIncomingBorrow(scope.lookup(name.name()));
-                    if (explicit || forwarded) {
+                    if (structuralRead || explicit || forwarded) {
                         beginPersistentBorrow(loanOwner, mutable);
                         activeLoans.add(new CallArgumentLoan(ownershipRoot(loanOwner), mutable));
                     }
                     invocationLoans.put(loanOwner, mutable);
                 }
                 parameterIndex++;
+            }
+            // The earlier suspension check precedes argument evaluation.
+            // Explicit argument loans must not survive entry into a suspending
+            // callable, including local retained and forwarded loans. Leave
+            // the separate implicit receiver/actor continuation policy intact.
+            if (suspends && (!invocationLoans.isEmpty()
+                    || params.stream().anyMatch(p -> p.type().isBorrow() || p.structural()))) {
+                throw error(E_LOAN_SUSPEND, callable
+                        + " cannot suspend while an invocation argument borrow is live");
             }
         } finally {
             // Restore the parent scope on every path: successful call,
@@ -3836,6 +4185,34 @@ public final class OwnershipChecker {
                     loan.root().immutableBorrows--;
                 }
             }
+        }
+    }
+
+    // A structural/first-class read view freezes the named root for the
+    // entire invocation, not merely for evaluating one argument expression.
+    private VarState readonlyInvocationRoot(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("borrow") && runtime.arguments().size() == 1) {
+            expression = runtime.arguments().getFirst();
+        } else if (expression instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("&")) {
+            expression = unary.operand();
+        } else if (expression instanceof Ast.CaptureExpr capture) {
+            expression = new Ast.NameExpr(capture.name());
+        }
+        Ast.Expr base = projectionBase(expression);
+        if (base instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            return state == null ? null : ownershipRoot(state);
+        }
+        return null;
+    }
+
+    private void rejectReadonlyInvocationTransfer(Ast.Expr expression, String label) {
+        if (expression instanceof Ast.RuntimeCallExpr runtime
+                && (runtime.operation().equals("take") || runtime.operation().equals("move"))
+                || expression instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) {
+            throw error(E_BORROW, label + " cannot take ownership or mutably borrow a read-only structural view");
         }
     }
 
@@ -3889,7 +4266,11 @@ public final class OwnershipChecker {
             arg = new Ast.UnaryExpr("&", runtime.arguments().getFirst());
         }
         if (param.structural() && !param.type().isBorrow()) {
+            rejectReadonlyInvocationTransfer(arg, callable);
             ValueInfo argument = checkExpr(arg, scope, false);
+            if (argument.kind == ValueKind.MUT_BORROW || isBorrowValue(argument) && argument.borrowSource == null) {
+                throw error(E_BORROW, callable + " requires a read-only structural view with known provenance");
+            }
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
                 throw error(E_UNSUPPORTED, callable + " argument " + position
@@ -4270,6 +4651,22 @@ public final class OwnershipChecker {
         shadowEvent(mutable ? "BORROW_MUT" : "BORROW_SHARED", root);
     }
 
+    // A non-Copy projection of a loan is not a new owned value. Check the
+    // lexical root as well as the immediate receiver: an intermediate field
+    // read may already have erased its ValueInfo borrow provenance.
+    private void rejectBorrowedProjectionConsumption(
+            Ast.Expr receiver, ValueInfo value, ValueKind projectedKind,
+            boolean consuming, Scope scope) {
+        if (!consuming || projectedKind == ValueKind.COPY) return;
+        Ast.Expr base = projectionBase(receiver);
+        VarState root = base instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
+        if (isBorrowValue(value) || (root != null
+                && (root.kind == ValueKind.IMM_BORROW || root.kind == ValueKind.MUT_BORROW
+                    || root.type.isBorrow()))) {
+            throw error(E_BORROW, "cannot consume a non-Copy projection of a borrowed value as owned data");
+        }
+    }
+
     private void requireKnownReceiverBorrow(ValueInfo receiver) {
         // Returned loans currently have no call-site lifetime summary. A
         // method/field/index receiver must not hide its owner from later
@@ -4277,6 +4674,15 @@ public final class OwnershipChecker {
         if (isBorrowValue(receiver) && receiver.borrowSource == null) {
             throw error(E_LIFETIME, "receiver borrow has unknown lifetime provenance; "
                     + "use a named owner/borrow until return-lifetime summaries are supported");
+        }
+    }
+
+    // Evaluate the operand once, then prove it contains no retained lexical
+    // loan. A pre-expression scope check alone misses temporary rt borrow
+    // operands. Immediate probes do not use this registration fence.
+    private void rejectRetainedOperandLoan(ValueInfo value, String operation) {
+        if (isBorrowValue(value) || containsBorrowType(value.type)) {
+            throw error(E_LOAN_SUSPEND, operation + "; retained suspension operand requires owned authority");
         }
     }
 
@@ -5396,6 +5802,7 @@ public final class OwnershipChecker {
     }
 
     private Ast.TypeRef syntacticType(Ast.Expr expr, Scope scope) {
+        if (expr instanceof Ast.ClosedRecurExpr) return inferLiteralType(0L);
         if (expr instanceof Ast.CaptureExpr capture) return syntacticType(capture.value(), scope);
         if (expr instanceof Ast.LiteralExpr literal) return inferLiteralType(literal.value());
         if (expr instanceof Ast.NameExpr name) {
@@ -6412,6 +6819,37 @@ public final class OwnershipChecker {
             return value;
         }
 
+        // A direct structural parameter is an immutable view of its declared
+        // interface. Recover only the closed, non-generic scalar field domain;
+        // never infer an owned result from an unknown or move-only field.
+        if (indexed.receiver() instanceof Ast.NameExpr name) {
+            VarState view = scope.lookup(name.name());
+            Ast.InterfaceDecl contract = findInterface(concrete.name());
+            if (view != null && view.origin == Origin.PARAM
+                    && view.kind == ValueKind.IMM_BORROW && !view.type.isBorrow()
+                    && view.type.equals(concrete) && contract != null
+                    && contract.declarationKind() == Ast.InterfaceKind.INTERFACE
+                    && contract.parents().isEmpty() && contract.genericParameters().isEmpty()
+                    && concrete.arguments().isEmpty() && !concrete.inferArguments()
+                    && findClass(concrete.name()) == null && !hasLocalTypeAliasNamed(concrete.name())) {
+                Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+                for (Ast.InterfaceMember member : contract.members()) {
+                    if (!(member instanceof Ast.InterfaceFieldDecl field)) continue;
+                    if (fields.putIfAbsent(field.name(), field.type()) != null)
+                        return Ast.TypeRef.inferred();
+                }
+                if (constantIndex instanceof String key) {
+                    Ast.TypeRef selected = fields.get(key);
+                    return isPrimitiveCopyType(selected) && isCopyType(selected)
+                            ? selected : Ast.TypeRef.inferred();
+                }
+                if (fields.isEmpty() || !fields.values().stream()
+                        .allMatch(t -> isPrimitiveCopyType(t) && isCopyType(t)))
+                    return Ast.TypeRef.inferred();
+                return Ast.TypeRef.union(new ArrayList<>(fields.values()));
+            }
+        }
+
         if (concrete.isClosedAggregateType()) {
             Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
             if (constantIndex instanceof String key) {
@@ -6546,6 +6984,33 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
+    // The synchronous sequence binder copies scalar elements and constructs a
+    // fresh ArrayList for the rest. Admit only a direct known builtin Array
+    // field of an explicit incoming shared borrow; never reinterpret an
+    // arbitrary iterator, owned result, mutable loan or non-Copy element.
+    private boolean scalarArraySnapshotDestructure(Ast.DestructureStmt stmt, Scope scope) {
+        if (stmt.kind() != Ast.DestructureKind.SEQUENCE
+                || !(stmt.initializer() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr name)) return false;
+        VarState root = scope.lookup(name.name());
+        if (!isIncomingBorrow(root) || !root.type.isBorrow() || root.type.mutableBorrow()
+                || isActorConfinedBorrow(root) || isScopedMutexReceiver(root)) return false;
+        Ast.TypeRef owner = root.type.borrowedTarget();
+        Ast.ClassDecl klass = findClass(owner.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                || !klass.genericParameters().isEmpty() || !owner.arguments().isEmpty()
+                || hasLocalTypeAliasNamed(owner.name())) return false;
+        ResolvedField field = findFieldTarget(klass, owner, member.member(), new LinkedHashSet<>());
+        if (field == null || field.owner() != klass
+                || field.field().visibility() != Ast.Visibility.PUBLIC) return false;
+        Ast.TypeRef array = ownershipFieldType(field.field());
+        return !array.isBorrow() && !array.inferArguments()
+                && array.name().equals("Array") && array.arguments().size() == 1
+                && findClass("Array") == null && !hasLocalTypeAliasNamed("Array")
+                && isPrimitiveCopyType(array.arguments().getFirst())
+                && isCopyType(array.arguments().getFirst());
+    }
+
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
         if (source == null) return Ast.TypeRef.inferred();
         Ast.DestructureBinding binding = destructure.bindings().get(index);
@@ -6676,6 +7141,25 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
+    /**
+     * A dispatch result has no branch-specific lifetime witness in the
+     * current AST evaluator ABI. Never erase a loan at a value join or
+     * publish an owned result until the branch-aware loan CFG exists.
+     */
+    private void requireOwnedDispatchResult(ValueInfo value, String construct) {
+        if (isBorrowValue(value) || value.borrowSource != null || containsBorrowType(value.type)) {
+            throw error(E_LIFETIME, construct
+                    + " cannot return a borrowed branch-local value (including nested borrows)");
+        }
+    }
+
+    /** Every predecessor contributes to the joined ownership classification. */
+    private ValueInfo joinOwnedDispatchResults(ValueInfo left, ValueInfo right) {
+        return new ValueInfo(joinConditionalType(left.type, right.type),
+                left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
+                        ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+    }
+
     private Ast.TypeRef joinConditionalType(Ast.TypeRef left, Ast.TypeRef right) {
         if (left == null) return right == null ? Ast.TypeRef.inferred() : right;
         if (right == null) return left;
@@ -6737,6 +7221,24 @@ public final class OwnershipChecker {
         Ast.ClassDecl actorTarget = findClass(target.name());
         return actorTarget != null
                 && actorTarget.actorKind() != Ast.ActorKind.NONE;
+    }
+
+    // Forward-port the missing collection-read part of #644. A get()
+    // does not invalidate its containing slot; wrapping it in a cast or a
+    // value-dispatch expression cannot establish unique ownership.
+    private boolean hasUnprovenCollectionRead(Ast.Expr expression, Scope scope, int depth) {
+        if (depth > 64) return true;
+        if (expression instanceof Ast.CastExpr cast)
+            return hasUnprovenCollectionRead(cast.value(), scope, depth + 1);
+        if (expression instanceof Ast.SpreadExpr spread)
+            return hasUnprovenCollectionRead(spread.expression(), scope, depth + 1);
+        if (expression instanceof Ast.ConditionalExpr conditional)
+            return hasUnprovenCollectionRead(conditional.whenTrue(), scope, depth + 1)
+                    || hasUnprovenCollectionRead(conditional.whenFalse(), scope, depth + 1);
+        if (expression instanceof Ast.MatchExpr match)
+            return match.arms().stream().anyMatch(arm -> hasUnprovenCollectionRead(arm.value(), scope, depth + 1));
+        Ast.TypeRef element = formattingCollectionElement(expression, scope);
+        return element != null && !isCopyType(element);
     }
 
     private Ast.Expr unwrappedMoveProjection(Ast.Expr expression) {

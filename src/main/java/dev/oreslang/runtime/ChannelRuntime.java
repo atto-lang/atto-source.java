@@ -63,6 +63,9 @@ public final class ChannelRuntime {
         DEFAULT
     }
 
+    // Private-to-runtime marker, never a guest value or a channel payload.
+    enum CountedReadEnd { EOF }
+
     public record SelectResult(
             int index,
             SelectOperation operation,
@@ -74,6 +77,22 @@ public final class ChannelRuntime {
             }
             Objects.requireNonNull(operation, "operation");
         }
+    }
+
+    /**
+     * Compiler-owned selection retirement receipt. Unlike isDone(), this
+     * completes only after notification and cancellation cleanup has drained.
+     * No guest callback runs on the settling producer thread.
+     */
+    public static OresFuture<Void> selectionDrained(OresFuture<SelectResult> selection) {
+        Objects.requireNonNull(selection, "selection");
+        OresFuture<Void> receipt = new OresFuture<>(() -> false, () -> {});
+        selection.whenNotificationsDrainedRuntime(() -> {
+            Throwable failure = selection.cancellationHookFailureFromRuntime();
+            if (failure != null) receipt.failFromRuntime(failure);
+            else receipt.completeFromRuntime(null);
+        });
+        return receipt;
     }
 
     /** Admission exhaustion is distinct from closure; no waiter is retained. */
@@ -253,6 +272,14 @@ public final class ChannelRuntime {
         private final WriteChannel<T> input;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
+        /**
+         * Actor inbox/continuation channels never participate in guest select.
+         * They use one independent monitor per bounded FIFO, avoiding the
+         * process-wide fair multi-channel coordinator convoy measured in Spin.
+         * This is still Channel<T>, not a Java-owned actor storage bypass.
+         */
+        private final boolean runtimePrivateMailbox;
+        private final Object runtimeMailboxLock = new Object();
         private boolean closed;
         private Throwable closeCause;
 
@@ -266,6 +293,22 @@ public final class ChannelRuntime {
          * it is admitted atomically across every participating channel.
          */
         public Channel(int capacity, int maxPendingRegistrations) {
+            this(capacity, maxPendingRegistrations, false);
+        }
+
+        /**
+         * Only ActorRuntime is authorized to construct a select-ineligible
+         * channel. Guest and host general-purpose channels always retain the
+         * existing global atomic multi-channel select coordinator.
+         */
+        static <T> Channel<T> runtimePrivateMailbox(int capacity) {
+            if (capacity < 1) throw new IllegalArgumentException(
+                    "internal actor mailbox requires positive capacity");
+            return new Channel<>(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS, true);
+        }
+
+        private Channel(int capacity, int maxPendingRegistrations,
+                boolean runtimePrivateMailbox) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
@@ -276,6 +319,7 @@ public final class ChannelRuntime {
             }
             this.capacity = capacity;
             this.maxPendingRegistrations = maxPendingRegistrations;
+            this.runtimePrivateMailbox = runtimePrivateMailbox;
             this.output = new ReadChannel<>(this);
             this.input = new WriteChannel<>(this);
         }
@@ -289,6 +333,7 @@ public final class ChannelRuntime {
         }
 
         public int pendingRegistrations() {
+            if (runtimePrivateMailbox) return 0;
             COORDINATOR.lock();
             try {
                 return registrations.size();
@@ -298,6 +343,9 @@ public final class ChannelRuntime {
         }
 
         public int size() {
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) { return buffer.size(); }
+            }
             COORDINATOR.lock();
             try {
                 return buffer.size();
@@ -311,6 +359,9 @@ public final class ChannelRuntime {
         }
 
         public boolean isClosed() {
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) { return closed; }
+            }
             COORDINATOR.lock();
             try {
                 return closed;
@@ -321,11 +372,15 @@ public final class ChannelRuntime {
 
         /** Stable write-only view; the full channel retains close authority. */
         public WriteChannel<T> input() {
+            if (runtimePrivateMailbox) throw new IllegalStateException(
+                    "runtime-private actor inbox cannot be exposed as a guest channel");
             return input;
         }
 
         /** Stable read-only view; the full channel retains close authority. */
         public ReadChannel<T> output() {
+            if (runtimePrivateMailbox) throw new IllegalStateException(
+                    "runtime-private actor inbox cannot be exposed as a guest channel");
             return output;
         }
 
@@ -334,6 +389,13 @@ public final class ChannelRuntime {
          * method returns empty.
          */
         public Optional<T> tryRead() {
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) {
+                    if (!buffer.isEmpty()) return Optional.of(buffer.removeFirst());
+                    if (closed) throw closedFailure();
+                    return Optional.empty();
+                }
+            }
             Optional<SelectResult> result =
                     SelectSet.of(read(this)).trySelect(SelectPolicy.PRIORITY);
             if (result.isEmpty()) return Optional.empty();
@@ -345,6 +407,17 @@ public final class ChannelRuntime {
         /** Runtime-only drain of committed mailbox values, including after close. */
         boolean drainOne(java.util.function.Consumer<? super T> consumer) {
             Objects.requireNonNull(consumer, "consumer");
+            if (runtimePrivateMailbox) {
+                T value;
+                synchronized (runtimeMailboxLock) {
+                    if (buffer.isEmpty()) return false;
+                    value = buffer.removeFirst();
+                }
+                // Never invoke cleanup or Future/guest callbacks while holding
+                // a mailbox monitor; STOP may re-enter actor accounting.
+                consumer.accept(value);
+                return true;
+            }
             ArrayList<Runnable> completions = new ArrayList<>();
             T value;
             COORDINATOR.lock();
@@ -382,6 +455,14 @@ public final class ChannelRuntime {
          */
         public boolean tryWrite(T value) {
             requireValue(value);
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) {
+                    if (closed) throw closedFailure();
+                    if (buffer.size() >= capacity) return false;
+                    buffer.addLast(value);
+                    return true;
+                }
+            }
             return SelectSet.of(write(this, value))
                     .trySelect(SelectPolicy.PRIORITY)
                     .isPresent();
@@ -442,6 +523,8 @@ public final class ChannelRuntime {
          * Scheduler-friendly receive registration.
          */
         public OresFuture<T> readAsync() {
+            if (runtimePrivateMailbox) throw new IllegalStateException(
+                    "runtime-private actor inbox cannot register async select readers");
             OresFuture<SelectResult> selected =
                     SelectSet.of(read(this)).selectAsync(SelectPolicy.PRIORITY);
             return mapSelection(selected, result -> {
@@ -456,6 +539,8 @@ public final class ChannelRuntime {
          */
         public OresFuture<Void> writeAsync(T value) {
             requireValue(value);
+            if (runtimePrivateMailbox) throw new IllegalStateException(
+                    "runtime-private actor inbox cannot register async select writers");
             OresFuture<SelectResult> selected =
                     SelectSet.of(write(this, value))
                             .selectAsync(SelectPolicy.PRIORITY);
@@ -486,6 +571,14 @@ public final class ChannelRuntime {
          * re-arbitrate atomically across all of their cases.
          */
         public void close(Throwable cause) {
+            if (runtimePrivateMailbox) {
+                synchronized (runtimeMailboxLock) {
+                    if (closed) return;
+                    closed = true;
+                    closeCause = cause;
+                }
+                return;
+            }
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
@@ -614,6 +707,7 @@ public final class ChannelRuntime {
     public static final class SelectSet {
         private final List<SelectCase> cases;
         private final AtomicLong fairCursor;
+        private final boolean countedReadEnd;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -635,7 +729,24 @@ public final class ChannelRuntime {
         private SelectSet(
                 Collection<? extends SelectCase> cases,
                 AtomicLong sharedFairCursor) {
+            this(cases, sharedFairCursor, false);
+        }
+
+        // Host-only opt-in. Ordinary selects retain their closed-channel error
+        // semantics. A counted read needs an identifiable graceful EOF so it
+        // can retire that source without counting an event.
+        static SelectSet countedReads(Collection<? extends SelectCase> cases, long cursor) {
+            for (var candidate : cases) {
+                if (!(candidate instanceof ReadCase<?> || candidate instanceof FutureCase<?>))
+                    throw new SelectAdmissionException("counted selection requires read/Future cases");
+            }
+            return new SelectSet(cases, new AtomicLong(cursor), true);
+        }
+
+        private SelectSet(Collection<? extends SelectCase> cases,
+                          AtomicLong sharedFairCursor, boolean countedReadEnd) {
             Objects.requireNonNull(cases, "cases");
+            this.countedReadEnd = countedReadEnd;
             this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
@@ -829,24 +940,22 @@ public final class ChannelRuntime {
      * This deliberately conservative Copy gate is not a substitute for
      * compile-time ownership and lifetime checking.
      */
+    private static boolean isExactImmutableScalar(Object value) {
+        if (value == null) return false;
+        Class<?> type = value.getClass();
+        return type == String.class || type == Boolean.class
+                || type == Character.class || type == Byte.class
+                || type == Short.class || type == Integer.class
+                || type == Long.class || type == Float.class
+                || type == Double.class || type == java.math.BigInteger.class
+                || type == java.math.BigDecimal.class || type == OresSymbol.class;
+    }
+
     private static void requireReusableCase(SelectCase selectCase) {
-        if (selectCase instanceof WriteCase<?> write) {
-            Object value = write.value();
-            if (!(value instanceof String
-                    || value instanceof Boolean
-                    || value instanceof Character
-                    || value instanceof Byte
-                    || value instanceof Short
-                    || value instanceof Integer
-                    || value instanceof Long
-                    || value instanceof Float
-                    || value instanceof Double
-                    || value instanceof java.math.BigInteger
-                    || value instanceof java.math.BigDecimal
-                    || value instanceof OresSymbol)) {
-                throw new IllegalArgumentException(
-                        "reusable select write requires an immutable Copy payload");
-            }
+        if (selectCase instanceof WriteCase<?> write
+                && !isExactImmutableScalar(write.value())) {
+            throw new IllegalArgumentException(
+                    "reusable select write requires an immutable Copy payload");
         }
     }
 
@@ -956,11 +1065,25 @@ public final class ChannelRuntime {
         }
 
         /**
+         * Admit only sealed immutable scalar key implementations. Never invoke
+         * user hashCode/equals while holding the plan monitor or retain mutable
+         * key identity in a pending snapshot. Exact classes also exclude
+         * subclasses of BigInteger/BigDecimal with overridden host behavior.
+         */
+        private static void requireStableKey(Object key) {
+            Objects.requireNonNull(key, "key");
+            if (!isExactImmutableScalar(key)) {
+                throw new IllegalArgumentException(
+                        "dynamic select key requires immutable scalar identity");
+            }
+        }
+
+        /**
          * Mutations publish a new generation. Replacements retain their key's
          * insertion position; failed duplicates and quota checks are atomic.
          */
         public synchronized void put(K key, SelectCase selectCase) {
-            Objects.requireNonNull(key, "key");
+            requireStableKey(key);
             requireReusableCase(Objects.requireNonNull(selectCase, "selectCase"));
             if (!entries.containsKey(key) && entries.size() >= MAX_SELECT_CASES) {
                 throw new SelectAdmissionException(
@@ -984,7 +1107,7 @@ public final class ChannelRuntime {
 
         /** Existing in-flight selections keep their original snapshot. */
         public synchronized boolean remove(K key) {
-            Objects.requireNonNull(key, "key");
+            requireStableKey(key);
             if (!entries.containsKey(key)) return false;
             long nextVersion = Math.addExact(version, 1L);
             entries.remove(key);
@@ -1102,7 +1225,7 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        /** Captured under COORDINATOR at admission, after preceding FAIR commits. */
+        /** Registration ticket order and fixed RANDOM/PRIORITY scan order. */
         private int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
@@ -1472,10 +1595,12 @@ public final class ChannelRuntime {
                     }
 
                     if (channel.closed) {
-                        commitFailureLocked(
-                                chosen,
-                                channel.closedFailure(),
-                                completions);
+                        if (selection.set.countedReadEnd && channel.closeCause == null) {
+                            commitSingleLocked(chosen, new SelectResult(chosen.index,
+                                    SelectOperation.READ, CountedReadEnd.EOF), completions);
+                        } else {
+                            commitFailureLocked(chosen, channel.closedFailure(), completions);
+                        }
                         progressed = true;
                         break;
                     }
@@ -1529,6 +1654,21 @@ public final class ChannelRuntime {
         } while (progressed);
     }
 
+    // COORDINATOR guards commits and each preference scan. FAIR must read
+    // the generation's current cursor on every scan, including rendezvous
+    // peer checks. RANDOM retains its original per-invocation permutation.
+    private static int fairStartLocked(SelectRegistration selection) {
+        return selection.policy == SelectPolicy.FAIR
+                ? Math.floorMod(selection.set.fairCursor.get(), selection.order.length)
+                : 0;
+    }
+
+    private static int scanIndex(SelectRegistration selection, int start, int offset) {
+        return selection.policy == SelectPolicy.FAIR
+                ? (start + offset) % selection.order.length
+                : selection.order[offset];
+    }
+
     private static CaseRegistration preferredCommittableCaseLocked(
             SelectRegistration selection) {
         if (selection.decided) return null;
@@ -1542,7 +1682,9 @@ public final class ChannelRuntime {
         // completion authorities, even when their values compare equal.
         // IdentityHashMap accepts null values so PENDING is cached too.
         java.util.IdentityHashMap<OresFuture<?>, Object> observedFutureStates = null;
-        for (int index : selection.order) {
+        int start = fairStartLocked(selection);
+        for (int offset = 0; offset < selection.order.length; offset++) {
+            int index = scanIndex(selection, start, offset);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -1599,10 +1741,12 @@ public final class ChannelRuntime {
         // COORDINATOR while we probe aliases of that producer: without an
         // identity snapshot, an earlier alias can see PENDING while a later
         // alias sees READY in the very same PRIORITY/FAIR preference pass.
-        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness =
-                new java.util.IdentityHashMap<>();
+        // Channel-only rendezvous probes need no Future observation map.
+        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness = null;
 
-        for (int index : selection.order) {
+        int start = fairStartLocked(selection);
+        for (int offset = 0; offset < selection.order.length; offset++) {
+            int index = scanIndex(selection, start, offset);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -1611,6 +1755,9 @@ public final class ChannelRuntime {
             if (registration == null) continue;
 
             if (selectCase instanceof FutureCase<?> futureCase) {
+                if (observedFutureReadiness == null) {
+                    observedFutureReadiness = new java.util.IdentityHashMap<>();
+                }
                 OresFuture<?> producer = futureCase.future();
                 Boolean ready = observedFutureReadiness.get(producer);
                 if (ready == null) {

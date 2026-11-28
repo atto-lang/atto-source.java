@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
+      - 'src/main/java/dev/oreslang/compiler/PackageLayout.java'
+      - 'src/test/java/dev/oreslang/IncrementalPackageLayoutIsolationTest.java'
       - 'src/test/java/dev/oreslang/IncrementalFileFallbackV1Test.java'
       - '.github/workflows/incremental-file-fallback-v1.yml'
   workflow_dispatch:
@@ -46,7 +48,7 @@ jobs:
           java -version
           mvn -version
           mvn -B -ntp -DfailIfNoTests=true \
-            -Dtest=IncrementalFileFallbackV1Test \
+            -Dtest=IncrementalFileFallbackV1Test,IncrementalPackageLayoutIsolationTest \
             clean test
       - name: Prove executed non-skipped JUnit cases
         shell: bash
@@ -79,6 +81,23 @@ jobs:
             grep -Fq "name=\"$case_name\"" "$report"
           done
           echo 'RECEIPT java_incremental_file_fallback_suite=EXECUTED cases=15'
+          report=target/surefire-reports/TEST-dev.oreslang.IncrementalPackageLayoutIsolationTest.xml
+          test -s "$report"
+          grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+          if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then
+            echo "::error::Package layout suite contained failures/errors/skips"
+            exit 1
+          fi
+          test "$(grep -c '<testcase' "$report")" -ge 5
+          for case_name in \
+            defaultBuildDoesNotInheritPackageLayout \
+            failedLayoutTransitionRetainsCommittedSnapshot \
+            strictAndLegacyLayoutsAreIndependent \
+            emptySnapshotAndClearResetOnlyIntendedCache \
+            distinctRootsWithSameUnpinnedNameFailClosed; do
+            grep -Fq "name=\"$case_name\"" "$report"
+          done
+          echo 'RECEIPT java_incremental_package_layout_suite=EXECUTED cases=5'
           echo 'RECEIPT native_image_guest=NOT_EXECUTED'
           echo 'RECEIPT namespace_package_codegen=NOT_IMPLEMENTED'
       - name: Preserve focused JUnit evidence

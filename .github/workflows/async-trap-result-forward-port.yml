@@ -37,12 +37,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true -Dtest=AsyncTrapResultForwardPortTest,AttoStrictTrapSourceAdmissionTest,SourceTaskCancelTest test
+          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true -Dtest=AsyncTrapResultForwardPortTest,AsyncTrapResultCandidateTest,AttoStrictTrapSourceAdmissionTest,SourceTaskCancelTest test
       - name: Require actual passing JUnit receipts
         shell: bash
         run: |
           set -euo pipefail
-          for suite in AsyncTrapResultForwardPortTest AttoStrictTrapSourceAdmissionTest SourceTaskCancelTest; do
+          for suite in AsyncTrapResultForwardPortTest AsyncTrapResultCandidateTest AttoStrictTrapSourceAdmissionTest SourceTaskCancelTest; do
             report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
             test -s "$report"
             grep -Eq 'tests="[1-9][0-9]*"' "$report"

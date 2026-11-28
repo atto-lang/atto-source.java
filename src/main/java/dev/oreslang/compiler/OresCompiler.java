@@ -32,8 +32,26 @@ public final class OresCompiler {
         return dev.oreslang.runtime.SealedActorScalarMirV1.lower(source);
     }
 
+    /** Explicit experimental compiler profile, separate from general pointerless grammar.
+     * The promoted scalar program still enters the normal checked-i64 type/ownership pipeline.
+     * This API returns checked AST only, not a native executable or AOT receipt.
+     */
+    public static Ast.Program compileReusableScalarSlotV1(String source) {
+        return parseAndTypeCheckNumericProfile(ReusableScalarSlotV1.lower(source), true);
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
-        return analyze(Parser.parse(source));
+        return parseAndTypeCheckNumericProfile(source,
+                dev.oreslang.runtime.AttoCheckedI64Profile.select(source));
+    }
+
+    /** Numeric profile is selected by the trusted source boundary, independently
+     * of the stricter source syntax/effect admission lane. */
+    public static Ast.Program parseAndTypeCheckNumericProfile(String source, boolean checkedI64) {
+        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(
+                Parser.parse(source), false, dev.oreslang.types.AutomaticPrelude.Profile.HOSTED, checkedI64);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
     }
 
     /** Compile-time target profile for the automatic core/alloc prelude. */
@@ -68,6 +86,20 @@ public final class OresCompiler {
      */
     public static TypedLayoutAccessEvidence.Report inspectLayoutAccesses(String source) {
         return TypedLayoutAccessEvidence.inspectSource(source);
+    }
+
+    /**
+     * Opt-in, conservative transitive effect admission on the actual
+     * parser/typechecker/ownership-checked AST. This narrow version checks
+     * only closed-world scalar callables; unsupported host APIs, imported
+     * libraries, classes and actor lifecycles fail closed.
+     *
+     * Successful static analysis is NOT a runtime permission, AOT guest
+     * build, deterministic scheduler proof or hard-real-time certification.
+     */
+    public static CompilerTypedEffectV1.Report analyzeEffectProfileV1(
+            String source, CompilerTypedEffectV1.Profile profile) {
+        return CompilerTypedEffectV1.analyzeChecked(parseAndTypeCheck(source), profile);
     }
 
     /**
@@ -148,6 +180,14 @@ public final class OresCompiler {
             java.util.Map<String, String> sources,
             java.util.Map<String, java.util.Map<String, String>> importResolutions) {
         return new IncrementalCompiler().compileStrictAtto(sources, importResolutions);
+    }
+
+    /**
+     * Compile a restricted source-checked affine transfer/drop instruction
+     * plan. The result is compiler IR, not native code or runtime admission.
+     */
+    public static AffineDropPlanV1.Plan elaborateAffineDropsStrictAtto(String source) {
+        return AffineDropPlanV1.lowerChecked(parseAndTypeCheckStrictAtto(source));
     }
 
     /** Strict source-profile front end for closed-world build optimization. */

@@ -106,7 +106,7 @@ final class AsyncTrapResultForwardPortTest {
                   defer stdio.stdout.write("cleanup");
                   val n = await ready();
                   val Option<int> missing = None;
-                  return missing.unwrap();
+                  return missing.expect("async-panic-sentinel");
                 }
                 pub async fnc main(): void {
                   val Result<int, Error> ignored = await panics();
@@ -121,9 +121,35 @@ final class AsyncTrapResultForwardPortTest {
             PolyglotException failure = assertThrows(PolyglotException.class,
                     () -> context.eval(Source.newBuilder(OresLanguage.ID, guest,
                             "async-trap-panic.ores").build()));
-            assertTrue(failure.getMessage().contains("Option::unwrap"), failure::getMessage);
+            assertTrue(failure.getMessage().contains("async-panic-sentinel"), failure::getMessage);
         }
         assertEquals("cleanup", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void ordinaryUnwrapAfterAwaitBecomesErrAndRunsDeferExactlyOnce() throws Exception {
+        String guest = """
+                async fnc ready(): int { rt cooperate; return 1; }
+                async trap! fnc fails(): int {
+                  defer stdio.stdout.write("cleanup|");
+                  val n = await ready();
+                  val Option<int> missing = None;
+                  return missing.unwrap();
+                }
+                pub async fnc main(): void {
+                  val Result<int, Error> result = await fails();
+                  stdio.stdout.write(result.is_err());
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        OresCompiler.parseAndTypeCheck(guest);
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, guest,
+                    "async-trap-ordinary-unwrap.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("cleanup|true", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test void strictAttoStillRejectsUnverifiedAsyncTrap() {

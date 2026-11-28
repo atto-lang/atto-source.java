@@ -1104,6 +1104,26 @@ public final class Ast {
         }
     }
 
+    // Syntax-only tree for the recursive capture profile. Not an executable
+    // Stmt: checked path plans must exist before this can be lowered.
+    public enum LocalPatternKind { TUPLE, RECORD, ARRAY }
+    public record LocalBindingPolicy(BindingKind kind, boolean mutableReferent) {
+        public LocalBindingPolicy {
+            java.util.Objects.requireNonNull(kind);
+            if (kind == BindingKind.VAL && !mutableReferent)
+                throw new IllegalArgumentException("val requires mutable referent");
+        }
+    }
+    public sealed interface LocalPattern permits LocalPatternLeaf, LocalPatternGroup {}
+    public record LocalPatternLeaf(String name, LocalBindingPolicy policy, boolean discard)
+            implements LocalPattern {}
+    public record LocalPatternCapture(String name, LocalPatternKind target,
+                                      LocalBindingPolicy policy) {}
+    public record LocalPatternGroup(LocalPatternKind kind, List<LocalPattern> items,
+                                    LocalPatternCapture capture) implements LocalPattern {
+        public LocalPatternGroup { items = List.copyOf(items); }
+    }
+
     public enum DestructureKind { SEQUENCE, OBJECT }
 
     public record DestructureStmt(DestructureKind kind, List<DestructureBinding> bindings, Expr initializer) implements Stmt {
@@ -1127,7 +1147,23 @@ public final class Ast {
         }
     }
     public record ExprStmt(Expr expression) implements Stmt { }
-    public record DeferStmt(Expr expression) implements Stmt { }
+    public record DeferStmt(Expr expression) implements Stmt {
+        /**
+         * Bounded explicit registration factory: (|T x| -> || -> {...})(v).
+         * This is a source shape, not an authorization: the type and ownership
+         * passes must validate it before either execution path admits it.
+         */
+        public CallExpr boundFactory() {
+            if (expression instanceof CallExpr call
+                    && call.origin() == CallOrigin.DIRECT
+                    && call.callee() instanceof LambdaExpr outer
+                    && outer.expressionBody() instanceof LambdaExpr
+                    && !call.typeArgumentsPresent()) {
+                return call;
+            }
+            return null;
+        }
+    }
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
@@ -1512,7 +1548,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, WithExpr,
+    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, WithExpr, ClosedRecurExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr, NamedArgExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
@@ -1629,6 +1665,9 @@ public final class Ast {
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
+    public record ClosedRecurExpr(ClosedRecurPlan plan) implements Expr {
+        public ClosedRecurExpr { java.util.Objects.requireNonNull(plan); }
+    }
 
     /**
      * Expression-form match arm. Source block arms spell their result as
@@ -2217,10 +2256,68 @@ public final class Ast {
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }
     public enum TaskCaptureTransfer { COPY, MOVE }
-    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) implements Expr {
+    // Static type witnesses are deliberately not executable AST children.
+    public record CountedZeroWitness(String name, ChannelOperation operation) {
+        public CountedZeroWitness {
+            if (name == null || name.isBlank() || name.startsWith("$")
+                    || (operation != ChannelOperation.READ && operation != ChannelOperation.AWAIT))
+                throw new IllegalArgumentException("invalid counted zero source witness");
+        }
+    }
+    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                           boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                           String zeroCountSourceName, String dynamicCountName,
+                           List<CountedZeroWitness> zeroCountWitnesses, TypeRef payloadType) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
             body = List.copyOf(body);
+            if (payloadType != null && (typedDefaultSelectI64 || typedCountedSelectI64 || legacyNb || domain != ExecutionDomain.CPU))
+                throw new IllegalArgumentException("explicit task payload cannot be combined with synthetic select or legacy task");
+            if ((typedDefaultSelectI64 || typedCountedSelectI64) && domain != ExecutionDomain.CPU)
+                throw new IllegalArgumentException("typed select requires CPU task authority");
+            if (typedDefaultSelectI64 && typedCountedSelectI64)
+                throw new IllegalArgumentException("inconsistent typed select result");
+            if (zeroCountSourceName != null && (!typedCountedSelectI64 || zeroCountSourceName.isBlank()))
+                throw new IllegalArgumentException("invalid zero-count select type witness");
+            zeroCountWitnesses = List.copyOf(zeroCountWitnesses);
+            if (zeroCountWitnesses.size() > 8 || (!zeroCountWitnesses.isEmpty() && !typedCountedSelectI64)
+                    || (zeroCountSourceName != null && !zeroCountWitnesses.equals(
+                            List.of(new CountedZeroWitness(zeroCountSourceName, ChannelOperation.READ)))))
+                throw new IllegalArgumentException("invalid counted zero witness set");
+            if (dynamicCountName != null && (!typedCountedSelectI64
+                    || !zeroCountWitnesses.isEmpty() || dynamicCountName.isBlank()))
+                throw new IllegalArgumentException("invalid dynamic counted select witness");
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName, String dynamicCountName,
+                        List<CountedZeroWitness> zeroCountWitnesses) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, dynamicCountName, zeroCountWitnesses, null);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName, String dynamicCountName) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, dynamicCountName, zeroCountSourceName == null ? List.of()
+                        : List.of(new CountedZeroWitness(zeroCountSourceName, ChannelOperation.READ)));
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64,
+                        String zeroCountSourceName) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64,
+                    zeroCountSourceName, null);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64, boolean typedCountedSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, typedCountedSelectI64, null);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb,
+                        boolean typedDefaultSelectI64) {
+            this(domain, body, legacyNb, typedDefaultSelectI64, false);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) {
+            this(domain, body, legacyNb, false, false);
         }
         public TaskExpr(ExecutionDomain domain, List<Stmt> body) {
             this(domain, body, false);

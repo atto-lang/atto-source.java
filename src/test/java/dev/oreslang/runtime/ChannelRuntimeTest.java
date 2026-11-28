@@ -721,6 +721,62 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void mixedPendingFutureReadAndCancellationConserveMessageAndRetireWaiters() throws Exception {
+        for (int round = 0; round < 128; round++) {
+            var channel = new ChannelRuntime.Channel<Integer>(1, 2);
+            var completion = new java.util.concurrent.CompletableFuture<Integer>();
+            var pending = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.read(channel), ChannelRuntime.await(OresFuture.from(completion)))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            assertFalse(pending.isDone());
+            assertEquals(1, channel.pendingRegistrations());
+            var gate = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            java.util.List<Runnable> operations = List.of(
+                    () -> pending.cancel(false),
+                    () -> assertTrue(channel.tryWrite(41)),
+                    () -> assertTrue(completion.complete(73)));
+            var racers = new java.util.ArrayList<Thread>();
+            for (Runnable operation : operations) {
+                racers.add(Thread.startVirtualThread(() -> {
+                    try {
+                        assertTrue(gate.await(2, TimeUnit.SECONDS));
+                        operation.run();
+                    } catch (Throwable e) {
+                        failure.compareAndSet(null, e);
+                    }
+                }));
+            }
+            gate.countDown();
+            for (Thread racer : racers) {
+                racer.join(5_000);
+                assertFalse(racer.isAlive(), "mixed select race stalled");
+            }
+            if (failure.get() != null) throw new AssertionError("mixed race", failure.get());
+            assertTrue(pending.isDone());
+            assertEquals(73, completion.join(), "independent Future completion must survive");
+            if (pending.isCancelled()) {
+                assertThrows(CancellationException.class, pending::join);
+                assertEquals(41, channel.tryRead().orElseThrow());
+            } else {
+                var winner = pending.join();
+                assertTrue(winner.index() == 0 || winner.index() == 1);
+                if (winner.index() == 0) {
+                    assertEquals(41, winner.value());
+                    assertTrue(channel.tryRead().isEmpty());
+                } else {
+                    assertEquals(73, winner.value());
+                    assertEquals(41, channel.tryRead().orElseThrow());
+                }
+                assertFalse(pending.cancel(false), "committed result must not cancel");
+            }
+            assertEquals(0, channel.pendingRegistrations());
+            assertTrue(channel.tryWrite(99), "registration capacity must remain usable");
+            assertEquals(99, channel.tryRead().orElseThrow());
+        }
+    }
+
+    @Test
     void cancellationVersusWriteWinnerNeverPublishesAfterCancellation() throws Exception {
         for (int round = 0; round < 64; round++) {
             ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);

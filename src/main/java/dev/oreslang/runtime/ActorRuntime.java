@@ -1096,6 +1096,19 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
+    /** Stable logical virtual-actor ownership; passivation does not release this edge. */
+    private final ConcurrentHashMap<VirtualActorActivationRegistry.Identity, SupervisorId> virtualActorOwners =
+            new ConcurrentHashMap<>();
+    /** One canonical host directory instance per supervisor prevents split local registries. */
+    private final ConcurrentHashMap<SupervisorId, Object> virtualActorDirectoryOwners =
+            new ConcurrentHashMap<>();
+    private record VirtualActorRegistryOwner(
+            String domain, int maxIdentities, int mailboxCapacity,
+            VirtualActorActivationRegistry registry) { }
+    /** Logical identity state outlives a host directory facade, but not its ActorRuntime. */
+    private final ConcurrentHashMap<SupervisorId, VirtualActorRegistryOwner> virtualActorRegistries =
+            new ConcurrentHashMap<>();
+    private final AtomicLong nextVirtualActorGeneration = new AtomicLong();
     /** Exactly one runtime-local generation authority for host virtual bindings. */
     private final VirtualActorRuntimeGenerationFence virtualActorFences;
     /** Runtime-owned opt-in terminal CONTROL receipt transport, no per-actor pool. */
@@ -1123,6 +1136,8 @@ public final class ActorRuntime implements AutoCloseable {
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Linked process exit seals new actor admission without revoking dispatch.
+    private boolean linkedExitSealed; // guarded by runtimeLifecycleLock
     /** Distinct from admission sealing: dispatcher stop must still occur later. */
     private final AtomicBoolean dispatchersShutdown = new AtomicBoolean();
     /**
@@ -1238,12 +1253,32 @@ public final class ActorRuntime implements AutoCloseable {
         this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher, null);
     }
 
+    /** Package-private host-test seam, never a guest scheduler capability. */
+    @FunctionalInterface
+    interface DispatcherFactoryForTesting {
+        ExecutorService create(ActorKind kind, int parallelism, int capacity);
+    }
+
     public ActorRuntime(
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher,
             PhysicalStopDispatcher physicalStopDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher,
+                physicalStopDispatcher, null);
+    }
+
+    ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            PhysicalStopDispatcher physicalStopDispatcher,
+            DispatcherFactoryForTesting dispatcherFactoryForTesting) {
+        if (dispatcherFactoryForTesting != null && policyCeiling.adversarial()) {
+            throw new SecurityException("controlled dispatcher unavailable to adversarial runtime");
+        }
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
@@ -1271,10 +1306,19 @@ public final class ActorRuntime implements AutoCloseable {
         ExecutorService sharedPool = null;
         ExecutorService untrustedPool;
         try {
-            privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
-                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
-            sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
-                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
+            privatePool = dispatcherFactoryForTesting == null
+                    ? newActorDispatcher(dispatcherConfig.privateParallelism(),
+                            dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-")
+                    : Objects.requireNonNull(dispatcherFactoryForTesting.create(
+                            ActorKind.PRIVATE, dispatcherConfig.privateParallelism(),
+                            dispatcherConfig.maxActors()), "test PRIVATE dispatcher");
+            sharedPool = dispatcherFactoryForTesting == null
+                    ? newActorDispatcher(dispatcherConfig.sharedParallelism(),
+                            dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-")
+                    : Objects.requireNonNull(dispatcherFactoryForTesting.create(
+                            ActorKind.SHARED, dispatcherConfig.sharedParallelism(),
+                            dispatcherConfig.maxActors()), "test SHARED dispatcher");
+            // Never inject a test executor into the untrusted carrier lane.
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
                     dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
         } catch (RuntimeException | Error failure) {
@@ -2916,8 +2960,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
-                    new OresFuture<>(() -> read.cancel(false));
+                    new OresFuture<>(() -> read.cancel(false), () -> { });
             read.whenCompleteRuntime((envelope, failure) -> {
+                // The private read's cancellation is initiated by result.cancel().
+                // Let that caller publish cancellation only after the channel
+                // arbitration wins. If a read was already committed, cancelling
+                // the outer Future must fail rather than discard its output.
+                if (read.isCancelled()) return;
                 final boolean shutdownWon;
                 synchronized (runtimeLifecycleLock) {
                     // Linearize output observation against admission sealing.
@@ -3217,7 +3266,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRuntime runtime = originatingRuntime.get();
             ActorCell<?> cell = runtime == null ? null : currentCell(runtime);
             return cell != null && cell.codeGeneration == codeGeneration
-                    && runtime.enqueueContinuation(cell, continuation);
+                    && runtime.enqueueContinuation(cell, codeGeneration, continuation);
         }
     }
 
@@ -3234,6 +3283,52 @@ public final class ActorRuntime implements AutoCloseable {
                     && cell.carrierOwnerThread == Thread.currentThread()
                     && cell.activeTurns == 1;
         }
+    }
+
+    // Runtime-only owner proof for state that survives carrier migration.
+    // The cell identity, code generation and active lease all must match.
+    boolean ownsCountedCursorTurn(ContinuationTarget target) {
+        ActorCell<?> cell = target.currentCell(this);
+        if (target.originatingRuntime.get() != this || cell == null
+                || currentActor.get() != cell) return false;
+        synchronized (cell.lifecycleLock) {
+            return !cell.stopped.get() && !cell.finalized
+                    && cell.codeGeneration == target.codeGeneration
+                    && cell.carrierActive && cell.scheduled.get()
+                    && cell.carrierOwnerThread == Thread.currentThread()
+                    && cell.activeTurns == 1;
+        }
+    }
+
+    // Register the active round as an actor-owned Future and queue a
+    // continuation only after its physical notification-drain receipt.
+    // The callback itself carries the receipt. Receipt listeners may run
+    // out of order when added after notificationDrainComplete is published;
+    // do not depend on one listener setting a flag before another enqueues.
+    void ownTrackedCountedRound(ContinuationTarget target, OresFuture<?> round) {
+        Objects.requireNonNull(round);
+        if (!ownsCountedCursorTurn(target)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round lost its actor turn");
+        }
+        ActorCell<?> cell = target.currentCell(this);
+        if (cell == null || !ownFuture(cell, round, false)) {
+            round.cancel(false);
+            throw new IllegalStateException("tracked counted round denied by actor lifecycle");
+        }
+    }
+
+    void enqueueCountedRoundRetirement(OresFuture<?> round,
+            ContinuationTarget target, Runnable continuation) {
+        Objects.requireNonNull(round);
+        Objects.requireNonNull(continuation);
+        if (!ownsCountedCursorTurn(target)) {
+            round.cancel(false);
+            throw new IllegalStateException("counted cursor requires its owning actor turn");
+        }
+        ActorCell<?> cell = target.currentCell(this);
+        if (cell == null || !ownFuture(cell, round, false)) return;
+        round.whenNotificationsDrainedRuntime(() -> target.enqueue(continuation));
     }
 
     public ContinuationTarget captureCurrentContinuationTarget() {
@@ -3605,6 +3700,14 @@ public final class ActorRuntime implements AutoCloseable {
             ActorCell<?> cell,
             OresFuture<?> future,
             boolean allowSourceCleanup) {
+        return ownFuture(cell, future, allowSourceCleanup, 0L);
+    }
+
+    private boolean ownFuture(
+            ActorCell<?> cell,
+            OresFuture<?> future,
+            boolean allowSourceCleanup,
+            long expectedGeneration) {
         // Only an executing scheduler-minted cleanup continuation may create
         // bounded post-STOP resource-close Futures. Captured generic Future
         // callbacks never gain this authority, even for the same ActorId.
@@ -3614,6 +3717,10 @@ public final class ActorRuntime implements AutoCloseable {
         boolean accepted = false;
         boolean cleanupOwned = false;
         synchronized (cell.lifecycleLock) {
+            // A stale continuation target has no authority to transfer or
+            // cancel a Future on behalf of a successor code generation.
+            if (expectedGeneration != 0L && cell.codeGeneration != expectedGeneration)
+                return false;
             // Re-registering the same owned Future must not cancel it or
             // charge the bounded cleanup receipts a second time.
             if (cell.pendingOperations.contains(future)) return true;
@@ -3700,7 +3807,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<?> cell = target.currentCell();
-        if (cell == null || !ownFuture(cell, future, false)) return;
+        if (cell == null || !ownFuture(cell, future, false, target.codeGeneration)) return;
 
         future.whenCompleteRuntime(
                 (value, failure) ->
@@ -3756,10 +3863,16 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private boolean enqueueContinuation(ActorCell<?> cell, Runnable continuation) {
+        return enqueueContinuation(cell, cell.codeGeneration, continuation);
+    }
+
+    private boolean enqueueContinuation(ActorCell<?> cell, long expectedGeneration,
+            Runnable continuation) {
         Objects.requireNonNull(cell, "cell");
         Objects.requireNonNull(continuation, "continuation");
         ActorId actorId = cell.ref.id();
-        if (actors.get(actorId) != cell || cell.stopped.get() || closed.get()) return false;
+        if (actors.get(actorId) != cell || cell.stopped.get() || closed.get()
+                || cell.codeGeneration != expectedGeneration) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -3770,9 +3883,15 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             synchronized (cell.lifecycleLock) {
                 if (cell.stopped.get() || cell.finalized || closed.get()
-                        || actors.get(actorId) != cell) return false;
+                        || actors.get(actorId) != cell
+                        || cell.codeGeneration != expectedGeneration) return false;
                 ActorContinuationLedger.Admission receipt = cell.continuationLedger.admit(
-                        ActorContinuationLedger.Lane.ORDINARY, continuation);
+                        ActorContinuationLedger.Lane.ORDINARY, () -> {
+                            // Migration can finish after queue publication. Only
+                            // the owning carrier may invoke captured guest code.
+                            if (cell.codeGeneration == expectedGeneration)
+                                continuation.run();
+                        });
                 boolean published = false;
                 try {
                     if (!cell.continuationMailbox.tryWrite(
@@ -4497,6 +4616,20 @@ public final class ActorRuntime implements AutoCloseable {
         public SupervisorId id() { return id; }
 
         /**
+         * Acquire this supervisor's host-only virtual-actor directory.
+         * Actor turns and ActorGroup Mailmen are explicitly denied by the
+         * existing supervisor-context checks. A supervisor has one active
+         * directory facade; its logical registry remains runtime-owned.
+         */
+        public VirtualActorSupervisorDirectory virtualActorDirectory(
+                String tenant, int maxIdentities, int mailboxCapacity) {
+            requireSupervisorContext("open a virtual actor directory");
+            requireCallerRuntimeAffinity("open a virtual actor directory");
+            return new VirtualActorSupervisorDirectory(
+                    ActorRuntime.this, this, tenant, maxIdentities, mailboxCapacity);
+        }
+
+        /**
          * Register one durable partition under this actual runtime supervisor.
          * No other supervisor in the same runtime can claim the same partition.
          * Called only by a trusted host during bootstrap; activation itself
@@ -4675,6 +4808,129 @@ public final class ActorRuntime implements AutoCloseable {
                 "configured CONTROL dispatcher returned null Future");
     }
 
+    /**
+     * Verify exact direct-supervisor lifecycle ownership for a host virtual-actor
+     * activation binding. Merely belonging to an ActorGroup is insufficient:
+     * the worker must be registered as its managed child and the group must
+     * belong to this exact supervisor.
+     */
+    boolean actorManagedBySupervisor(ActorRef<?> ref, ActorSupervisor supervisor) {
+        requireSupervisorContext("verify virtual actor supervisor ownership");
+        requireCallerRuntimeAffinity("verify virtual actor supervisor ownership");
+        Objects.requireNonNull(ref, "ref");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (!ref.ownedBy(this) || supervisors.get(supervisor.id()) != supervisor)
+            return false;
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.ref != ref || cell.stopped.get() || cell.finalized)
+            return false;
+        ActorGroupId owner = cell.managedByGroup.get();
+        if (owner == null) return false;
+        ActorGroup group = actorGroups.get(owner);
+        return group != null && !group.closed()
+                && group.supervisor == supervisor
+                && group.managedWorkers.get(ref.id()) == ref
+                && !cell.stopped.get();
+    }
+
+    /**
+     * Atomically bind one stable virtual identity to exactly one supervisor for
+     * this runtime lifetime. The directory identity deliberately excludes the
+     * supervisor ID; management ownership is a separate authority edge.
+     */
+    void claimVirtualActorOwner(VirtualActorActivationRegistry.Identity identity,
+                                ActorSupervisor supervisor) {
+        requireSupervisorContext("claim virtual actor ownership");
+        requireCallerRuntimeAffinity("claim virtual actor ownership");
+        Objects.requireNonNull(identity, "identity");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new SecurityException("foreign virtual actor supervisor");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            SupervisorId existing = virtualActorOwners.get(identity);
+            if (existing != null) {
+                if (!existing.equals(supervisor.id()))
+                    throw new SecurityException("virtual actor identity already belongs to another supervisor");
+                return;
+            }
+            if (virtualActorOwners.size() >= dispatcherConfig.maxActors())
+                throw new IllegalStateException("virtual actor logical identity limit exceeded");
+            SupervisorId raced = virtualActorOwners.putIfAbsent(identity, supervisor.id());
+            if (raced != null && !raced.equals(supervisor.id()))
+                throw new SecurityException("virtual actor identity already belongs to another supervisor");
+        }
+    }
+
+    VirtualActorActivationRegistry virtualActorRegistry(
+            ActorSupervisor supervisor, String domain, int maxIdentities, int mailboxCapacity) {
+        requireSupervisorContext("obtain virtual actor registry");
+        requireCallerRuntimeAffinity("obtain virtual actor registry");
+        Objects.requireNonNull(supervisor, "supervisor");
+        Objects.requireNonNull(domain, "domain");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new SecurityException("foreign virtual actor supervisor");
+        if (maxIdentities <= 0 || mailboxCapacity <= 0)
+            throw new IllegalArgumentException("virtual actor registry limits must be positive");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            VirtualActorRegistryOwner existing = virtualActorRegistries.get(supervisor.id());
+            if (existing != null) {
+                if (!existing.domain().equals(domain)
+                        || existing.maxIdentities() != maxIdentities
+                        || existing.mailboxCapacity() != mailboxCapacity)
+                    throw new IllegalStateException("virtual actor registry configuration cannot change during runtime lifetime");
+                return existing.registry();
+            }
+            VirtualActorActivationRegistry registry = new VirtualActorActivationRegistry(
+                    domain, maxIdentities, mailboxCapacity, this::allocateVirtualActorGeneration);
+            virtualActorRegistries.put(supervisor.id(), new VirtualActorRegistryOwner(
+                    domain, maxIdentities, mailboxCapacity, registry));
+            return registry;
+        }
+    }
+
+    void claimVirtualActorDirectory(Object directory, ActorSupervisor supervisor) {
+        requireSupervisorContext("claim virtual actor directory");
+        requireCallerRuntimeAffinity("claim virtual actor directory");
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new SecurityException("foreign virtual actor supervisor");
+        Object prior = virtualActorDirectoryOwners.putIfAbsent(supervisor.id(), directory);
+        if (prior != null && prior != directory)
+            throw new IllegalStateException("a virtual actor directory is already registered for this supervisor");
+    }
+
+    void releaseVirtualActorDirectory(Object directory, ActorSupervisor supervisor) {
+        requireSupervisorContext("release virtual actor directory");
+        requireCallerRuntimeAffinity("release virtual actor directory");
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (!virtualActorDirectoryOwners.remove(supervisor.id(), directory))
+            throw new IllegalStateException("virtual actor directory ownership changed");
+    }
+
+    long allocateVirtualActorGeneration() {
+        requireSupervisorContext("allocate virtual actor generation");
+        requireCallerRuntimeAffinity("allocate virtual actor generation");
+        while (true) {
+            long current = nextVirtualActorGeneration.get();
+            if (current == Long.MAX_VALUE)
+                throw new IllegalStateException("runtime virtual actor generation budget exhausted");
+            long next = current + 1L;
+            if (nextVirtualActorGeneration.compareAndSet(current, next)) return next;
+        }
+    }
+
+    boolean ownsVirtualActor(VirtualActorActivationRegistry.Identity identity,
+                             ActorSupervisor supervisor) {
+        requireSupervisorContext("inspect virtual actor ownership");
+        requireCallerRuntimeAffinity("inspect virtual actor ownership");
+        return supervisors.get(supervisor.id()) == supervisor
+                && supervisor.id().equals(virtualActorOwners.get(identity));
+    }
+
     /** The runtime's non-null fallback supervisor for legacy group creation. */
     public ActorSupervisor rootSupervisor() {
         requireSupervisorContext("inspect the root ActorSupervisor");
@@ -4697,7 +4953,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireCallerRuntimeAffinity("create a child ActorSupervisor");
         Objects.requireNonNull(parent, "parent");
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (supervisors.get(parent.id()) != parent)
                 throw new IllegalArgumentException(
                         "parent ActorSupervisor belongs to another ActorRuntime");
@@ -6429,7 +6685,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime admission sealed");
             if (actorGroups.size() >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
                         "ActorGroup runtime limit exceeded: maximum "
@@ -7165,7 +7421,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
-            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
 
             ActorCell<M> cell = null;
@@ -9994,6 +10250,57 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Finite linked-process mailbox drain, not the embedder's general close.
+     * All callbacks/waits run outside admission locks. One deadline bounds
+     * the cohort. A failed drain must not become a successful process exit.
+     */
+    void drainLinkedExit() throws InterruptedException {
+        requireSupervisorContext("drain linked process actors");
+        requireBlockingHostContext("drain linked process actors");
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        final List<ActorCell<?>> snapshot;
+        final List<OresFuture<Void>> drains = new ArrayList<>();
+        final List<Runnable> rejected = new ArrayList<>();
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get() || linkedExitSealed)
+                throw new IllegalStateException("linked exit already sealed");
+            if (!actorGroups.isEmpty() || supervisors.size() != 1)
+                throw new IllegalStateException(
+                        "linked actor drain requires explicit group/supervisor retirement");
+            linkedExitSealed = true;
+            snapshot = List.copyOf(actors.values());
+            for (ActorCell<?> cell : snapshot) {
+                synchronized (cell.lifecycleLock) {
+                    if (cell.finalized || cell.stopped.get()) continue;
+                    cell.sealing = true;
+                    rejected.add(cell.sealAsyncSendAdmission(
+                            new ActorSealedException(cell.ref.id())));
+                    drains.add(cell.drainAcceptedMessages(true));
+                }
+            }
+        }
+        for (Runnable reject : rejected) reject.run();
+        for (ActorCell<?> cell : snapshot) cell.schedule();
+        try {
+            for (OresFuture<Void> drain : drains) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) throw new TimeoutException("linked mailbox drain deadline");
+                drain.get(remaining, TimeUnit.NANOSECONDS);
+            }
+        } catch (ExecutionException | TimeoutException failure) {
+            throw new IllegalStateException("linked mailbox drain incomplete", failure);
+        }
+        // Stop only after EVERY watermark has processed, so structured
+        // parent retirement cannot discard an accepted child message.
+        for (ActorCell<?> cell : snapshot) cell.stop();
+        for (ActorCell<?> cell : snapshot) {
+            cell.awaitFinalized(Math.max(0L, deadline - System.nanoTime()));
+            if (!cell.finalized())
+                throw new IllegalStateException("linked actor carrier retirement incomplete: " + cell.ref.id());
+        }
+    }
+
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
@@ -10425,14 +10732,14 @@ public final class ActorRuntime implements AutoCloseable {
                 new ActorContinuationLedger(INTERNAL_CONTINUATION_SLOTS + 1);
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
-                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+                ChannelRuntime.Channel.runtimePrivateMailbox(INTERNAL_CONTINUATION_SLOTS);
         /**
          * Runtime-minted SourceTask commands, isolated from ordinary Future
          * continuations so actor STOP can discard the latter while retaining
          * the former for authenticated lexical cleanup.
          */
         private final ChannelRuntime.Channel<MessageEnvelope> sourceTaskMailbox =
-                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+                ChannelRuntime.Channel.runtimePrivateMailbox(INTERNAL_CONTINUATION_SLOTS);
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -10523,7 +10830,11 @@ public final class ActorRuntime implements AutoCloseable {
             this.parent = parent;
             // USER mail and runtime continuations are physically distinct
             // channels. Do not inflate the USER channel with CONTROL headroom.
-            this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
+            // These are runtime-private, bounded Channel<T> buffers with one
+            // lock per mailbox, not global guest select arms. The three queues
+            // are never exposed to guest SelectSet; general actor outputs
+            // intentionally keep the fully selectable channel semantics.
+            this.mailbox = ChannelRuntime.Channel.runtimePrivateMailbox(policy.maxMailboxMessages());
             // Producer-waiter retention is a separate resource from queued
             // mailbox depth. Payload byte accounting still constrains the
             // retained message snapshots themselves.
@@ -11254,6 +11565,16 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
                 return;
             }
+            if (continuationLedger.hasReleaseFailure()) {
+                // An ambiguous external release is not physical retirement.
+                // Keep the actor identity and storage fenced, not reclaimed.
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor continuation resource release incomplete; quarantine arena"));
+                lifecycleLock.notifyAll();
+                return;
+            }
+            if (continuationLedger.snapshot().running() != 0) return;
             if (scheduler != null && (!scheduler.actorStopPhysicallyQuiescent()
                     || activeUntrustedSourceTaskCount != 0
                     || activeUntrustedTimedAdmissions != 0)) return;
@@ -11291,6 +11612,30 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
+            // Seal receipts before draining the last admitted cleanup queue.
+            // The existing runtime admissions carry no external code lease;
+            // future image-lease admissions must also arrange release outside
+            // lifecycleLock and a finalization retry after physical completion.
+            continuationLedger.sealAll();
+            sourceTaskMailbox.close();
+            try { drainMailboxReservations(); }
+            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+            catch (Throwable failure) {
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(failure);
+                lifecycleLock.notifyAll();
+                return;
+            }
+            if (!continuationLedger.retirementReady()) {
+                // With admission sealed and all queues drained, any surviving
+                // receipt is a physical cleanup invariant violation. Do not
+                // close guest state, heap, memory slice or execution domain.
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor continuation receipts not retired; quarantine arena"));
+                lifecycleLock.notifyAll();
+                return;
+            }
             abortUpgradesLocked();
             finalized = true;
             // Only release virtual activation ownership after *all* physical
@@ -11298,13 +11643,6 @@ public final class ActorRuntime implements AutoCloseable {
             // Cleanup failures quarantine the logical identity, not guest data.
             boolean virtualPhysicalCleanupComplete = true;
             sourceScheduler = null;
-            sourceTaskMailbox.close();
-            try { drainMailboxReservations(); }
-            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) {
-                virtualPhysicalCleanupComplete = false;
-                recordFinalizationFailure(failure);
-            }
             staticSelectCursors.clear();
             // STOP has already joined physical SourceTask cleanup at this
             // finalization point. Only now retire the outstanding receive
@@ -11913,11 +12251,14 @@ public final class ActorRuntime implements AutoCloseable {
                         // A serial source declaration must be preserved at
                         // runtime; numeric 1/1 admission settings alone are
                         // not a substitute for its receive-only semantics.
-                        if (created.serialReceive()) {
-                            receiveAdmission.close();
-                            receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                        synchronized (lifecycleLock) {
+                            if (created.serialReceive()) {
+                                receiveAdmission.close();
+                                receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                                if (stopped.get()) receiveAdmission.fence();
+                            }
+                            codeActorState = created;
                         }
-                        codeActorState = created;
                     } else {
                         Behavior<M> created = Objects.requireNonNull(
                                 behaviorFactory.create(context),
@@ -12389,6 +12730,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // STOP is single-shot. Reentrant supervisor/host requests must
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
+                receiveAdmission.fence();
                 // Capture only the sealed compiler-owned region. This is a
                 // non-guest STOP fence; do not hold lifecycleLock while
                 // closing the region's loan arbiter.

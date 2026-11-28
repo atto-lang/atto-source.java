@@ -144,43 +144,65 @@ final class ActorSupervisorControlLane {
     /**
      * Transfer every published event to pre-reserved root slots. Unpublished
      * reservations stay local because their child generations are still alive.
-     * Failed target publication leaves the source slot untouched.
+     * Validate the entire batch before any publication or source mutation.
+     * Runtime calls this only from a child lane to its VM root fallback; the
+     * root never transfers back into a child. Both monitors are held through
+     * validation and commit so root poll/ack cannot observe a partial batch.
      */
     synchronized void transferPublishedTo(ActorSupervisorControlLane root) {
         Objects.requireNonNull(root, "root");
         if (root == this) {
             throw new IllegalArgumentException("cannot transfer CONTROL to its own lane");
         }
+        if (inFlight == 0 && head == null) return;
 
-        for (var iterator = slots.values().iterator(); iterator.hasNext();) {
-            Slot slot = iterator.next();
-            if (slot.inFlight) {
-                if (!root.publish(slot.notice)) {
-                    throw new IllegalStateException(
-                            "duplicate root CONTROL publication for " + slot.child);
+        synchronized (root) {
+            if (inFlight != 0) {
+                for (Slot slot : slots.values()) {
+                    if (slot.inFlight) {
+                        validateTarget(root, slot);
+                        break;
+                    }
                 }
-                iterator.remove();
-                slot.inFlight = false;
-                inFlight = 0;
-                transferred = saturatingIncrement(transferred);
-                break; // single-flight invariant means at most one
             }
-        }
+            for (Slot slot = head; slot != null; slot = slot.next) {
+                validateTarget(root, slot);
+            }
 
-        while (head != null) {
-            Slot slot = head;
-            if (!root.publish(slot.notice)) {
-                throw new IllegalStateException(
-                        "duplicate root CONTROL publication for " + slot.child);
+            if (inFlight != 0) {
+                for (var iterator = slots.values().iterator(); iterator.hasNext();) {
+                    Slot slot = iterator.next();
+                    if (slot.inFlight) {
+                        root.publish(slot.notice);
+                        iterator.remove();
+                        slot.inFlight = false;
+                        inFlight = 0;
+                        transferred = saturatingIncrement(transferred);
+                        break;
+                    }
+                }
             }
-            head = slot.next;
-            slot.next = null;
-            slot.queued = false;
-            pending--;
-            slots.remove(slot.child);
-            transferred = saturatingIncrement(transferred);
+
+            while (head != null) {
+                Slot slot = head;
+                root.publish(slot.notice);
+                head = slot.next;
+                slot.next = null;
+                slot.queued = false;
+                pending--;
+                slots.remove(slot.child);
+                transferred = saturatingIncrement(transferred);
+            }
+            tail = null;
         }
-        tail = null;
+    }
+
+    private static void validateTarget(ActorSupervisorControlLane root, Slot source) {
+        Slot reserved = root.required(source.child, source.generation);
+        if (reserved.notice != null || reserved.queued || reserved.inFlight) {
+            throw new IllegalStateException(
+                    "duplicate root CONTROL publication for " + source.child);
+        }
     }
 
     synchronized int pendingCount() {

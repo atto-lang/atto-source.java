@@ -519,16 +519,10 @@ public final class TreeShaker {
         }
 
         private boolean constantEquals(Object left, Object right) {
+            if (left instanceof Number a && right instanceof Number b)
+                return dev.oreslang.types.NumericValueEquality.equals(a, b);
             if (left == right) return true;
             if (left == null || right == null) return false;
-            if (left instanceof Number a && right instanceof Number b) {
-                boolean aIntegral = a instanceof Byte || a instanceof Short
-                        || a instanceof Integer || a instanceof Long;
-                boolean bIntegral = b instanceof Byte || b instanceof Short
-                        || b instanceof Integer || b instanceof Long;
-                if (aIntegral && bIntegral) return a.longValue() == b.longValue();
-                return a.doubleValue() == b.doubleValue();
-            }
             return Objects.equals(left, right);
         }
 
@@ -551,7 +545,9 @@ public final class TreeShaker {
                 if (operand == UNKNOWN) return UNKNOWN;
                 if (unary.operator().equals("!") && operand instanceof Boolean value) return !value;
                 if (unary.operator().equals("+") && operand instanceof Number) return operand;
-                if (unary.operator().equals("-") && operand instanceof Long value) return -value;
+                // Never erase a possible checked overflow; leave it to runtime.
+                if (unary.operator().equals("-") && operand instanceof Long value)
+                    return value == Long.MIN_VALUE ? UNKNOWN : -value;
                 if (unary.operator().equals("-") && operand instanceof Double value) return -value;
                 return UNKNOWN;
             }
@@ -584,7 +580,8 @@ public final class TreeShaker {
 
         private Object compare(Object left, Object right, java.util.function.IntPredicate predicate) {
             if (left instanceof Number l && right instanceof Number r) {
-                return predicate.test(Double.compare(l.doubleValue(), r.doubleValue()));
+                int c = dev.oreslang.types.NumericValueOrdering.compare(l, r);
+                return c != dev.oreslang.types.NumericValueOrdering.UNORDERED && predicate.test(c);
             }
             if (left instanceof String l && right instanceof String r) {
                 return predicate.test(l.compareTo(r));
@@ -690,7 +687,10 @@ public final class TreeShaker {
                         fields,
                         constructor,
                         methods,
-                        klass.actorConcurrency());
+                        klass.actorConcurrency(),
+                        klass.sealedStateFields(),
+                        klass.annotations(),
+                        klass.actorMessageContract());
             }
             return declaration;
         }
@@ -1052,7 +1052,7 @@ public final class TreeShaker {
                                 task.body(),
                                 module,
                                 new LinkedHashMap<>(locals)),
-                        task.legacyNb());
+                        task.legacyNb(), task.typedDefaultSelectI64(), task.typedCountedSelectI64(), task.zeroCountSourceName(), task.dynamicCountName(), task.zeroCountWitnesses(), task.payloadType());
             }
             if (expression instanceof Ast.ChannelOpExpr operation) {
                 return new Ast.ChannelOpExpr(
@@ -1251,6 +1251,16 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 for (Ast.TypeRef parent : klass.parents()) scanType(parent);
                 for (Ast.TypeRef iface : klass.interfaces()) scanType(iface);
+                // Actor DATA contracts and sealed-state types are part of its
+                // immutable public/behavioral ABI. They must keep their nominal
+                // dependencies reachable even when no body mentions them.
+                scanType(klass.actorMessageContract().receives());
+                scanType(klass.actorMessageContract().sends());
+                for (Ast.ProtectedStateField field : klass.sealedStateFields()) {
+                    scanType(field.type());
+                    scanExpression(module, field.initializer(), Set.of("self"));
+                }
+                for (Ast.Annotation annotation : klass.annotations()) scanAnnotation(annotation);
                 for (Ast.FieldDecl field : klass.fields()) {
                     scanType(field.type());
                     scanExpression(module, field.initializer(), Set.of("self"));

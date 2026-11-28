@@ -42,7 +42,9 @@ public final class SupervisorRestartWindow {
 
     private int head;
     private int size;
-    private long lastObservedNanos = -1L;
+    private boolean clockInitialized;
+    private long lastRawNanos;
+    private long elapsedNanos;
     private long decisionSequence;
     private long suppressed;
     private long lastRetryAfterNanos;
@@ -103,15 +105,22 @@ public final class SupervisorRestartWindow {
     }
 
     private boolean apply(long nowNanos) {
-        observeMonotonic(nowNanos);
-        expire(nowNanos);
+        // Reject exhausted decisions before changing clock or ring state.
+        // Otherwise a failed admission could still expire timestamps or
+        // advance the observed clock, violating fail-atomicity.
+        if (decisionSequence == Long.MAX_VALUE) {
+            throw new IllegalStateException("restart decision sequence exhausted");
+        }
+        long now = observeMonotonic(nowNanos);
+        expire(now);
         nextSequence();
 
         if (size >= maxRestarts) {
             long oldest = admittedAt[head];
-            long deadline = saturatingAdd(oldest, windowNanos);
-            lastRetryAfterNanos =
-                    deadline <= nowNanos ? 0L : deadline - nowNanos;
+            // expire(now) guarantees the oldest admission is still within
+            // the window. Compute remaining duration rather than saturating
+            // an absolute deadline, which becomes incorrect near Long.MAX_VALUE.
+            lastRetryAfterNanos = windowNanos - (now - oldest);
             suppressed = saturatingIncrement(suppressed);
             if (isPowerOfTwo(suppressed)) {
                 CoreLog.record(
@@ -123,7 +132,7 @@ public final class SupervisorRestartWindow {
         }
 
         int tail = (head + size) % admittedAt.length;
-        admittedAt[tail] = nowNanos;
+        admittedAt[tail] = now;
         size++;
         lastRetryAfterNanos = 0L;
         return true;
@@ -151,8 +160,8 @@ public final class SupervisorRestartWindow {
      * Useful for deterministic supervisor tests and externally driven clocks.
      */
     public synchronized int advance(long nowNanos) {
-        observeMonotonic(nowNanos);
-        expire(nowNanos);
+        long now = observeMonotonic(nowNanos);
+        expire(now);
         return size;
     }
 
@@ -200,7 +209,7 @@ public final class SupervisorRestartWindow {
         if (maxJitterNanos == 0) return 0L;
 
         long mixed = stableKey
-                ^ (0x9E3779B97F4A7C15L * (long) (failureOrdinal + 1));
+                ^ (0x9E3779B97F4A7C15L * ((long) failureOrdinal + 1L));
         mixed ^= mixed >>> 30;
         mixed *= 0xBF58476D1CE4E5B9L;
         mixed ^= mixed >>> 27;
@@ -226,16 +235,28 @@ public final class SupervisorRestartWindow {
         return saturatingAdd(backoff, jitter);
     }
 
-    private void observeMonotonic(long nowNanos) {
-        if (nowNanos < 0) {
-            throw new IllegalArgumentException("monotonic timestamp must be non-negative");
+    private long observeMonotonic(long rawNowNanos) {
+        if (!clockInitialized) {
+            clockInitialized = true;
+            lastRawNanos = rawNowNanos;
+            return 0L;
         }
-        if (lastObservedNanos >= 0 && nowNanos < lastObservedNanos) {
-            throw new IllegalArgumentException(
-                    "monotonic clock moved backwards: "
-                            + nowNanos + " < " + lastObservedNanos);
+        // System.nanoTime() has an arbitrary signed origin and can wrap.
+        // Subtraction is the supported comparison for intervals < 2^63 ns.
+        long delta = rawNowNanos - lastRawNanos;
+        if (delta < 0) {
+            throw new IllegalArgumentException("monotonic clock moved backwards");
         }
-        lastObservedNanos = nowNanos;
+        final long nextElapsed;
+        try {
+            nextElapsed = Math.addExact(elapsedNanos, delta);
+        } catch (ArithmeticException exhausted) {
+            // A rejected clock sample must not commit its raw origin.
+            throw new IllegalStateException("restart elapsed-time sequence exhausted", exhausted);
+        }
+        lastRawNanos = rawNowNanos;
+        elapsedNanos = nextElapsed;
+        return nextElapsed;
     }
 
     private void expire(long nowNanos) {

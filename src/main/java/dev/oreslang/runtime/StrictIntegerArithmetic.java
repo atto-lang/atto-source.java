@@ -20,6 +20,14 @@ public final class StrictIntegerArithmetic {
         return value < 0 ? Math.negateExact(value) : value;
     }
 
+    /** Checked signed quotient, truncating toward zero without silent MIN/-1 wrap. */
+    public static long div(long dividend, long divisor) {
+        if (divisor == 0) throw new ArithmeticException("ORES_I64_DIVISION_BY_ZERO: checked signed i64 denominator");
+        if (dividend == Long.MIN_VALUE && divisor == -1)
+            throw new ArithmeticException("ORES_I64_OVERFLOW: checked signed i64 quotient");
+        return dividend / divisor;
+    }
+
     /** Truncating remainder: sign follows the dividend; zero divisor traps. */
     public static long rem(long dividend, long divisor) {
         if (divisor == 0) throw new ArithmeticException("integer remainder by zero");

@@ -4,5 +4,10 @@ define module path as
   pub fnc list_separator_code(): int { return 58; }
   pub fnc is_separator_code(int code): bool { return code == 47; }
   pub fnc is_windows(): bool { return false; }
-  pub fnc join(string parent, string child): string { return parent + "/" + child; }
+  // Empty components are identity elements; do not invent a root separator.
+  pub fnc join(string parent, string child): string {
+    if parent == ""; do return child; fi
+    if child == ""; do return parent; fi
+    return parent + "/" + child;
+  }
 end
