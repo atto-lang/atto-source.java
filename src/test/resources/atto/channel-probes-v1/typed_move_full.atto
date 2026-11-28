@@ -1,0 +1,19 @@
+// Rejected move-only send returns exactly the owned Array payload.
+pub routine main(): void {
+  val Channel<Array<int>> channel = Channel.new<Array<int>>(1);
+  val Array<int> first = [1];
+  val TryWriteResult<Array<int>> accepted = try writech channel, rt take first;
+  val Array<int> second = [2, 3];
+  val TryWriteResult<Array<int>> result = try writech channel, rt take second;
+  do match accepted over
+    on Accepted -> { }
+    on Full(value) -> { stdio.stdout.write("unexpected-first-full"); }
+    on Closed(value) -> { stdio.stdout.write("unexpected-first-closed"); }
+  end
+  do match result over
+    on Accepted -> { stdio.stdout.write("unexpected-second-accepted"); }
+    on Full(value) -> { stdio.stdout.write(value[0]); }
+    on Closed(value) -> { stdio.stdout.write("unexpected-second-closed"); }
+  end
+  return;
+}

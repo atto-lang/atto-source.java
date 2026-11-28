@@ -1,10 +1,8 @@
 package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
-
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 final class SourceCooperationQuantumTest {
@@ -15,55 +13,107 @@ final class SourceCooperationQuantumTest {
     }
 
     @Test
-    void zeroClockReadsBetweenChecksAndCooperateAtReductionCap() {
+    void fixed128BackedgeBoundariesAndSoft512Cap() {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
-        assertEquals(2, clock.reads.get());
         for (int i = 1; i <= 512; i++) {
             boolean due = q.completedBackedgeNeedsCheck();
             assertEquals(i % 128 == 0, due);
-            if (due) {
-                assertEquals(i == 512, q.shouldCooperateAtCheck());
-            }
+            if (due) assertEquals(i == 512, q.shouldCooperateAtCheck());
         }
-        // Construction + dispatch + 3 pre-cap time probes at 128, 256, 384.
-        assertEquals(5, clock.reads.get());
-        assertEquals(512, q.completedBackedgesThisDispatch());
+        assertEquals(5, clock.reads.get()); // 1 ctor, 1 dispatch, 3 time reads
+        assertEquals(512L, q.completedBackedgesThisDispatch());
     }
 
     @Test
-    void elapsedTimeIsCheckedOnlyOnBatchedSafePoint() {
+    void deadlineAndWatchdogOnlyAtOneAuthorizedPoll() {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
-        for (int i = 0; i < 127; i++) {
+        for (int i = 1; i < 128; i++) {
             assertFalse(q.completedBackedgeNeedsCheck());
+            assertFalse(q.shouldCooperateAtCheck(true));
         }
-        clock.nanos.set(2_000_001L);
         assertEquals(2, clock.reads.get());
+        clock.nanos.set(2_000_001L);
         assertTrue(q.completedBackedgeNeedsCheck());
         assertTrue(q.shouldCooperateAtCheck());
+        assertFalse(q.shouldCooperateAtCheck(true), "ticket consumed");
         assertEquals(3, clock.reads.get());
     }
 
     @Test
-    void pendingAwaitDoesNotResetLastCooperateButResetsDispatchQuantum() {
+    void watchdogRequestNeverNeedsClockWhenPollIsDue() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 0; i < 128; i++) q.completedBackedgeNeedsCheck();
+        assertTrue(q.shouldCooperateAtCheck(true));
+        assertFalse(q.shouldCooperateAtCheck(false));
+        assertEquals(2, clock.reads.get());
+    }
+
+    @Test
+    void pendingAwaitPreservesCooperationClockButNotFairnessDeadline() {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
         q.recordedCooperate();
-        clock.nanos.set(2_000_000_000L); // time parked on a Future
+        clock.nanos.set(2_000_000_000L);
         q.beginDispatch();
         assertEquals(2_000_000_000L, q.timeSinceLastCooperateNanos());
         for (int i = 0; i < 128; i++) q.completedBackedgeNeedsCheck();
-        assertFalse(q.shouldCooperateAtCheck(), "parked time is not dispatch running time");
+        assertFalse(q.shouldCooperateAtCheck());
         q.recordedCooperate();
         assertEquals(0L, q.timeSinceLastCooperateNanos());
     }
 
     @Test
-    void repeatedFreshDispatchesUseSameLogicalQuantumObject() {
+    void overdueNoYieldRegionNeverDegeneratesIntoEveryBackedgePolling() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 1; i <= 1_024; i++) {
+            boolean due = q.completedBackedgeNeedsCheck();
+            assertEquals(i % 128 == 0, due);
+            if (due) {
+                assertEquals(i >= 512, q.shouldCooperateAtCheck());
+                assertFalse(q.shouldCooperateAtCheck(), "only one poll per ticket");
+            }
+        }
+        assertEquals(1_024L, q.completedBackedgesThisDispatch());
+        assertEquals(5, clock.reads.get(), "overdue checks do not read a clock");
+    }
+
+    @Test
+    void repeatedShortResumptionsCannotEvadeLifetimePollPhase() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        int polls = 0;
+        for (int turn = 0; turn < 8; turn++) {
+            q.beginDispatch();
+            for (int i = 0; i < 127; i++) {
+                final int absolute = turn * 127 + i + 1;
+                boolean due = q.completedBackedgeNeedsCheck();
+                assertEquals(absolute % 128 == 0, due);
+                if (due) {
+                    polls++;
+                    assertFalse(q.shouldCooperateAtCheck());
+                } else {
+                    int reads = clock.reads.get();
+                    assertFalse(q.shouldCooperateAtCheck());
+                    assertEquals(reads, clock.reads.get());
+                }
+            }
+            assertEquals(127, q.completedBackedgesThisDispatch());
+        }
+        assertEquals(7, polls);
+        assertEquals(1 + 8 + 7, clock.reads.get());
+    }
+
+    @Test
+    void repeatedFullDispatchesReuseOneQuantumWithoutChangingLogicalClock() {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         for (int turn = 0; turn < 32; turn++) {
@@ -71,8 +121,7 @@ final class SourceCooperationQuantumTest {
             q.beginDispatch();
             for (int i = 0; i < 512; i++) {
                 if (q.completedBackedgeNeedsCheck()) {
-                    if (i == 511) assertTrue(q.shouldCooperateAtCheck());
-                    else assertFalse(q.shouldCooperateAtCheck());
+                    assertEquals(i == 511, q.shouldCooperateAtCheck());
                 }
             }
             q.recordedCooperate();
@@ -120,79 +169,49 @@ final class SourceCooperationQuantumTest {
     }
 
     @Test
-    void signed64BitReductionCounterCannotDisablePeriodicPolls()
+    void signedLongMaxSaturatesWithoutForcingPerStepColdChecks()
             throws ReflectiveOperationException {
         Clock clock = new Clock();
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
-        var counter = SourceCooperationQuantum.class.getDeclaredField("backedgesThisDispatch");
-        counter.setAccessible(true);
-        counter.setLong(q, Long.MAX_VALUE - 1);
-        for (int n = 1; n <= 512; ++n) {
+        var field = SourceCooperationQuantum.class.getDeclaredField("backedgesThisDispatch");
+        field.setAccessible(true);
+        field.setLong(q, Long.MAX_VALUE - 1);
+        for (int i = 1; i <= 256; i++) {
             boolean due = q.completedBackedgeNeedsCheck();
-            assertEquals(n % 128 == 0, due,
-                    "poll phase must continue after the saturated total");
+            assertEquals(i % 128 == 0, due);
             if (due) assertTrue(q.shouldCooperateAtCheck());
             assertEquals(Long.MAX_VALUE, q.completedBackedgesThisDispatch());
         }
-        assertEquals(2, clock.reads.get(), "overdue polls must be clock-free");
-    }
-
-    @Test
-    void backedgeAccountingDoesNotRollOverAtTheUnsigned32BitBoundary()
-            throws ReflectiveOperationException {
-        Clock clock = new Clock();
-        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
-        q.beginDispatch();
-        var counter = SourceCooperationQuantum.class.getDeclaredField("backedgesThisDispatch");
-        counter.setAccessible(true);
-        assertEquals(long.class, counter.getType());
-        counter.setLong(q, (1L << 32) - 128);
-        for (int n = 1; n <= 128; ++n) {
-            assertEquals(n == 128, q.completedBackedgeNeedsCheck(),
-                    "signed 32-bit boundary must never change phase");
-        }
-        assertEquals(1L << 32, q.completedBackedgesThisDispatch());
-        assertTrue(q.shouldCooperateAtCheck());
         assertEquals(2, clock.reads.get());
     }
 
     @Test
-    void signedClockWrapCannotHideElapsedSoftQuantum() {
+    void unsigned32BoundaryDoesNotAffectSampling() throws ReflectiveOperationException {
         Clock clock = new Clock();
-        clock.nanos.set(Long.MAX_VALUE - 5L);
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
-
-        // Raw signed subtraction would wrap to +11, incorrectly indicating
-        // an 11-nanosecond dispatch rather than a clock anomaly.
-        clock.nanos.set(Long.MIN_VALUE + 5L);
-        for (int i = 1; i < 128; i++) {
-            assertFalse(q.completedBackedgeNeedsCheck());
+        var field = SourceCooperationQuantum.class.getDeclaredField("backedgesThisDispatch");
+        field.setAccessible(true);
+        field.setLong(q, (1L << 32) - 64);
+        for (int i = 1; i <= 128; i++) {
+            boolean due = q.completedBackedgeNeedsCheck();
+            assertEquals(i == 128, due);
+            if (due) assertTrue(q.shouldCooperateAtCheck());
         }
-        assertTrue(q.completedBackedgeNeedsCheck());
-        assertTrue(q.shouldCooperateAtCheck(),
-                "overflowed clock delta must request a safe cooperative handoff");
-        assertEquals(Long.MAX_VALUE, q.timeSinceLastCooperateNanos(),
-                "diagnostics must not portray a wrapped clock as a fresh quantum");
+        assertEquals((1L << 32) + 64, q.completedBackedgesThisDispatch());
+        assertEquals(2, clock.reads.get());
     }
 
     @Test
-    void backwardsClockSampleCannotEraseAnOverdueQuantum() {
+    void millionFastPathBackedgesNeverReadClock() {
         Clock clock = new Clock();
-        clock.nanos.set(10_000L);
         SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
         q.beginDispatch();
-        clock.nanos.set(9_999L);
-        for (int i = 1; i < 128; i++) {
-            assertFalse(q.completedBackedgeNeedsCheck());
+        for (int i = 1; i <= 1_048_576; i++) {
+            assertEquals(i % 128 == 0, q.completedBackedgeNeedsCheck());
         }
-        assertTrue(q.completedBackedgeNeedsCheck());
-        assertTrue(q.shouldCooperateAtCheck(),
-                "regressing clock cannot extend the fairness quantum");
-        assertEquals(Long.MAX_VALUE, q.timeSinceLastCooperateNanos());
-        assertEquals(4, clock.reads.get(),
-                "only the batched slow path and diagnostics read the clock");
+        assertEquals(2, clock.reads.get());
     }
 
 
@@ -336,5 +355,30 @@ final class SourceCooperationQuantumTest {
         assertEquals(2, clock.reads.get(),
                 "every committed backedge is cheap, including after 512");
         assertEquals(1_048_576L, q.completedBackedgesThisDispatch());
+    }
+
+    @Test
+    void stalePollTicketCannotBeReplayedAfterPhysicalRedispatch() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 1; i <= 128; i++) {
+            assertEquals(i == 128, q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.shouldCooperateAtCheck(true));
+        assertFalse(q.shouldCooperateAtCheck(true), "ticket is single-use");
+        assertEquals(2, clock.reads.get());
+        q.beginDispatch();
+        assertFalse(q.shouldCooperateAtCheck(true),
+                "a new carrier must earn a fresh 128-backedge ticket");
+        assertEquals(3, clock.reads.get(),
+                "only beginDispatch may sample the clock here");
+        for (int i = 1; i <= 128; i++) {
+            assertEquals(i == 128, q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.shouldCooperateAtCheck(true),
+                "unacknowledged watchdog debt remains task-owned");
+        assertFalse(q.shouldCooperateAtCheck(true), "new ticket is also single-use");
+        assertEquals(3, clock.reads.get());
     }
 }

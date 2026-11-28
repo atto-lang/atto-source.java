@@ -1,0 +1,22 @@
+// Core runtime admission reference. NOT a replacement for compiler loans.
+// The compiler must still prove provenance, lifetimes, mutation, transfer.
+import module borrow_admission from "ores.core/borrow_admission";
+pub routine main(): void {
+  stdio.println(borrow_admission.valid_state(0, false, true));
+  stdio.println(borrow_admission.valid_state(1, true, true));
+  stdio.println(borrow_admission.valid_state(1, false, false));
+  stdio.println(borrow_admission.may_read(0, false, true));
+  stdio.println(borrow_admission.may_read(65535, false, true));
+  stdio.println(borrow_admission.may_write(0, false, true));
+  stdio.println(borrow_admission.may_write(1, false, true));
+  stdio.println(borrow_admission.quiescent_owner(0, false, true));
+  stdio.println(borrow_admission.quiescent_owner(1, false, true));
+  stdio.println(borrow_admission.may_finish_read(1, false, true));
+  stdio.println(borrow_admission.may_finish_write(0, true, true));
+  stdio.println(borrow_admission.quiescent_boundary(0, true, true));
+  stdio.println(borrow_admission.may_read(-1, false, true));
+  stdio.println(borrow_admission.valid_state(65536, false, true));
+  stdio.println(borrow_admission.may_read(0, false, false));
+  stdio.println(borrow_admission.quiescent_boundary(0, false, false));
+  return;
+}

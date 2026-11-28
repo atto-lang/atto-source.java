@@ -1,0 +1,115 @@
+name: Exact-source Java compiler bundle evidence (NOT release attestation)
+
+on:
+  push:
+    branches:
+      - integration/java-exact-compiler-receipt-20261018
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-receipt-negatives:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify host-only negative tests
+        run: python3 -m unittest discover -s tests -p test_verify_compiler_build.py -v
+
+  real-jvm-compiler-bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up exact GraalVM/JDK toolchain
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Bind checkout to the event's immutable source revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${{ github.sha }}"
+          test "$(git rev-parse --verify HEAD)" = "$ref"
+          tree="$(git show -s --format=%T HEAD)"
+          echo "SOURCE_SHA=$ref" >> "$GITHUB_ENV"
+          echo "SOURCE_TREE=$tree" >> "$GITHUB_ENV"
+          java --version
+          mvn --version
+          sha256sum pom.xml
+      - name: Capture JVM, Maven and Native Image toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            java --version
+            mvn --version
+            native-image --version
+          } > "$RUNNER_TEMP/java-toolchain-versions.txt" 2>&1
+          test -s "$RUNNER_TEMP/java-toolchain-versions.txt"
+      - name: Compile and verify the Java/GraalVM source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Assemble JVM module-path runtime bundle inside this runner only
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/oreslang-java-bundle"
+          test ! -e "$bundle"
+          mkdir -p "$bundle/lib" "$bundle/native"
+          cp target/oreslang-source-0.1.0-SNAPSHOT.jar "$bundle/oreslang-source.jar"
+          cp target/native/liboresthread.so "$bundle/native/liboresthread.so"
+          mvn -B -ntp org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies \
+            -DincludeScope=runtime -DoutputDirectory="$bundle/lib"
+          cat > "$bundle/launcher" <<EOF
+          #!/bin/sh
+          set -eu
+          bundle="\$(CDPATH='' cd -- "\$(dirname -- "\$0")" && pwd -P)"
+          exec "$JAVA_HOME/bin/java" --enable-native-access=ALL-UNNAMED \
+            -Djava.library.path="\$bundle/native" \
+            -p "\$bundle/oreslang-source.jar:\$bundle/lib" \
+            -m dev.oreslang/dev.oreslang.launcher.OresMain "\$@"
+          EOF
+          chmod 700 "$bundle/launcher"
+      - name: Check real compiler modes, source pins and whole bundle hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_compiler_build.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --bundle "$RUNNER_TEMP/oreslang-java-bundle" \
+            --expected-source-sha "$SOURCE_SHA" \
+            --expected-tree "$SOURCE_TREE" \
+            --expected-mode jvm \
+            --toolchain-report "$RUNNER_TEMP/java-toolchain-versions.txt" \
+            --receipt "$RUNNER_TEMP/java-compiler-local-evidence.json"
+          python3 scripts/verify_compiler_build.py \
+            --source-root "$GITHUB_WORKSPACE" \
+            --bundle "$RUNNER_TEMP/oreslang-java-bundle" \
+            --expected-source-sha "$SOURCE_SHA" \
+            --expected-tree "$SOURCE_TREE" \
+            --expected-mode jvm \
+            --toolchain-report "$RUNNER_TEMP/java-toolchain-versions.txt" \
+            --receipt "$RUNNER_TEMP/java-compiler-local-evidence.json" --verify
+          cat "$RUNNER_TEMP/java-compiler-local-evidence.json"
+      - name: Upload JSON evidence only (NO private compiler binary)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: java-compiler-jvm-local-evidence
+          path: ${{ runner.temp }}/java-compiler-local-evidence.json
+          retention-days: 1
+          if-no-files-found: error

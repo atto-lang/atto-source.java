@@ -271,4 +271,62 @@ final class ActorGroupMultiMembershipTest {
             assertEquals(0, a.memberCount() + b.memberCount() + c.memberCount());
         }
     }
+
+    @Test
+    void rawJoinCapabilityCannotCrossOrdinaryDataMailboxes() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability capability = group.joinCapability();
+
+            ActorRuntime.ActorRef<Object> shared = runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(),
+                    ignored -> (message, context) -> { });
+            ActorRuntime.ActorRef<Object> privateActor = runtime.spawnPrivateTrusted(
+                    ignored -> (message, context) -> { });
+
+            for (Object payload : java.util.List.of(
+                    capability,
+                    java.util.List.of(capability),
+                    java.util.Map.of("invite", capability),
+                    java.util.Set.of(capability),
+                    new Object[]{java.util.List.of("nested", java.util.Map.of("invite", capability))},
+                    java.util.Map.of(capability, "as-key"))) {
+                IllegalArgumentException sharedFailure = assertThrows(
+                        IllegalArgumentException.class, () -> shared.send(payload));
+                assertTrue(sharedFailure.getMessage().contains("CONTROL invitation"),
+                        sharedFailure::getMessage);
+
+                IllegalArgumentException privateFailure = assertThrows(
+                        IllegalArgumentException.class, () -> privateActor.send(payload));
+                assertTrue(privateFailure.getMessage().contains("CONTROL invitation"),
+                        privateFailure::getMessage);
+            }
+
+            // SharedMutex transport has its own payload validator and must
+            // independently reject CONTROL-plane join authority before later
+            // ownership walkers can mask a regression in that boundary.
+            OresMutex.Shared<Object> sharedMutex =
+                    OresMutex.shared((Object) java.util.List.of(capability));
+            IllegalArgumentException mutexFailure = assertThrows(
+                    IllegalArgumentException.class, () -> shared.send(sharedMutex));
+            assertTrue(mutexFailure.getMessage().contains("CONTROL invitation"),
+                    mutexFailure::getMessage);
+
+            // Frozen/shared containers and reusable state are not an
+            // alternative path for raw join authority to reach DATA actors.
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(java.util.Map.of("cap", capability)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.syncCell(java.util.List.of(capability)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.shareReadonly(java.util.Map.of("cap", capability)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.freezeActorGroupEventPayload(
+                            java.util.List.of("event", capability)));
+
+            shared.stop();
+            privateActor.stop();
+        }
+    }
+
 }

@@ -1,0 +1,10 @@
+// A moved region-lifecycle owner must not be readable after rt take.
+// Rejection must originate from the compiler ownership checker, not imports.
+import module region from "atto.alloc/region";
+
+pub fnc main(): int {
+  val owner = region.lifecycle(7, 1);
+  val transferred = rt take owner;
+  if owner.is_retired() then return 1; fi
+  return 42;
+}

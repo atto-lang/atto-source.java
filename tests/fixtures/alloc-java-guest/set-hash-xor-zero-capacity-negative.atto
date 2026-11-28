@@ -1,0 +1,9 @@
+import class IntHashSet from "atto.alloc/set";
+pub fnc main(): int {
+  let mut IntHashSet a = new IntHashSet(2);
+  let mut IntHashSet b = new IntHashSet(2);
+  a.insert(-1);
+  b.insert(0);
+  let mut IntHashSet result = a.symmetric_difference_with_capacity(rt borrow b, 0);
+  return result.len();
+}

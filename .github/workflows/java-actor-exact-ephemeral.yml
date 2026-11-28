@@ -103,6 +103,45 @@ jobs:
             -Dtest=ActorLinearArenaTest,ActorLinearArenaLifecycleTest,ActorHeapAdmissionTest,ActorHeapPlacementGuardTest \
             -DfailIfNoTests=true test
 
+      - name: Run exact-source checked dispatch and guest execution JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=AotDispatchPlannerV1Test,CheckedDispatchPlanIntegrationV1Test,AotDispatchGuestV1Test,DispatchV1CorpusCompilerTest,MethodOverloadTest,ArityDispatchTableRuntimeTest,ArityOverloadAotTest \
+            test
+          for suite in \
+            dev.oreslang.AotDispatchPlannerV1Test \
+            dev.oreslang.CheckedDispatchPlanIntegrationV1Test \
+            dev.oreslang.AotDispatchGuestV1Test \
+            dev.oreslang.DispatchV1CorpusCompilerTest \
+            dev.oreslang.MethodOverloadTest \
+            dev.oreslang.ArityDispatchTableRuntimeTest \
+            dev.oreslang.ArityOverloadAotTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '<testsuite[^>]*(failures|errors|skipped)="[1-9][0-9]*"' "$report"; then
+              echo "::error::Failed, errored or skipped required dispatch suite $suite"
+              exit 1
+            fi
+            if grep -Eq '<skipped([ >])' "$report"; then
+              echo "::error::Skipped dispatch testcase $suite"
+              exit 1
+            fi
+            echo "DISPATCH_JUNIT_SUITE_EXECUTED=$suite"
+          done
+          guest_report=target/surefire-reports/TEST-dev.oreslang.AotDispatchGuestV1Test.xml
+          grep -Fq 'name="baseTypedReceiverRetainsVirtualOverrideAndStaticCallsStayQualified"' "$guest_report"
+          grep -Fq 'name="sameFixtureRunsWithGuestJitDisabledByProfile"' "$guest_report"
+          grep -Fq 'name="scalarGenericIntReuseRunsWithAndWithoutGuestJit"' "$guest_report"
+          corpus_report=target/surefire-reports/TEST-dev.oreslang.DispatchV1CorpusCompilerTest.xml
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithJitEnabled"' "$corpus_report"
+          grep -Fq 'name="canonicalDirectInstanceStaticGuestsExecuteWithGuestJitDisabled"' "$corpus_report"
+          echo 'DISPATCH_GUEST_JVM_JIT_AND_NO_JIT=EXECUTED_EXPECTED_STDOUT_121020'
+          echo 'DISPATCH_CORPUS_DIRECT_INSTANCE_STATIC_JVM_GUEST=EXECUTED_EXPECTED_EXIT_42_BOTH_PROFILES'
+          echo 'DISPATCH_NATIVE_GUEST_AOT=NOT_EXECUTED'
+
       - name: Optional real GraalVM Native Image build
         if: inputs.run_native_image
         shell: bash
@@ -127,7 +166,8 @@ jobs:
             echo "PR: $PR_NUMBER; commit: $SOURCE_SHA"
             echo "Tree: $(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo NOT_CHECKED_OUT)"
             echo "Native Image requested: $NATIVE_IMAGE_REQUESTED"
-            echo 'Job outcome is authoritative only if the actual JUnit step executed.'
+            echo 'Job outcome is authoritative only if both real actor and real dispatch JUnit steps executed.'
+            echo 'The dispatch JUnit suite tests guest semantics under JIT and JIT-disabled JVM profiles, not guest native AOT.'
             echo 'Runner must be disposable, pre-provisioned by the admin and destroyed after one job.'
             echo 'This job never approves export, source retention, hard real-time or five-backend parity.'
           } >> "$GITHUB_STEP_SUMMARY"

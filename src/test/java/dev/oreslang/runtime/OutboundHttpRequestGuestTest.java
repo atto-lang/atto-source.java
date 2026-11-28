@@ -112,6 +112,47 @@ final class OutboundHttpRequestGuestTest {
     }
 
     @Test
+    void nativeChunksPreserveOctetsAndShareCursorWithLegacyReads() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 8);
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        server.createContext("/", exchange -> {
+            try {
+                byte[] bytes = {0, (byte) 255, (byte) 128, 42};
+                exchange.sendResponseHeaders(200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+            } finally { exchange.close(); }
+        });
+        server.start();
+        int port = server.getAddress().getPort();
+        try {
+            String output = run("""
+                pub async routine main(): void {
+                  val response = await http.request("GET", "http://127.0.0.1:%d/", []);
+                  val body = response.take_body();
+                  val Bytes first = await body.read_owned_bytes(1);
+                  stdio.println(first.byte_at(0));
+                  val legacy = await body.read_chunk(1);
+                  stdio.println(legacy[0]);
+                  val Bytes third = await body.read_owned_bytes(1);
+                  stdio.println(third.byte_at(0));
+                  val Bytes fourth = await body.read_owned_bytes(1);
+                  stdio.println(fourth.byte_at(0));
+                  val Bytes eof = await body.read_owned_bytes(1);
+                  stdio.println(eof.size());
+                  first.close();
+                  third.close();
+                  fourth.close();
+                  eof.close();
+                  await body.close();
+                  return;
+                }
+                """.formatted(port), RuntimePermissions.denyAll().withAllowed(
+                    RuntimePermissions.Permission.NET, "127.0.0.1:" + port));
+            assertEquals("0\n255\n128\n42\n0\n", output);
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void explicitBodyCloseRetiresAResponseBlockedWaitingForPeerBytes()
             throws Exception {
         CountDownLatch headersSent = new CountDownLatch(1);
@@ -248,6 +289,62 @@ final class OutboundHttpRequestGuestTest {
                     val first = await body.read_chunk(1);
                     stdio.println(first[0]);
                     val pending = body.read_chunk(64);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("http://127.0.0.1:%d/");
+                  await worker.get_done();
+                  stdio.println("retired");
+                  return;
+                }
+                """.formatted(port),
+                RuntimePermissions.denyAll().withAllowed(
+                        RuntimePermissions.Permission.NET,
+                        "127.0.0.1:" + port));
+
+            assertEquals("120\nretired\n", output);
+        } finally {
+            releaseServer.countDown();
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void actorCancellationWithPendingOwnedBytesReadRetiresTheWholeRequest()
+            throws Exception {
+        CountDownLatch releaseServer = new CountDownLatch(1);
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress("127.0.0.1", 0), 8);
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        server.createContext("/", exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 4096);
+                exchange.getResponseBody().write('x');
+                exchange.getResponseBody().flush();
+                releaseServer.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        int port = server.getAddress().getPort();
+        try {
+            String output = run("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val response = await http.request("GET", mail.value, []);
+                    val body = response.take_body();
+                    val Bytes first = await body.read_owned_bytes(1);
+                    stdio.println(first.byte_at(0));
+                    first.close();
+                    val pending = body.read_owned_bytes(64);
                     self.end();
                     return;
                   }
@@ -411,6 +508,33 @@ final class OutboundHttpRequestGuestTest {
             releaseSlow.countDown();
             server.stop(0);
         }
+    }
+
+    @Test
+    void contextualHeaderListRejectsWrongShapesAndExistingNarrowLists() {
+        for (String expression : java.util.List.of(
+                "[(\"Accept\", 42)]",
+                "[(\"Accept\", \"application/json\", \"extra\")]",
+                "[(\"Accept\", \"application/json\"), (\"Other\", false)]")) {
+            var failure = assertThrows(IllegalArgumentException.class, () ->
+                    dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        pub async routine main(): void {
+                          val response = await http.request("GET", "http://127.0.0.1:1/", %s);
+                          return;
+                        }
+                        """.formatted(expression)));
+            assertTrue(failure.getMessage().contains("string tuple list literal element"),
+                    failure.getMessage());
+        }
+        var aliasFailure = assertThrows(IllegalArgumentException.class, () ->
+                dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                    pub async routine main(): void {
+                      val headers = [("Accept", "application/json")];
+                      val response = await http.request("GET", "http://127.0.0.1:1/", headers);
+                      return;
+                    }
+                    """));
+        assertTrue(aliasFailure.getMessage().contains("argument 3"), aliasFailure.getMessage());
     }
 
     @Test

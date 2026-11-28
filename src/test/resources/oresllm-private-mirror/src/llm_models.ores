@@ -1,0 +1,76 @@
+define module llm_models as
+  pub define class TransformerConfig as
+    pub val int vocabulary_size;
+    pub val int context_length;
+    pub val int hidden_size;
+    pub val int attention_heads;
+    pub val int transformer_layers;
+  end
+
+  // Exact i64 floor division with a positive denominator. Stride doubling
+  // uses subtraction guards so no intermediate addition or product overflows.
+  fnc model_floor_div_positive(int numerator, int denominator): int {
+    if numerator < 0 || denominator <= 0; do return -1; fi
+    let int remaining = numerator;
+    let int quotient = 0;
+    while (remaining >= denominator) {
+      let int step = denominator;
+      let int count = 1;
+      while (step <= remaining - step) {
+        step = step + step;
+        count = count + count;
+      }
+      remaining = remaining - step;
+      quotient = quotient + count;
+    }
+    return quotient;
+  }
+
+  pub fnc valid_transformer_config(borrow TransformerConfig cfg): bool {
+    if cfg.vocabulary_size <= 0 || cfg.context_length <= 0; do
+      return false;
+    fi
+    if cfg.hidden_size <= 0 || cfg.attention_heads <= 0; do
+      return false;
+    fi
+    if cfg.transformer_layers <= 0; do
+      return false;
+    fi
+    val int head_size = model_floor_div_positive(cfg.hidden_size, cfg.attention_heads);
+    if head_size * cfg.attention_heads != cfg.hidden_size; do
+      return false;
+    fi
+    if cfg.vocabulary_size > model_floor_div_positive(9223372036854775807, cfg.hidden_size); do
+      return false;
+    fi
+    // Embedding/position and per-layer shape products must fit in i64.
+    if cfg.context_length > model_floor_div_positive(9223372036854775807, cfg.hidden_size); do
+      return false;
+    fi
+    if cfg.transformer_layers > model_floor_div_positive(9223372036854775807, cfg.hidden_size); do
+      return false;
+    fi
+    return true;
+  }
+  // A causal attention mask includes the current token, never future keys.
+  // Positions are 0-based; context_length is a positive physical bound.
+  pub fnc model_causal_attention_allows(
+      int query_position, int key_position, int context_length): bool {
+    if context_length <= 0 || query_position < 0 || key_position < 0; do return false; fi
+    if query_position >= context_length || key_position >= context_length; do return false; fi
+    return key_position <= query_position;
+  }
+
+  // Upper bound of a single dense head's attention-score matrix, in elements.
+  // This is an allocation admission check, not a kernel or a causal mask.
+  pub fnc model_attention_score_elements(
+      int batch_size, int heads, int sequence_length): int {
+    if batch_size <= 0 || heads <= 0 || sequence_length <= 0; do return -1; fi
+    if batch_size > model_floor_div_positive(9223372036854775807, heads); do return -1; fi
+    val int streams = batch_size * heads;
+    if sequence_length > model_floor_div_positive(9223372036854775807, sequence_length); do return -1; fi
+    val int per_stream = sequence_length * sequence_length;
+    if streams > model_floor_div_positive(9223372036854775807, per_stream); do return -1; fi
+    return streams * per_stream;
+  }
+end

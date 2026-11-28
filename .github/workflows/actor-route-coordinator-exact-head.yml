@@ -1,0 +1,58 @@
+name: Actor route coordinator exact-head JUnit and HOST demo
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRouteCoordinatorV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorPhysicalHotRouteIngressFence.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntimeHotRouteBridgeV1.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRouteCoordinatorV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPhysicalHotRouteIngressFenceTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRuntimeHotRouteBridgeV1Test.java'
+      - 'examples/hot-upgrade/ActorRouteCoordinatorHostDemo.java'
+      - '.github/workflows/actor-route-coordinator-exact-head.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  route-coordinator-host-and-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Exact-source tree receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SOURCE_HEAD=$(git rev-parse HEAD)"
+          echo "SOURCE_TREE=$(git rev-parse HEAD^{tree})"
+      - name: Strict zero-dependency HOST demo
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/atto-route"
+          javac --release 21 -Xlint:all -Werror -d "$RUNNER_TEMP/atto-route" \
+            src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java \
+            src/main/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1.java \
+            src/main/java/dev/oreslang/runtime/ActorRouteCoordinatorV1.java \
+            examples/hot-upgrade/ActorRouteCoordinatorHostDemo.java
+          java -ea -cp "$RUNNER_TEMP/atto-route" dev.oreslang.runtime.ActorRouteCoordinatorHostDemo
+      - name: Real ActorRuntime bridge + host coordinator JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ActorRouteCoordinatorV1Test,ActorPhysicalHotRouteIngressFenceTest,ActorRuntimeHotRouteBridgeV1Test \
+            -DfailIfNoTests=true test
+      - name: Retain exact-head JUnit XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-actor-route-junit
+          path: target/surefire-reports/*ActorRoute*V1Test*
+          if-no-files-found: warn

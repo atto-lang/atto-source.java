@@ -1,0 +1,111 @@
+// Compiler-owned freestanding protocol declarations (v1).
+// Source declarations are contracts, NOT host I/O implementations.
+// Future-based methods MUST use a verified nonblocking provider when implemented.
+// Sendable/Shareable/Copy/Drop and actor lifecycle/CONTROL are compiler/runtime
+// authorities, deliberately NOT user-implementable traits in this module.
+
+define module protocols as
+
+  // Value protocols. Implementations must obey the separate coherence and
+  // ownership contracts; importing a trait never grants an auto-trait.
+  define pub trait Eq<T> as
+    fnc equals(T other) => bool;
+  end
+
+  define pub trait Ord<T> extends Eq<T> as
+    // Negative, zero, or positive, with consistent equals semantics.
+    fnc compare(T other) => int;
+  end
+
+  define pub trait Hash as
+    // Equal values must produce equal hashes within one hash domain.
+    fnc hash_value() => int;
+  end
+
+  define pub trait Clone<T> as
+    // Explicit duplication; never grants the intrinsic Copy property.
+    fnc clone_value() => T;
+  end
+
+  // Read has explicit EOF (None), distinct from zero-length byte chunks.
+  // max_bytes must be bounded by the provider. No borrowed buffer escapes.
+  define pub trait Read<E> as
+    fnc read_async(int max_bytes) => Future<Result<Option<Array<u8>>, E>>;
+  end
+
+  // All-or-error ownership-transfer write. Partial write APIs require an
+  // explicit remainder/ownership receipt and are not admitted by v1.
+  define pub trait Write<E> as
+    fnc write_all_async(Array<u8> bytes) => Future<Result<void, E>>;
+  end
+
+  define pub trait Flush<E> as
+    fnc flush_async() => Future<Result<void, E>>;
+  end
+
+  // Close is immediate and idempotent. Implementations requiring suspended
+  // cleanup must additionally expose AsyncClose and await its completion.
+  define pub trait Close as
+    fnc close() => void;
+  end
+
+  define pub trait AsyncClose<E> as
+    fnc close_async() => Future<Result<void, E>>;
+  end
+
+  define pub trait Seek<E> as
+    // Absolute offset; negative positions are errors, not wraparound.
+    fnc seek_async(int absolute_offset) => Future<Result<int, E>>;
+  end
+
+  // Pull-based typed streams. No producer work before demand; None is EOF.
+  // One outstanding pull at a time; bounded buffering and cancellation.
+  define pub trait Source<T, E> as
+    fnc next_async() => Future<Result<Option<T>, E>>;
+  end
+
+  // send_async completion means bounded admission, not durable processing.
+  define pub trait Sink<T, E> as
+    fnc send_async(T value) => Future<Result<void, E>>;
+    fnc flush_async() => Future<Result<void, E>>;
+  end
+
+  // Uses compiler-owned Iterator<T> without redefining or shadowing it.
+  define pub trait IntoIterator<T> as
+    fnc into_iter() => Iterator<T>;
+  end
+
+  // Request/reply behavioural surface; NOT an actor mailbox capability.
+  // ActorRef, Receives and supervisor hooks remain runtime-governed.
+  define pub trait Service<Request, Reply, E> as
+    fnc call_async(Request request) => Future<Result<Reply, E>>;
+  end
+
+
+  // Explicit fallible conversion. No implicit coercion is introduced.
+  define pub trait TryFrom<Src, Dst, E> as
+    fnc try_from(Src value) => Result<Dst, E>;
+  end
+
+  // Composition carries no privileged I/O authority by itself.
+  define pub trait ReadWrite<E> extends Read<E>, Write<E> as
+  end
+
+  // Transform is a sink of I and a source of O; one bounded pull at a time.
+  define pub trait Transform<I, O, E> extends Sink<I, E>, Source<O, E> as
+  end
+
+  // Whole-batch bounded admission; partial acceptance cannot report success.
+  define pub trait BatchWritable<T, E> as
+    fnc send_batch_async(Array<T> values) => Future<Result<void, E>>;
+  end
+
+  // Provider-neutral storage contract; does not grant filesystem, network or
+  // sealed actor-state access. Returned values are owned, not private aliases.
+  define pub trait KeyValueStore<K, V, E> as
+    fnc get_async(K key) => Future<Result<Option<V>, E>>;
+    fnc put_async(K key, V value) => Future<Result<void, E>>;
+    fnc delete_async(K key) => Future<Result<bool, E>>;
+  end
+
+end

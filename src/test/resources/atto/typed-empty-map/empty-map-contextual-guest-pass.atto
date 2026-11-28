@@ -1,0 +1,7 @@
+pub fnc main(): void {
+    const Map<string, int> scores = Map.of();
+    const flags: Map<Symbol, bool> = Map.of();
+    stdio.println(scores.size);
+    stdio.println(flags.size);
+    return;
+}

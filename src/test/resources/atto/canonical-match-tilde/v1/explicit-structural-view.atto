@@ -1,0 +1,1 @@
+pub fnc main(): int { const p = infer struct{status: 200, value: 42}; return match p over on structural ~(status: 200, value: v) -> v default -> 0 end; }
