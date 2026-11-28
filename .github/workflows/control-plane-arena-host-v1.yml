@@ -1,0 +1,27 @@
+name: Control-plane arena host v1 (not guest certification)
+on:
+  pull_request:
+    paths:
+      - 'verification/control-plane-arena-v1/**'
+      - '.github/workflows/control-plane-arena-host-v1.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'verification/control-plane-arena-v1/**'
+      - '.github/workflows/control-plane-arena-host-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - run: bash verification/control-plane-arena-v1/run-host-probe.sh

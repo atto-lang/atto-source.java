@@ -67,3 +67,46 @@ Test matrix: all four declaration modes; const initialization with runtime expre
 
 
 The same declaration matrix applies to destructuring and iterator bindings. Examples: `val [x] = value` gives a fixed binding with mutable referent access; `let [x]` permits rebinding but not referent mutation; `let mut [x]` permits both. `for val x of values` and `for let mut x of values` follow identical rules.
+
+## Callable parameters: binding reassignment versus referent mutation
+
+Parameter mutability has two independent axes, just like local bindings:
+
+| Source parameter | Rebind the parameter name | Mutate the referent |
+| --- | --- | --- |
+| `Box s` | no | only if its owned parameter capability allows it |
+| `Box mut s` | yes | yes, subject to ownership |
+| `borrow Box s` | no | no |
+| `borrow mut Box s` | no | yes, through an exclusive lexical loan |
+
+The `mut` **after the owned parameter's type** makes the *name* rebindable.
+The `mut` **inside `borrow mut T`** makes the *borrowed referent*
+writable, **not** the name. A declaration such as `borrow mut Box mut s`
+(or `borrow Box mut s`) is rejected rather than silently turning a loan
+into a replaceable pointer. This does not change the established
+`const`/`val`/`let`/`let mut` binding matrix above.
+
+In pipe lambdas, `|mut s|` means a rebindable inferred parameter, while
+`|borrow mut s|` means a fixed exclusive mutable-borrow parameter with
+an **inferred referent type**. The latter is admitted only when a typed
+callback contract proves that its corresponding parameter is an exclusive
+borrow; it cannot upgrade a shared borrow to exclusive ownership. Use
+`|borrow mut Box s|` when a concrete type is available. In a callback
+expecting `Fnc<borrow mut State, void>`, the following is the intended
+shape:
+
+```atto
+|borrow mut s| -> void {
+  s.generation = s.generation + 1;  // referent write
+  // s = new State();              // ERROR: fixed borrowed binding
+}
+```
+
+For actors, `handle_state` must be explicitly typed as a synchronously
+invoked, nonescaping exclusive-borrow callback before this shorthand can
+be used as a verified actor-state API. Parser acceptance alone does **not**
+prove runtime actor ownership, critical-section safety, exception cleanup,
+or no-suspension behavior. Borrowed callbacks cannot escape, be sent in
+messages, or cross `await`. The shared Java/LLVM/.NET/Wasm/Forge
+conformance matrix must test these independently; this document does not
+claim cross-backend parity.

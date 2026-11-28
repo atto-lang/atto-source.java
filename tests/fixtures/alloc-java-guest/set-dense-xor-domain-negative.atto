@@ -1,0 +1,10 @@
+// Must compile, then trap before allocating the result for incompatible domains.
+import class BoundedIntSet from "atto.alloc/set";
+pub fnc main(): int {
+  let mut BoundedIntSet a = new BoundedIntSet(8);
+  let mut BoundedIntSet b = new BoundedIntSet(7);
+  a.insert(0);
+  b.insert(6);
+  let mut BoundedIntSet result = a.symmetric_difference(rt borrow b);
+  return result.len();
+}

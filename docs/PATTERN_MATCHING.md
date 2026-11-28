@@ -123,3 +123,11 @@ reflection, or arbitrary host `instanceof` relationships are not Oreslang
 type semantics.
 
 See `NATIVE_RUNTIME_ABI.md` for the native/JNI boundary.
+
+## Nested constructor coverage
+
+Coverage is recursive for `Option` and `Result` constructor payloads. For
+example, `Some(Some(x))` plus outer `None` still leaves `Some(None)`
+uncovered. Ordered canonical matching uses `match value over` with contextual
+`on` arms; a trailing unguarded `on _` remains the explicit fallback when a
+finite proof is not otherwise possible.

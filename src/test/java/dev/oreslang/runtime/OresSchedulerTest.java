@@ -276,6 +276,56 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void cooperateCannotResumeUntilPriorGuestTurnFullyUnwinds() throws Exception {
+        ExecutorService carriers = Executors.newFixedThreadPool(2);
+        CountDownLatch firstTurnBodyReturned = new CountDownLatch(1);
+        CountDownLatch allowFirstGuestExit = new CountDownLatch(1);
+        AtomicInteger guestAdmissions = new AtomicInteger();
+        AtomicInteger resumes = new AtomicInteger();
+
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cooperate-unwind-proof",
+                2,
+                carriers,
+                turn -> {
+                    int admission = guestAdmissions.incrementAndGet();
+                    turn.run();
+                    if (admission == 1) {
+                        firstTurnBodyReturned.countDown();
+                        try {
+                            if (!allowFirstGuestExit.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("timed out holding first guest turn open");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    }
+                })) {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int pc = resumes.getAndIncrement();
+                if (pc == 0) return OresScheduler.cooperate();
+                return OresScheduler.done(42);
+            });
+
+            assertTrue(firstTurnBodyReturned.await(5, TimeUnit.SECONDS));
+            Thread.sleep(100);
+            assertEquals(1, resumes.get(),
+                    "cooperate must not admit the continuation while the old guest turn is unwinding");
+            assertEquals(1, guestAdmissions.get());
+
+            allowFirstGuestExit.countDown();
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, resumes.get());
+            assertEquals(2, guestAdmissions.get());
+        } finally {
+            allowFirstGuestExit.countDown();
+            carriers.shutdownNow();
+            assertTrue(carriers.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void runtimeOwnedCompletionPublishesOnlyAfterGuestTurnAdmissionExits() throws Exception {
         ExecutorService carrier = Executors.newSingleThreadExecutor();
         AtomicBoolean insideGuestTurn = new AtomicBoolean();
@@ -379,26 +429,36 @@ final class OresSchedulerTest {
         }
     }
     @Test
-    void logicalTaskDomainSurvivesAwaitButIsDistinctPerTask() throws Exception {
+    void logicalExecutionContextSurvivesAwaitAndIsNotAHeapOrDispatch() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             OresFuture<Integer> gate = new OresFuture<>();
-            AtomicReference<Object> firstDomain = new AtomicReference<>();
-            AtomicReference<Object> resumedDomain = new AtomicReference<>();
-            AtomicReference<Object> secondTaskDomain = new AtomicReference<>();
+            AtomicReference<ExecutionContext> firstContext = new AtomicReference<>();
+            AtomicReference<ExecutionContext> resumedContext = new AtomicReference<>();
+            AtomicReference<ExecutionContext> secondContext = new AtomicReference<>();
+            AtomicLong firstDispatch = new AtomicLong();
+            AtomicLong resumedDispatch = new AtomicLong();
             AtomicInteger firstPc = new AtomicInteger();
 
             OresFuture<Integer> first = scheduler.start(resume -> {
+                ExecutionContext current = OresScheduler.currentExecutionContext();
+                assertNotNull(current);
+                assertSame(current, OresScheduler.currentTaskDomain(),
+                        "legacy task-domain token must be the stable execution context");
+                assertEquals(ExecutionContext.AllocationKind.NONE,
+                        current.allocationDomain().kind(),
+                        "ordinary scheduler tasks must not be assigned a fake heap");
                 if (firstPc.getAndIncrement() == 0) {
-                    firstDomain.set(OresScheduler.currentTaskDomain());
-                    assertNotNull(firstDomain.get());
+                    firstContext.set(current);
+                    firstDispatch.set(OresScheduler.currentDispatchId());
                     return OresScheduler.await(gate);
                 }
-                resumedDomain.set(OresScheduler.currentTaskDomain());
+                resumedContext.set(current);
+                resumedDispatch.set(OresScheduler.currentDispatchId());
                 return OresScheduler.done(1);
             });
 
             OresFuture<Integer> second = scheduler.start(resume -> {
-                secondTaskDomain.set(OresScheduler.currentTaskDomain());
+                secondContext.set(OresScheduler.currentExecutionContext());
                 return OresScheduler.done(2);
             });
 
@@ -406,11 +466,77 @@ final class OresSchedulerTest {
             gate.completeFromRuntime(0);
             assertEquals(1, first.get(5, TimeUnit.SECONDS));
 
-            assertSame(firstDomain.get(), resumedDomain.get(),
-                    "await/resume must preserve the logical task execution domain");
-            assertNotSame(firstDomain.get(), secondTaskDomain.get(),
-                    "two tasks on one scheduler must not share mutex/borrow ownership");
+            assertSame(firstContext.get(), resumedContext.get(),
+                    "await/resume must preserve one logical execution context");
+            assertNotEquals(firstDispatch.get(), resumedDispatch.get(),
+                    "physical scheduler dispatch identity must change across await");
+            assertNotSame(firstContext.get(), secondContext.get(),
+                    "two tasks on one scheduler must have distinct execution contexts");
+            assertEquals(firstContext.get().id().runtimeDomain(),
+                    secondContext.get().id().runtimeDomain(),
+                    "tasks share a scheduler domain without sharing execution identity");
+            assertNotEquals(firstContext.get().id().execution(),
+                    secondContext.get().id().execution());
+            assertFalse(firstContext.get().allocationDomain().isBound());
+            assertEquals(0L, firstContext.get().parentExecution());
+            assertEquals(0L, firstContext.get().continuation());
         }
+    }
+
+    @Test
+    void logicalExecutionSurvivesTwoAwaitsAndFailureOnSeparateDispatches() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> gateOne = new OresFuture<>();
+            OresFuture<Integer> gateTwo = new OresFuture<>();
+            java.util.List<ExecutionContext> contexts =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            java.util.List<Long> dispatches =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            AtomicInteger phase = new AtomicInteger();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                ExecutionContext current = OresScheduler.currentExecutionContext();
+                assertNotNull(current);
+                contexts.add(current);
+                dispatches.add(OresScheduler.currentDispatchId());
+                int step = phase.getAndIncrement();
+                if (step == 0) return OresScheduler.await(gateOne);
+                if (step == 1) return OresScheduler.await(gateTwo);
+                if (step == 2) throw new IllegalStateException("two-await-trace-marker");
+                throw new AssertionError("task must never resume after failure");
+            });
+
+            gateOne.completeFromRuntime(1);
+            gateTwo.completeFromRuntime(2);
+            java.util.concurrent.ExecutionException failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof IllegalStateException);
+            assertEquals("two-await-trace-marker", failure.getCause().getMessage());
+            assertEquals(3, contexts.size());
+            assertEquals(3, dispatches.size());
+            assertSame(contexts.get(0), contexts.get(1));
+            assertSame(contexts.get(1), contexts.get(2));
+            assertNotEquals(dispatches.get(0), dispatches.get(1));
+            assertNotEquals(dispatches.get(1), dispatches.get(2));
+            assertEquals(ExecutionContext.AllocationKind.NONE,
+                    contexts.get(2).allocationDomain().kind());
+        }
+    }
+
+    @Test
+    void actorAllocationDomainPermitsZeroBasedOwnerWithoutBecomingExecutionIdentity() {
+        ExecutionContext context = ExecutionContext.actor(
+                11, 22, 11, 0, 3, 0, 0);
+
+        assertEquals(11L, context.id().runtimeDomain());
+        assertEquals(22L, context.id().execution());
+        assertEquals(ExecutionContext.AllocationKind.ACTOR,
+                context.allocationDomain().kind());
+        assertEquals(0L, context.allocationDomain().owner());
+        assertEquals(3L, context.allocationDomain().generation());
+        assertNotEquals(context.id().execution(), context.allocationDomain().owner(),
+                "execution and allocation-owner identities must never be conflated");
     }
 
     @Test
@@ -463,4 +589,60 @@ final class OresSchedulerTest {
         assertEquals(1, pc.get(),
                 "detached continuation must never resume after producer completion");
     }
+
+    @Test
+    void unresolvedAwaitReleasesSingleCarrierForUnrelatedTaskThenResumes() throws Exception {
+        // Exercise the actual scheduler state machine, not a placement model.
+        // An unresolved Future must free the sole worker before its producer
+        // reports readiness; completion must never execute guest code inline.
+        try (OresScheduler scheduler = new OresScheduler(1, 16)) {
+            OresFuture<Integer> pending = new OresFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicInteger resumes = new AtomicInteger();
+            AtomicReference<Thread> before = new AtomicReference<>();
+            AtomicReference<Thread> after = new AtomicReference<>();
+            AtomicLong initialDispatch = new AtomicLong();
+            OresFuture<Integer> first = scheduler.start(resume -> {
+                int turn = resumes.getAndIncrement();
+                if (turn == 0) {
+                    assertTrue(resume.initial());
+                    before.set(Thread.currentThread());
+                    initialDispatch.set(OresScheduler.currentDispatchId());
+                    suspended.countDown();
+                    return OresScheduler.await(pending);
+                }
+                assertEquals(1, turn, "continuation may resume only once");
+                assertFalse(resume.initial());
+                assertEquals(41, resume.value());
+                assertNull(resume.failure());
+                after.set(Thread.currentThread());
+                assertNotEquals(initialDispatch.get(), OresScheduler.currentDispatchId());
+                return OresScheduler.done(42);
+            });
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            CountDownLatch peerProgress = new CountDownLatch(1);
+            OresFuture<Integer> peer = scheduler.start(resume -> {
+                assertTrue(resume.initial());
+                peerProgress.countDown();
+                return OresScheduler.done(7);
+            });
+            assertTrue(peerProgress.await(5, TimeUnit.SECONDS),
+                    "unresolved await must release the only carrier");
+            assertEquals(7, peer.get(5, TimeUnit.SECONDS));
+            assertFalse(first.isDone(), "unresolved producer must not complete the task");
+            AtomicReference<Thread> publisher = new AtomicReference<>();
+            Thread completionThread = Thread.ofPlatform().start(() -> {
+                publisher.set(Thread.currentThread());
+                pending.completeFromRuntime(41);
+            });
+            completionThread.join();
+            assertEquals(42, first.get(5, TimeUnit.SECONDS));
+            assertEquals(2, resumes.get());
+            assertSame(before.get(), after.get(),
+                    "one-worker scheduler reuses a worker, not necessarily a CPU core");
+            assertNotSame(publisher.get(), after.get(),
+                    "completion publisher must not run the resumed guest turn");
+        }
+    }
+
 }

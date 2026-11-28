@@ -1,0 +1,62 @@
+name: Editor lexical and parser contract (pinned source)
+
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/EditorSyntaxLexerFixtureTest.java'
+      - 'src/test/resources/editor-syntax-lexer.tsv'
+      - '.github/workflows/editor-lexer-contract.yml'
+  push:
+    branches: ['test/editor-lexer-parity-20261031']
+  schedule:
+    - cron: '41 16 * * 5'
+
+permissions:
+  contents: read
+
+jobs:
+  lexer-and-parser:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact private repository head
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          echo "COMPILER_SHA=$EXPECTED"
+          echo "COMPILER_TREE=$(git rev-parse 'HEAD^{tree}')"
+          git diff --exit-code --quiet
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Run 69 compiler lexical/parser cases
+        run: mvn -B -ntp -Dtest=EditorSyntaxLexerFixtureTest test
+
+  private-grammar-drift:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Compare private compiler grammar blobs against reviewed baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:src/main/java/dev/oreslang/parser/Lexer.java)" = a01f4cd90fecee17139a952a1325ceb16b11dac5 ||
+            { echo "::error::Compiler Lexer.java changed; review editor contract and fixtures"; exit 1; }
+          test "$(git rev-parse HEAD:docs/grammar.ebnf)" = 71b3411d868917250a2dd84eb5b8ec0fc044c061 ||
+            { echo "::error::Compiler EBNF changed; review editor contract and fixtures"; exit 1; }

@@ -1,0 +1,24 @@
+// Deadline arithmetic from GuestAdmissionDeadline.java.
+// Timer callbacks, clock sampling, atomic state and revocation stay host-only.
+define module admission_deadline_policy as
+  pub fnc valid_timeout_ns(int timeout_ns): bool {
+    return timeout_ns >= 1 && timeout_ns <= 300000000000;
+  }
+
+  // A negative or ambiguous monotonic delta fails CLOSED.
+  pub fnc within_window(int elapsed_ns, int timeout_ns): bool {
+    return valid_timeout_ns(timeout_ns) &&
+           elapsed_ns >= 0 && elapsed_ns < timeout_ns;
+  }
+
+  pub fnc should_revoke(int elapsed_ns, int timeout_ns): bool {
+    return !within_window(elapsed_ns, timeout_ns);
+  }
+
+  // This is only metadata: the Java post-CAS recheck and real timer remain
+  // mandatory before any actual lease can become visible.
+  pub fnc can_propose_publication(bool admission_running,
+                                  int elapsed_ns, int timeout_ns): bool {
+    return admission_running && within_window(elapsed_ns, timeout_ns);
+  }
+end

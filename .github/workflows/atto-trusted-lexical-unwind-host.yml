@@ -1,0 +1,50 @@
+name: Atto trusted lexical cleanup exact-head JDK21
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/TrustedLexicalUnwindV1.java'
+      - 'src/test/java/dev/oreslang/runtime/TrustedLexicalUnwindV1HostProbe.java'
+      - '.github/workflows/atto-trusted-lexical-unwind-host.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verified-lexical-unwind:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Exact source checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Assert checked HEAD
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git diff --quiet
+          git diff --cached --quiet
+      - name: Install JDK 21
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Execute actual lexical-unwind bytecode probe
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"
+          trap 'rm -rf "$dir"' EXIT
+          javac -Xlint:all -d "$dir" \
+            src/main/java/dev/oreslang/runtime/TrustedLexicalUnwindV1.java \
+            src/test/java/dev/oreslang/runtime/TrustedLexicalUnwindV1HostProbe.java
+          java -cp "$dir" dev.oreslang.runtime.TrustedLexicalUnwindV1HostProbe | tee "$dir/result"
+          grep -Fqx 'ATTO_TRUSTED_LEXICAL_UNWIND_JDK21_PASS' "$dir/result"
+          echo 'ATTO_LEXICAL_UNWIND_JDK21=EXECUTED'
+      - name: Boundary
+        if: always()
+        run: |
+          echo 'Standalone host-only helper. No Atto guest lowering, Native Image or compiler proof.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Queued and zero-step runs are NOT_EXECUTED.' >> "$GITHUB_STEP_SUMMARY"

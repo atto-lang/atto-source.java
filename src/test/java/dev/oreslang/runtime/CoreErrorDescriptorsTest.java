@@ -1,0 +1,105 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+import java.util.Map;
+import java.util.List;
+import static org.junit.jupiter.api.Assertions.*;
+
+final class CoreErrorDescriptorsTest {
+    @Test void canonicalCatalogProvidesStableCodesAndExactObjects() {
+        assertEquals(99, CoreErrorDescriptors.size());
+        var root = CoreErrorDescriptors.requireKnown("Error");
+        assertEquals(0, root.code());
+        assertFalse(root.abstractType());
+        assertSame(root, CoreErrorDescriptors.requireKnownCode(0));
+        var timeout = CoreErrorDescriptors.requireKnown("ActorAskTimeoutError");
+        assertEquals(9007, timeout.code());
+        assertSame(timeout, CoreErrorDescriptors.requireKnownCode(9007));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreErrorDescriptors.requireKnown("ActorPanicError"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreErrorDescriptors.requireKnownCode(999999));
+    }
+
+    @Test void legacySupervisorSnapshotRejectsForgedNamesAndCodes() {
+        var safe = GuestErrorWireCodec.supervisorCompactSnapshot(
+                "ActorAskTimeoutError", 9007, Map.of("code", (Runnable) () -> {
+                    throw new AssertionError("executed");
+                }));
+        assertEquals(9007, safe.code());
+        assertFalse(safe.full());
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.supervisorCompactSnapshot(
+                        "ActorAskTimeoutError", 0, Map.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.supervisorCompactSnapshot(
+                        "CustomFakeError", 9007, Map.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                GuestErrorWireCodec.supervisorCompactSnapshot(
+                        "ActorError", 9000, Map.of()));
+    }
+
+    @Test void supervisorUsesCoreDescriptorNotGuestFieldsOrGuestCodeMethods() {
+        Map<String, Object> hostile = new java.util.HashMap<>();
+        hostile.put("code", (Runnable) () -> { throw new AssertionError("executed"); });
+        hostile.put("name", "ForgedError");
+        hostile.put("message", "secret");
+        hostile.put("stack", List.of("secret.ores"));
+        hostile.put("self", hostile);
+        var trusted = CoreErrorDescriptors.requireKnown("ActorAskTimeoutError");
+        var snapshot = GuestErrorWireCodec.supervisorCompactCoreSnapshot(trusted, hostile);
+        assertEquals("{\"schema\":1,\"code\":9007,\"name\":\"ActorAskTimeoutError\"}",
+                snapshot.toJson());
+        assertEquals(List.of(), snapshot.frames());
+        assertEquals("", snapshot.message());
+        assertFalse(snapshot.full());
+        assertThrows(IllegalArgumentException.class,
+                () -> GuestErrorWireCodec.supervisorCompactCoreSnapshot(
+                        CoreErrorDescriptors.requireKnown("ActorError"), hostile));
+    }
+
+    @Test void trustedCoreAncestryIsNominalAndTransitive() {
+        var root = CoreErrorDescriptors.requireKnown("Error");
+        var io = CoreErrorDescriptors.requireKnown("IOError");
+        var fs = CoreErrorDescriptors.requireKnown("FileSystemError");
+        var missing = CoreErrorDescriptors.requireKnown("FileNotFoundError");
+        var network = CoreErrorDescriptors.requireKnown("NetworkError");
+        var refused = CoreErrorDescriptors.requireKnown("ConnectionRefusedError");
+        var actor = CoreErrorDescriptors.requireKnown("ActorError");
+        var ask = CoreErrorDescriptors.requireKnown("ActorAskTimeoutError");
+
+        assertNull(root.parent());
+        assertTrue(root.isSubtypeOf(root));
+        assertSame(fs, missing.parent());
+        assertSame(io, fs.parent());
+        assertTrue(missing.isSubtypeOf(io));
+        assertTrue(missing.isSubtypeOf(root));
+        assertTrue(refused.isSubtypeOf(network));
+        assertTrue(refused.isSubtypeOf(io));
+        assertTrue(ask.isSubtypeOf(actor));
+        assertFalse(ask.isSubtypeOf(network));
+        assertFalse(io.isSubtypeOf(missing));
+        assertFalse(network.isSubtypeOf(fs));
+        assertThrows(NullPointerException.class, () -> missing.isSubtypeOf(null));
+    }
+
+    @Test void nominalCoreInterfacesAreInheritedButNotInferredFromNames() {
+        var actor = CoreErrorDescriptors.requireKnown("ActorError");
+        var ask = CoreErrorDescriptors.requireKnown("ActorAskTimeoutError");
+        var missingProcess = CoreErrorDescriptors.requireKnown("ProcessNotFoundError");
+        var mailboxFull = CoreErrorDescriptors.requireKnown("MailboxFullError");
+        var timeout = CoreErrorDescriptors.requireKnown("TimeoutError");
+        var root = CoreErrorDescriptors.requireKnown("Error");
+        assertTrue(actor.abstractType());
+        assertTrue(actor.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(ask.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(missingProcess.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(mailboxFull.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertFalse(timeout.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(timeout.implementsInterface(CoreErrorDescriptors.CoreInterface.RETRY_ADVISORY));
+        assertFalse(root.implementsInterface(CoreErrorDescriptors.CoreInterface.RETRY_ADVISORY));
+        assertTrue(root.implementsInterface(CoreErrorDescriptors.CoreInterface.CODED_ERROR));
+        assertTrue(ask.implementsInterface(CoreErrorDescriptors.CoreInterface.SERIALIZABLE));
+        assertThrows(NullPointerException.class, () -> root.implementsInterface(null));
+    }
+}

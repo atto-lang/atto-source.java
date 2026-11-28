@@ -39,7 +39,7 @@ final class ValueBoundaryAuditTest {
         assertEquals("42742", run("""
                 fnc pair(): [int,int] { return (19,23); }
                 fnc record(): {left: int, right: int} {
-                  return struct{left: int, right: int}{right: 23, left: 19};
+                  return record{right: 23, left: 19};
                 }
                 fnc add(int a, int b): int { return a+b; }
                 fnc recordArg({right: int, left: int} value): int {
@@ -94,7 +94,7 @@ final class ValueBoundaryAuditTest {
         reject("fnc f(): string { return `hello ${value}`; }");
         reject("fnc add(int a,int b):int{return a+b;} fnc f():int{return add.call((1,2));}");
         reject("fnc add(int a,int b):int{return a+b;} fnc f(List<int> x):int{return add(...x);}");
-        reject("fnc f():int { if 1 { return 1; } fi return 0; }");
+        reject("fnc f():int { if 1 { return 1; fi return 0; }");
     }
 
     @Test
@@ -104,7 +104,7 @@ final class ValueBoundaryAuditTest {
                 pub fnc main(): void {
                   if produce() as let value when value > 3 && value < 9 {
                     stdio.stdout.write(value);
-                  } fi
+                  fi
                   return;
                 }
                 """));
@@ -112,13 +112,13 @@ final class ValueBoundaryAuditTest {
                 pub fnc main(): void {
                   if (false as let value when value eq true) {
                     stdio.stdout.write(true);
-                  } else { stdio.stdout.write(value); } fi
+                  } else { stdio.stdout.write(value); fi
                   return;
                 }
                 """));
-        reject("fnc f():int { if 1 as let v when true {} fi return v; }");
-        reject("fnc f():int { if 1 as let v when v {} fi return 0; }");
-        reject("fnc f():int { if 1 as let v {} fi return 0; }");
+        reject("fnc f():int { if 1 as let v when true {fi return v; }");
+        reject("fnc f():int { if 1 as let v when v {fi return 0; }");
+        reject("fnc f():int { if 1 as let v {fi return 0; }");
     }
 
     @Test
@@ -127,7 +127,7 @@ final class ValueBoundaryAuditTest {
                 fnc produce(): int { stdio.stdout.write(4); return 2; }
                 pub fnc main(): void {
                   if true { stdio.stdout.write(1); }
-                  elif produce() as let v when v eq 2 { stdio.stdout.write(9); } fi
+                  elif produce() as let v when v eq 2 { stdio.stdout.write(9); fi
                   if false; then stdio.stdout.write(0);
                   elif produce() as let v when v > 0; then stdio.stdout.write(v);
                   fi
@@ -143,8 +143,8 @@ final class ValueBoundaryAuditTest {
                   let n = 4;
                   while n as let value when value > 0 {
                     n = n - 1;
-                    if value eq 2 { continue; } fi
-                    if value eq 4 { continue; } fi
+                    if value eq 2 { continue; fi
+                    if value eq 4 { continue; fi
                     stdio.stdout.write(value);
                   }
                   stdio.stdout.write(4);
@@ -158,8 +158,8 @@ final class ValueBoundaryAuditTest {
     void shiftsAndCheckedCastsKeepTheirExistingMeaning() throws Exception {
         assertEquals("21", run("""
                 pub fnc main(): void {
-                  if (8 >> 1) eq 4 { stdio.stdout.write(2); } fi
-                  if (1 as int) eq 1 { stdio.stdout.write(1); } fi
+                  if (8 >>> 1) eq 4 { stdio.stdout.write(2); fi
+                  if (1 as int) eq 1 { stdio.stdout.write(1); fi
                   return;
                 }
                 """));
@@ -173,7 +173,7 @@ final class ValueBoundaryAuditTest {
                   let n = 4;
                   while (await next(n) as let value when value > 0) {
                     n = value;
-                    if value eq 2 { break; } fi
+                    if value eq 2 { break; fi
                     stdio.stdout.write(value);
                   }
                   const value = 7;
@@ -184,10 +184,46 @@ final class ValueBoundaryAuditTest {
         assertEquals("3", run("""
                 fnc pick(): int {
                   if 3 as let v when v > 0 { return v; }
-                  else { return 0; } fi
+                  else { return 0; fi
                 }
                 pub fnc main(): void { stdio.stdout.write(pick()); return; }
                 """));
+    }
+
+    @Test
+    void suspendableConjunctionUsesLeftPatternBindingsOnTheRight() throws Exception {
+        // The right operand must evaluate in the left operand's scoped
+        // environment even when the left predicate awaits a Future.
+        assertEquals("7", run("""
+                async fnc ready(): Option<int> { return Some(7); }
+                pub async fnc main(): void {
+                  if ((await ready()) matches Some(value)) && value > 3 {
+                    stdio.stdout.write(value);
+                  } fi
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void conditionBindingSnapshotPreservesNullAndDeclarationOrder() throws Exception {
+        // Directly exercise nullable host/guest values; Map.copyOf silently
+        // turns these otherwise valid bindings into a NullPointerException.
+        Class<?> evaluator = Class.forName("dev.oreslang.nodes.OresEvalRootNode$Evaluator");
+        var method = evaluator.getDeclaredMethod("immutableBindings", java.util.Map.class);
+        method.setAccessible(true);
+        var original = new java.util.LinkedHashMap<String, Object>();
+        original.put("nullable", null);
+        original.put("last", 7);
+        @SuppressWarnings("unchecked")
+        var snapshot = (java.util.Map<String, Object>) method.invoke(null, original);
+        original.put("last", 99);
+        assertEquals(java.util.List.of("nullable", "last"),
+                java.util.List.copyOf(snapshot.keySet()));
+        assertTrue(snapshot.containsKey("nullable"));
+        assertNull(snapshot.get("nullable"));
+        assertEquals(7, snapshot.get("last"));
+        assertThrows(UnsupportedOperationException.class, () -> snapshot.put("new", 1));
     }
 
     @Test
@@ -236,8 +272,8 @@ final class ValueBoundaryAuditTest {
                 pub fnc main(): void {
                   if (|| -> {
                     if 1 as let v when v eq 1 { return true; }
-                    else { return false; } fi
-                  })() { stdio.stdout.write(1); } fi
+                    else { return false; fi
+                  })() { stdio.stdout.write(1); fi
                   return;
                 }
                 """));

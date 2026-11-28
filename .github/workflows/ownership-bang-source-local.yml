@@ -1,0 +1,118 @@
+name: Ownership bang - approved source-local Java qualification
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  java-ownership-bang:
+    # An admin must approve BOTH workflow PR head and tested source SHA.
+    if: >-
+      github.event.label.name == 'ownership-bang-ci-approved' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      vars.ORESLANG_BANG_RUNNER_ENABLED == 'enabled' &&
+      vars.ORESLANG_BANG_APPROVED_WORKFLOW_SHA == github.event.pull_request.head.sha &&
+      vars.ORESLANG_BANG_APPROVED_SOURCE_SHA == '1f6d48e2cb7f76dfe4fec3ad357319f17277439a'
+    runs-on: [self-hosted, linux, x64, oreslang-bang-java-isolated]
+    timeout-minutes: 60
+    env:
+      EXPECTED_SOURCE_SHA: '1f6d48e2cb7f76dfe4fec3ad357319f17277439a'
+      EXPECTED_SOURCE_TREE: 'a4402e1967e0ed63fe39d26931ece935c341e820'
+      APPROVED_WORKFLOW_SHA: ${{ vars.ORESLANG_BANG_APPROVED_WORKFLOW_SHA }}
+      EXPECTED_REPO: ores-truffle-oreslang/oreslang-source.java
+    steps:
+      - name: Checkout reviewed immutable code from SAME repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify immutable source before execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPO"
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_SOURCE_TREE"
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          mkdir -p ci-evidence
+          printf '%s\n' \
+            "source_repository=$GITHUB_REPOSITORY" \
+            "source_commit=$EXPECTED_SOURCE_SHA" \
+            "source_tree=$(git rev-parse 'HEAD^{tree}')" \
+            "reviewed_workflow_pr_head=$APPROVED_WORKFLOW_SHA" \
+            "run_id=$GITHUB_RUN_ID" \
+            "run_attempt=$GITHUB_RUN_ATTEMPT" \
+            "runner=$RUNNER_NAME" \
+            "scope=Java_Truffle_guest_not_Native_Image_AOT" \
+            "result=NOT_YET_PASSED" > ci-evidence/receipt.txt
+      - name: Verify isolated Java and Maven toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          mvn --version
+          test -n "$RUNNER_NAME"
+      - name: Pin all six reviewed .atto guest Git blobs before running code
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=src/test/resources/atto/ownership-bang-v1
+          while read -r fixture expected; do
+            actual="$(git hash-object "$root/$fixture")"
+            test "$actual" = "$expected" || {
+              echo "Unreviewed guest fixture: $fixture" >&2
+              exit 1
+            }
+          done <<'PINS'
+          compact.atto 5336fa679a7816dbd353be4480f95dac639b6af7
+          spaced.atto 06afd973b34a6cd09d1d78cee258134b1c3b0451
+          legacy.atto fa3d3ef8173d046783efdae808bd291be00891be
+          mut-canonical.atto a518f08a495763f349c7ab21baa5d61d0cfc7769
+          mut-compact.atto a7e3b55ebd128a671cdb48ede3557aee6dc1b2b0
+          mut-rt-tail.atto b1e982f0ca85291a5e9924e3c6ff571ba13efebe
+          PINS
+      - name: Execute Java JUnit and real Atto guest tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Clean prevents any stale Surefire reports or compiled classes
+          # from a reused runner workspace from being counted as fresh proof.
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=OwnershipBangAliasesTest,OwnershipBangGuestTest clean test
+      - name: Require nonempty unskipped zero-error JUnit results
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in OwnershipBangAliasesTest OwnershipBangGuestTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.$suite.xml"
+            test -s "$report"
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            grep -Eq 'failures="0"' "$report"
+            grep -Eq 'errors="0"' "$report"
+            grep -Eq 'skipped="0"' "$report"
+          done
+          # Tests must not rewrite checked-in source or reviewed fixtures.
+          git diff --quiet --exit-code
+          printf '%s\n' 'result=EXECUTED_TESTS_PASSED' >> ci-evidence/receipt.txt
+          sha256sum ci-evidence/receipt.txt \
+            target/surefire-reports/TEST-dev.oreslang.OwnershipBangAliasesTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.OwnershipBangGuestTest.xml \
+            > ci-evidence/report-sha256.txt
+          sha256sum --check --status ci-evidence/report-sha256.txt
+      - name: Upload receipt only after successful tests
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: java-bang-source-local-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/
+            target/surefire-reports/TEST-dev.oreslang.OwnershipBangAliasesTest.xml
+            target/surefire-reports/TEST-dev.oreslang.OwnershipBangGuestTest.xml
+          if-no-files-found: error
+          retention-days: 3

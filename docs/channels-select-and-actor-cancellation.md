@@ -166,12 +166,39 @@ it completes or is cancelled.
 
 ### Immediate probe forms
 
-```ores
+```atto
 val Option<int> now = try readch input;
-val bool wrote = try writech output, value;
+val TryWriteResult<int> outcome = try writech output, value;
 ```
 
-`try` means **succeed now or return immediately without leaving a waiter**.
+`try` means **attempt immediate admission without leaving a waiter**.
+
+- `try readch` returns `Some(value)` if ready and `None` when temporarily empty. After a closed channel's committed buffer is drained, it raises the channel-closed error; closure is **not** `None`.
+- `try writech` returns a `TryWriteResult<T>` containing `Accepted`, `Full(T)`, or `Closed(T)`. Exactly one admission either commits or does not. `Full` means temporarily no capacity or no rendezvous partner; `Closed` means write admission lost to closure.
+- Full/Closed return ownership of the **original value**, not a deep copy, delayed registration, or stale alias. Move-only writes and `rt take` are supported by the typed guest compiler path. Explicit `rt take` invalidates the original source binding even on failure; the rejected value is recoverable only from its result.
+- A typed immediate result cannot be silently discarded or destructured twice. The ownership checker rejects use-after-move, and guarded destructuring is rejected until rollback semantics are proven. Channel data still cannot transport protected MutexGuard, borrowed references, callable captures, or cross-actor capabilities.
+- The host Java `Channel<T>.tryWrite(T)` Boolean probe remains only as a compatibility host API. Guest `try writech` does **not** return Boolean anymore.
+
+```atto
+val result = try writech output, rt take message;
+do match result over
+  on Accepted -> { /* ownership committed exactly once */ }
+  on Full(message) -> { /* original owned message returned */ }
+  on Closed(message) -> { /* original owned message returned */ }
+end
+```
+
+The Java reference exposes `Channel<T>.tryWriteResult(T)` and
+`WriteChannel<T>.tryWriteResult(T)`; both return the sealed
+`ChannelRuntime.TryWriteResult<T>` host result. Closed is decoded only
+from channel closure; other failures remain failures. The interpreter and
+ownership/type checkers now recognize the guest variants. Focused guest and
+runtime execution (13/13) passed on exact-tree JDK25/GraalVM private-runner
+CI for Java source commit `c45bf45c2cb90572f145c18a0a56f7f57c95bdd1`:
+https://github.com/3FA-app/atto-ci/actions/runs/43672639208
+Later changes require their own exact-head tests; this earlier receipt is
+not certification of subsequent commits. LLVM, Wasm, Forge, and .NET
+compiler-backed parity remains NOT_EXECUTED.
 
 Immediate probes and select registrations use the same channel arbitration, so
 an immediate write can rendezvous with a pending select-read and an immediate
@@ -230,6 +257,27 @@ do select {
 }
 ```
 
+The outer braces are interchangeable with `over ... end`; arm bodies remain
+braced and the runtime semantics are identical:
+
+```ores
+do select over
+  when readch incoming: let msg {
+    stdio.println("Received:", msg);
+  }
+  when writech outgoing, payload: {
+    stdio.println("Sent payload successfully");
+  }
+  when readch shutdown: const signal {
+    return;
+  }
+end
+```
+
+The same delimiter equivalence applies to `select`, `nb select`, and the
+legacy-compatible `do nb select` form. Selection policy (`first`, `fair`,
+or `random`) appears before either `{` or `over`.
+
 **One wait mode per selection:** the enclosing `select`, `nb select`, or `try select` controls whether the entire selection suspends, registers an asynchronous selection, or probes immediately. An arm is atomic and must use plain `readch` or `writech`. Arm-level `nb` or `try` modifiers are invalid. Standalone operations in arm bodies remain governed by their own rules.
 
 A read arm may bind with `let`, `val`, or `const`. `const` means the
@@ -239,10 +287,11 @@ compile-time constant.
 Every `when` (or legacy `case`) and `default` arm requires its own `{ ... }` body, including
 empty arms. Canonical source uses two spaces per indentation level and no tabs
 for indentation: arms sit one level inside `select`, and their statements sit
-one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`.
+one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`,
+whether the outer selection uses braces or `over ... end`.
 Legacy unbraced arms are rejected by the parser; `oresfmt` migrates them.
 
-A select may include one `default: { ... }` arm.
+A select may include one `default: { ... }` arm, and `default` must be the final arm.
 
 A static select arm is a non-throwing control-flow boundary. An ordinary
 `throw` may be handled by a local `try/catch`, or absorbed by a called
@@ -504,10 +553,39 @@ This transformation is permitted only when evaluating the case expressions has
 no required per-iteration observable behavior and the referenced channel/value
 bindings are stable. Otherwise the compiler must keep the original lowering.
 
-Dynamic selection can explicitly build a plan after constructing its runtime
-case list. Mutating the source list afterward does not mutate the plan; create a
-new plan for a changed case set. A later versioned dynamic-plan builder may
-support incremental add/remove/rebind without changing this snapshot contract.
+A fixed `SelectPlan` freezes its input case list. For a changing case set, the
+Java runtime now provides `ChannelRuntime.DynamicSelectPlan<K>`: `put(key, case)`,
+`remove(key)`, `selectSetSnapshot()`, `trySelectKeyed(policy)` and
+`selectKeyedAsync(policy)`. The keyed result contains `{version, key, selection}`
+and is pinned to the exact generation captured when the selection began.
+The source-language `DynamicSelectPlan.new` and implicit lexical-loop hoisting
+remain staged on Java PR #526 and are **not yet merged into main**.
+
+```java
+var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+plan.put("inbox", ChannelRuntime.read(inbox)); // once, outside loop
+while (running) {
+    var result = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR).join();
+    handle(result.key(), result.selection().value());
+}
+```
+
+The `SelectSet` snapshot is immutable and reused while the plan's structure is
+unchanged. Each selection allocates fresh winner/cancellation state and fresh
+Channel/Future waiter registrations. A mutation publishes a new descriptor
+generation; existing operations keep their old generation, even if its key was
+removed or replaced. Previous-generation completions cannot rotate the new
+generation's FAIR cursor. The current admission limit of
+`ChannelRuntime.MAX_SELECT_CASES` applies to dynamic plans at insertion time.
+Default-only wins do not advance FAIR credit.
+
+A compiler may hoist an inline static select only when it proves every retained
+operand is loop-invariant, immutable, ownership-safe and actor-generation-local.
+Channel writes, dynamic expressions, per-iteration shadowing and mutable
+bindings must still be evaluated every iteration. Compiler lowering must also
+preserve the source-site FAIR ticket and fresh per-invocation cancellation/winner
+state. Native LLVM currently remains fail-closed pending explicit lowering and
+equivalent cancellation/sanitizer tests.
 
 ## Cancellation
 

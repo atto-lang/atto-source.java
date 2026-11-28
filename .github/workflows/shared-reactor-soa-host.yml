@@ -1,0 +1,29 @@
+name: shared-reactor-soa-host
+on:
+  push:
+    branches: ["feat/shared-reactor-soa-*"]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: shared-reactor-soa-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+      - name: Compile and execute actual host pool with strict Java lint
+        run: |
+          javac -Xlint:all -Werror -d /tmp/shared-reactor-classes src/main/java/dev/oreslang/runtime/SharedReactorPool.java src/test/java/dev/oreslang/runtime/SharedReactorPoolCheck.java
+          timeout 30 java -cp /tmp/shared-reactor-classes dev.oreslang.runtime.SharedReactorPoolCheck

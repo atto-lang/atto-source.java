@@ -21,8 +21,25 @@ final class NativeBuildModeTest {
             }
         }
     }
+    @Test void nativeReferenceModeIsBuildTimeAndDefaultsCompact() {
+        assertEquals(NativeBuildMode.ManagedReferenceMode.COMPRESSED32,
+                NativeBuildMode.parseManagedReferenceMode(true, "compressed32"));
+        assertEquals(NativeBuildMode.ManagedReferenceMode.NATIVE64,
+                NativeBuildMode.parseManagedReferenceMode(true, "native64"));
+        assertEquals(NativeBuildMode.ManagedReferenceMode.JVM_MANAGED,
+                NativeBuildMode.parseManagedReferenceMode(false, "native64"));
+        assertEquals(NativeBuildMode.ManagedReferenceMode.JVM_MANAGED,
+                NativeBuildMode.parseManagedReferenceMode(false, null));
+        assertThrows(IllegalStateException.class,
+                () -> NativeBuildMode.parseManagedReferenceMode(true, null));
+        assertThrows(IllegalStateException.class,
+                () -> NativeBuildMode.parseManagedReferenceMode(true, "auto"));
+    }
+
     @Test void jvmDoesNotPretendToBeANativeImage() {
         assertEquals(NativeBuildMode.Kind.JVM, NativeBuildMode.kind());
+        assertEquals(NativeBuildMode.ManagedReferenceMode.JVM_MANAGED,
+                NativeBuildMode.managedReferenceMode());
         assertEquals("jit", NativeBuildMode.defaultExecutionMode());
         assertEquals(ExecutionProfile.Mode.JIT,
                 IsolatePolicy.executionProfileFromApplicationArguments(new String[0]).mode());

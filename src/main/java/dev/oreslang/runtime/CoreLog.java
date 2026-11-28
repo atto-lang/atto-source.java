@@ -17,24 +17,11 @@ public final class CoreLog {
     public static final int ASYNC_IO_REJECTED = 1;
     public static final int ASYNC_IO_FAILED = 2;
     public static final int ACTOR_DISPATCHER_FAILED = 3;
-    public static final int ACTOR_MAILBOX_REJECTED = 4;
-    public static final int ACTOR_WATCHDOG_OVERRUN = 5;
-    public static final int ACTOR_TERMINAL_FAILURE = 6;
-    public static final int ACTOR_CANCELLED = 7;
-    public static final int SUPERVISOR_RESTART_SUPPRESSED = 8;
-    public static final int SUPERVISOR_CONTROL_FAILED = 9;
+    public static final int SUPERVISOR_RESTART_SUPPRESSED = 4;
 
     private static final String[] NAMES = {
-        "unused",
-        "async.io.rejected",
-        "async.io.failed",
-        "actor.dispatcher.failed",
-        "actor.mailbox.rejected",
-        "actor.watchdog.overrun",
-        "actor.terminal.failure",
-        "actor.cancelled",
-        "supervisor.restart.suppressed",
-        "supervisor.control.failed"
+        "unused", "async.io.rejected", "async.io.failed", "actor.dispatcher.failed",
+        "supervisor.restart.suppressed"
     };
     private static final int DEFAULT_CAPACITY = 8192;
 

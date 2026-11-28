@@ -1,0 +1,21 @@
+fnc seed(): int {
+    stdio.println("factory");
+    return 5;
+}
+
+fnc later(): int {
+    stdio.println("operand");
+    return 2;
+}
+
+fnc cleanup(int n): void {
+    stdio.println(n);
+}
+
+pub fnc main(): int {
+    defer cleanup(later());
+    defer (|int value| -> || -> { stdio.println(value); })(seed());
+    defer stdio.println("last");
+    stdio.println("body");
+    return 42;
+}

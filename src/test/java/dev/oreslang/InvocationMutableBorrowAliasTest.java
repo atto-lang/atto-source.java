@@ -32,7 +32,7 @@ final class InvocationMutableBorrowAliasTest {
                 fnc touch(borrow mut Box a, borrow mut Box b): void { return; }
                 pub fnc main(): void {
                   val Box box = new Box();
-                  touch(rt borrow mut box, rt borrow mut box);
+                  touch(rt mut borrow box, rt mut borrow box);
                   return;
                 }
                 """);
@@ -44,7 +44,7 @@ final class InvocationMutableBorrowAliasTest {
                 fnc touch(borrow Box a, borrow mut Box b): void { return; }
                 pub fnc main(): void {
                   val Box box = new Box();
-                  touch(rt borrow box, rt borrow mut box);
+                  touch(rt borrow box, rt mut borrow box);
                   return;
                 }
                 """);
@@ -56,7 +56,7 @@ final class InvocationMutableBorrowAliasTest {
                 fnc touch(borrow mut Box a, borrow Box b): void { return; }
                 pub fnc main(): void {
                   val Box box = new Box();
-                  touch(rt borrow mut box, rt borrow box);
+                  touch(rt mut borrow box, rt borrow box);
                   return;
                 }
                 """);
@@ -81,7 +81,7 @@ final class InvocationMutableBorrowAliasTest {
                 pub fnc main(): void {
                   val Box left = new Box();
                   val Box right = new Box();
-                  touch(rt borrow mut left, rt borrow mut right);
+                  touch(rt mut borrow left, rt mut borrow right);
                   return;
                 }
                 """);
