@@ -1403,11 +1403,13 @@ public final class ActorRuntime implements AutoCloseable {
      * unsettled lease retries by default so try-with-resources is lossless.
      */
     public final class RootControlLease implements AutoCloseable {
+        private final ActorSupervisorControlLane.Delivery delivery;
         private final ActorFailureNotice notice;
         private final AtomicBoolean settled = new AtomicBoolean();
 
-        private RootControlLease(ActorFailureNotice notice) {
-            this.notice = Objects.requireNonNull(notice, "notice");
+        private RootControlLease(ActorSupervisorControlLane.Delivery delivery) {
+            this.delivery = Objects.requireNonNull(delivery, "delivery");
+            this.notice = delivery.notice();
         }
 
         public ActorFailureNotice notice() {
@@ -1420,8 +1422,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("root CONTROL lease already settled");
             }
             try {
-                rootSupervisionControl.ack(
-                        notice.actor(), notice.generation());
+                rootSupervisionControl.ack(delivery);
             } catch (RuntimeException failure) {
                 settled.set(false);
                 throw failure;
@@ -1434,8 +1435,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("root CONTROL lease already settled");
             }
             try {
-                rootSupervisionControl.retry(
-                        notice.actor(), notice.generation());
+                rootSupervisionControl.retry(delivery);
             } catch (RuntimeException failure) {
                 settled.set(false);
                 throw failure;
@@ -1452,7 +1452,7 @@ public final class ActorRuntime implements AutoCloseable {
     /** Host-only nonblocking root supervisor admission with explicit settlement. */
     public Optional<RootControlLease> pollRootSupervisionControl() {
         requireSupervisorContext("poll root supervisor CONTROL events");
-        return rootSupervisionControl.poll().map(RootControlLease::new);
+        return rootSupervisionControl.pollMapped(RootControlLease::new);
     }
 
     public ActorControlStats rootSupervisionStats() {
@@ -12290,6 +12290,7 @@ public final class ActorRuntime implements AutoCloseable {
                         && (!stopped.get() || sourceStopCleanupActive)) {
                     MessageEnvelope envelope = null;
                     boolean sourceTaskCommand;
+                    ActorSupervisorControlLane.Delivery controlDelivery = null;
                     ActorFailureNotice controlNotice = null;
                     PendingUpgrade<M> upgradeToRun = null;
                     synchronized (lifecycleLock) {
@@ -12315,7 +12316,8 @@ public final class ActorRuntime implements AutoCloseable {
                             // while a suspended source receive owns actor state or
                             // after the bounded anti-starvation burst.
                             if (!sourceReceiveSuspended && !fairnessYield) {
-                                controlNotice = childControl.poll().orElse(null);
+                                controlDelivery = childControl.poll().orElse(null);
+                                if (controlDelivery != null) controlNotice = controlDelivery.notice();
                             }
                             if (controlNotice == null) {
                                 envelope = continuationMailbox.tryRead().orElse(null);
@@ -12361,9 +12363,7 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         synchronized (lifecycleLock) {
                             if (!stopped.get()) {
-                                childControl.ack(
-                                        controlNotice.actor(),
-                                        controlNotice.generation());
+                                childControl.ack(controlDelivery);
                                 rootSupervisionControl.retireGracefully(
                                         controlNotice.actor(),
                                         controlNotice.generation());

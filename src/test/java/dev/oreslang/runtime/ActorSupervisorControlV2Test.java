@@ -54,13 +54,14 @@ final class ActorSupervisorControlV2Test {
         assertEquals(1, queued.duplicatePublishRejected());
 
         var event = lane.poll().orElseThrow();
-        assertEquals(2, event.sequence());
+        assertEquals(2, event.notice().sequence());
         assertThrows(IllegalStateException.class, lane::poll);
 
-        lane.retry(first, 7);
+        lane.retry(event);
         assertEquals(1, lane.snapshot().retried());
-        assertEquals(2, lane.poll().orElseThrow().sequence());
-        lane.ack(first, 7);
+        var retry = lane.poll().orElseThrow();
+        assertEquals(2, retry.notice().sequence());
+        lane.ack(retry);
 
         var done = lane.snapshot();
         assertEquals(0, done.reserved());
