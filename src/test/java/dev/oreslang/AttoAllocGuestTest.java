@@ -9,6 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
@@ -101,6 +102,18 @@ final class AttoAllocGuestTest {
                     new ByteArrayOutputStream(), new ByteArrayOutputStream());
             assertEquals(42, result.exitStatus(), "real guest must run " + name);
         }
+    }
+
+    @Test
+    void denseSymmetricDifferenceRejectsIncompatibleDomainsAtRuntime() throws Exception {
+        Path guest = Path.of("tests", "fixtures", "alloc-java-guest", "set-dense-xor-domain-negative.atto");
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()),
+                "domain mismatch must reach actual guest execution");
+        PolyglotException failure = assertThrows(PolyglotException.class,
+                () -> LinkedProgramRunner.runWithExitStatus(guest, IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(), new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(failure.getMessage().contains("alloc/set: symmetric difference domain mismatch"),
+                failure::getMessage);
     }
 
     @Test
