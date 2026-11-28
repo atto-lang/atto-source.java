@@ -96,6 +96,39 @@ final class OresTimerWheelTest {
     }
 
     @Test
+    void generationExhaustionRetiresSlotsAndSentinelDoesNotConsumeCapacity() throws Exception {
+        OresTimerWheel<Object> w = new OresTimerWheel<>(2, 2, MS, 0);
+        Sink sink = new Sink();
+        assertEquals(0L, w.arm(OresTimerWheel.NO_DEADLINE, "invalid"));
+        assertEquals(0, w.size());
+        assertEquals(OresTimerWheel.NO_DEADLINE, w.nextDeadlineNanos());
+        long first = w.arm(MS, "first");
+        assertTrue(w.cancel(first));
+        // Simulate the final unsigned generation without billions of iterations.
+        var field = OresTimerWheel.class.getDeclaredField("generation");
+        field.setAccessible(true);
+        int[] generations = (int[]) field.get(w);
+        generations[0] = -1;
+        long last = w.arm(MS, "last");
+        assertNotEquals(first, last);
+        assertTrue(w.cancel(last));
+        long sibling = w.arm(MS, "sibling");
+        assertNotEquals(0L, sibling);
+        assertNotEquals(first, sibling);
+        assertFalse(w.cancel(first));
+        assertTrue(w.isLive(sibling));
+        assertTrue(w.cancel(sibling));
+        generations[1] = -1;
+        long finalHandle = w.arm(MS, "final");
+        assertNotEquals(0L, finalHandle);
+        assertEquals(List.of("final"), poll(w, MS, 1, sink));
+        assertEquals(finalHandle, sink.handles[0]);
+        assertFalse(w.isLive(finalHandle));
+        assertEquals(0, w.size());
+        assertEquals(0L, w.arm(MS, "exhausted"));
+    }
+
+    @Test
     void boundedDrainingIsFifoAndQueuedTimersStayCancellable() {
         OresTimerWheel<Object> w = new OresTimerWheel<>(1024, 1024, MS, 0);
         Sink s = new Sink();
