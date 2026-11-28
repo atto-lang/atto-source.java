@@ -31,5 +31,20 @@ pub fnc main(): int {
   if larger.len() neq 4 || larger.capacity() neq 4 ||
      !larger.contains(-2) || !larger.contains(-1) ||
      !larger.contains(0) || !larger.contains(1); do return 9; fi
+  // A fully tombstoned table must behave as an empty operand, even
+  // when its probe walks every slot. An exact-capacity result stays independent.
+  let mut IntHashSet dead = new IntHashSet(2);
+  dead.insert(-2); dead.insert(0); dead.remove(-2); dead.remove(0);
+  if !dead.is_empty() || dead.tombstones() neq 2; do return 10; fi
+  let mut IntHashSet live = new IntHashSet(2);
+  live.insert(-4); live.insert(2);
+  let mut IntHashSet recovered = dead.symmetric_difference_with_capacity(rt borrow live, 2);
+  if recovered.len() neq 2 || !recovered.same_members(rt borrow live) ||
+     recovered.tombstones() neq 0 || dead.tombstones() neq 2; do return 11; fi
+  let mut IntHashSet reverse_dead = live.symmetric_difference_with_capacity(rt borrow dead, 2);
+  if !reverse_dead.same_members(rt borrow recovered); do return 12; fi
+  dead.insert(8); live.clear();
+  if !recovered.contains(-4) || !recovered.contains(2) ||
+     recovered.contains(8) || recovered.len() neq 2; do return 13; fi
   return 42;
 }
