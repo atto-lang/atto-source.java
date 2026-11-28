@@ -6379,6 +6379,21 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             rejectUnloweredNamedArguments(call.arguments(), "suspendable call");
+            if (call.callee() instanceof Ast.NameExpr symbol && symbol.name().equals("Symbol")) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    continuation.accept(task, null, new IllegalArgumentException("Symbol expects one positional string"));
+                    return;
+                }
+                evalSuspendableArguments(task, call.arguments(), env, (t, values, failure) -> {
+                    if (failure != null) { continuation.accept(t, null, failure); return; }
+                    try {
+                        continuation.accept(t, dev.oreslang.runtime.OresSymbol.constructGuest(values), null);
+                    } catch (RuntimeException | Error invalid) {
+                        continuation.accept(t, null, invalid);
+                    }
+                });
+                return;
+            }
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {
                 // Preserve left-to-right value-first evaluation even when the
@@ -8683,6 +8698,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.callee() instanceof Ast.NameExpr symbol && symbol.name().equals("Symbol")) {
+                rejectUnloweredNamedArguments(call.arguments(), "Symbol constructor");
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1)
+                    throw new IllegalArgumentException("Symbol expects one positional string");
+                return invokableInvocation(dev.oreslang.runtime.OresSymbol::constructGuest,
+                        evaluateArguments(call.arguments(), env));
+            }
             CheckedDispatchPlansV1.Plan plan = checkedDispatchPlans.get(call);
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {

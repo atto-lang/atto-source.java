@@ -4652,6 +4652,17 @@ public final class TypeChecker {
                                 + "but cannot execute until checked call plans are consumed by type, "
                                 + "ownership, synchronous and suspendable runtime lowering");
             }
+            if (call.callee() instanceof Ast.NameExpr symbol && symbol.name().equals("Symbol")) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException("Symbol expects one positional string and no type arguments");
+                }
+                Type argument = typeOf(call.arguments().getFirst(), env, generics, self);
+                if (!isStringLike(argument)) {
+                    throw new IllegalArgumentException("Symbol expects an owned string");
+                }
+                return new Named("$builtin$Symbol", List.of());
+            }
             // A host/compiler-side type_of query table exists, but the guest
             // intrinsic has no typed HIR or AOT machine-code lowering yet.
             // Fail closed rather than resolving a user-defined generic

@@ -31,6 +31,19 @@ public final class OresSymbol {
         return new OresSymbol(Kind.PROCESS, name);
     }
 
+    /** Guest constructor: same bounded nominal PROCESS value as a literal.
+     * Never intern attacker-controlled text or grant nonpublic actor capability. */
+    public static OresSymbol constructGuest(java.util.List<Object> arguments) {
+        if (arguments.size() != 1 || !(arguments.getFirst() instanceof String text))
+            throw new IllegalArgumentException("Symbol expects one string");
+        OresSymbol result = process(text);
+        if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED
+                && !result.publicToUntrustedCoreV1()) {
+            throw new SecurityException("nonpublic Symbol construction in untrusted actor");
+        }
+        return result;
+    }
+
     public static OresSymbol stable(String canonicalUuid) {
         String checked = normalizeAndValidate(canonicalUuid);
         try {

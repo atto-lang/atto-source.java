@@ -2528,6 +2528,19 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.NameExpr symbol && symbol.name().equals("Symbol")) {
+            if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr
+                    || call.arguments().getFirst() instanceof Ast.NamedArgExpr) {
+                throw error(E_ARITY, "Symbol expects one positional string");
+            }
+            ValueInfo argument = checkExpr(call.arguments().getFirst(), scope, false);
+            if (isBorrowValue(argument) || containsBorrowType(argument.type)
+                    || !Set.of("string", "String").contains(argument.type.name())) {
+                throw error(E_TYPE, "Symbol expects an owned string");
+            }
+            return new ValueInfo(Ast.TypeRef.simple("Symbol"), ValueKind.COPY, null);
+        }
         if (call.origin() == Ast.CallOrigin.DIRECT
                 && currentInstanceMethodOwner != null
                 && currentInstanceMethodOwner.actorKind() != Ast.ActorKind.NONE

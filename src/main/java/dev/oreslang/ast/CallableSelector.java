@@ -40,7 +40,7 @@ public record CallableSelector(Kind kind, String name, int arity) {
     public static boolean reservedImplicitReceiverCallName(String name) {
         return switch (name) {
             case "init", "Some", "Ok", "Err", "And", "Or", "Xor",
-                    "print", "task_context", "task_cancel_requested",
+                    "print", "Symbol", "task_context", "task_cancel_requested",
                     "$task_context_enter", "$task_context_exit" -> true;
             default -> false;
         };
