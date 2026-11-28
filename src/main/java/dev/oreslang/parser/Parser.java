@@ -9150,10 +9150,16 @@ public final class Parser {
     private String checkedInlineRecordPairName(String name) {
         // Use the same lexer as parameter declarations, and require exact
         // spelling, not merely one token after trivia/comment removal.
-        List<Token> parts = new Lexer(name).scan();
+        List<Token> parts;
+        try {
+            parts = new Lexer(name).scan();
+        } catch (IllegalArgumentException invalid) {
+            throw error(previous(), "E_RECORD_LABEL: Record.of Pair key must be a valid static parameter identifier");
+        }
         if (parts.size() != 2 || parts.getFirst().type() != IDENT
-                || !parts.getFirst().lexeme().equals(name)) {
-            throw error(previous(), "Record.of Pair key must be a valid static parameter identifier");
+                || !parts.getFirst().lexeme().equals(name)
+                || name.codePoints().anyMatch(Character::isISOControl)) {
+            throw error(previous(), "E_RECORD_LABEL: Record.of Pair key must be a valid static parameter identifier");
         }
         return name;
     }
@@ -9258,6 +9264,13 @@ public final class Parser {
                 } else {
                     Token fieldToken = peek();
                     name = consumeStaticObjectKeyName("expected static Record.of field name");
+                    // Canonical Record fields use the ordinary identifier domain,
+                    // unlike generic object/Map keys. Keep legacy parsing intact.
+                    if (canonicalAttoSource) {
+                        if (fieldToken.type() == STRING) name = checkedQuotedRecordLabel(fieldToken);
+                        else if (fieldToken.type() != IDENT)
+                            throw error(fieldToken, "E_RECORD_LABEL: expected ordinary identifier");
+                    }
                     if (check(FAT_ARROW)) {
                         throw error(peek(), "mixed record and map entries are forbidden: Record.of does not accept Entry arrows");
                     }
