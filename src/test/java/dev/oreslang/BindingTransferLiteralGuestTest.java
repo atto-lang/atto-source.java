@@ -18,7 +18,7 @@ final class BindingTransferLiteralGuestTest {
                 "let a <- 42; return a;",
                 "let int a <- 42; return a;",
                 "let a = 0; set a <- 42; return a;",
-                "let a <- true; return if a then 42 else 0 fi;",
+                "let a <- true; return a ? 42 : 0;",
                 "let a = 0; set a = 42; return a;"}) {
             String source = program(body);
             assertNotNull(OresCompiler.parseAndTypeCheck(source), body);
