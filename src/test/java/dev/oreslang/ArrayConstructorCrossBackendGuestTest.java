@@ -23,6 +23,18 @@ final class ArrayConstructorCrossBackendGuestTest {
     }
 
     @Test
+    void rejectsUnprovenFreshAllocationExpressionsInDeferredPrefix() {
+        for (String expression : new String[]{
+                "new Array<string>()", "new Array<int>(1)", "self.first", "make()"}) {
+            String source = "define class Pair as pub final mut Array<int> first; "
+                    + "constructor() { self.first = " + expression + "; } end";
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.parser.Parser.parse(source), expression);
+            assertTrue(failure.getMessage().contains("E_INIT"), failure::getMessage);
+        }
+    }
+
+    @Test
     void duplicateAndMissingFinalArrayInitializationRejectBeforeExecution() {
         for (String name : new String[]{"duplicate", "missing"}) {
             Path fixture = ROOT.resolve("class-explicit-array-constructor-" + name + "-reject.atto");

@@ -1760,8 +1760,9 @@ public final class Parser {
                         && pending.contains(member.member())
                         && (assignment.value() instanceof Ast.NameExpr value
                             && parameters.contains(value.name()) && !value.name().equals("self")
-                            || assignment.value() instanceof Ast.LiteralExpr))) {
-                    throw error(previous(), "E_INIT: deferred final fields require direct parameter or literal initialization before other statements: " + pending);
+                            || assignment.value() instanceof Ast.LiteralExpr
+                            || isFreshDeferredIntArray(fields, member.member(), assignment.value())))) {
+                    throw error(previous(), "E_INIT: deferred final fields require direct parameter, literal or checked fresh Array<int> initialization before other statements: " + pending);
                 }
                 pending.remove(member.member());
             }
@@ -1771,6 +1772,21 @@ public final class Parser {
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
                 parents, interfaces, fields, constructor, methods,
                 Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC), List.of(), classAnnotations);
+    }
+
+    // Admit only an argument-free fresh Array<int> of the identical declared
+    // mutable referent type. No aliases, arbitrary calls, constructor arguments,
+    // inferred generic types, or self-dependent expressions enter the prefix.
+    // Type checking and ownership lowering remain authoritative.
+    private static boolean isFreshDeferredIntArray(
+            List<Ast.FieldDecl> fields, String name, Ast.Expr value) {
+        if (!(value instanceof Ast.NewExpr fresh) || !fresh.arguments().isEmpty()) return false;
+        Ast.TypeRef type = fresh.type();
+        if (!type.name().equals("Array") || type.inferArguments()
+                || !type.arguments().equals(List.of(Ast.TypeRef.simple("int")))) return false;
+        return fields.stream().anyMatch(field -> field.name().equals(name)
+                && field.initializer() == null && field.mutableReferent()
+                && type.equals(field.type()));
     }
 
     private Ast.ConstructorDecl parseConstructor(
