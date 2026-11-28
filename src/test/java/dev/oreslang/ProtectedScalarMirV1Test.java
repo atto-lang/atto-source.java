@@ -156,6 +156,53 @@ final class ProtectedScalarMirV1Test {
         }
     }
 
+    @Test void exactSelfQualificationNormalizesWithoutGrantingForeignAuthority() {
+        var baseline = ProtectedScalarMirV1.lower(COUNTER);
+        for (String intrinsic : java.util.List.of("handle_state(critical-write ", "state_w(", "handle_state_w(")) {
+            String source = COUNTER.replace("handle_state(critical-write ", "self." + intrinsic);
+            assertEquals(baseline, ProtectedScalarMirV1.lower(source));
+        }
+        var virtual = ProtectedScalarMirV1.lower(CART);
+        assertEquals(virtual, ProtectedScalarMirV1.lower(CART.replace("handle_state(", "self.handle_state(")));
+        for (String qualifier : java.util.List.of("other.", "\"self\".", "#self.")) {
+            assertRejected(COUNTER.replace("handle_state(", qualifier + "handle_state("));
+        }
+        for (String field : java.util.List.of("state_w", "state_ro", "_")) {
+            assertRejected(COUNTER.replace("int count:", "int " + field + ":").replace("s.count", "s." + field));
+        }
+    }
+
+    @Test void invocationRequiresExactCompiledDeclarationOwner() {
+        var plan = ProtectedScalarMirV1.lower(COUNTER);
+        var equalButSeparate = ProtectedScalarMirV1.lower(COUNTER);
+        var different = ProtectedScalarMirV1.lower(COUNTER.replace("Counter", "OtherCounter"));
+        assertEquals(plan, equalButSeparate);
+        assertNotSame(plan, equalButSeparate);
+        try (var a = plan.new_state_container();
+             var b = plan.new_state_container();
+             var foreign = different.new_state_container();
+             var sameShape = equalButSeparate.new_state_container();
+             var raw = new dev.oreslang.runtime.ScalarStateContainer(0, 4)) {
+            assertEquals(42L, plan.invoke(a, 42));
+            assertEquals(7L, plan.invoke(b, 7));
+            for (var rejected : java.util.List.of(foreign, sameShape, raw)) {
+                assertThrows(IllegalArgumentException.class, () -> plan.invoke(rejected, 99));
+                assertEquals(0L, rejected.tryRead().orElseThrow());
+            }
+            assertThrows(IllegalArgumentException.class, () -> equalButSeparate.invoke(a, 99));
+            assertEquals(42L, a.tryRead().orElseThrow());
+            assertEquals(7L, b.tryRead().orElseThrow());
+            assertEquals(2L, different.invoke(foreign, 2));
+        }
+    }
+
+    @Test void reservedNominalAndLoanNamesFailClosed() {
+        assertRejected(COUNTER.replace("Counter", "_"));
+        assertRejected(COUNTER.replace("|s|", "|Counter|").replace("s.count", "Counter.count"));
+        assertRejected(COUNTER.replace("|s|", "|count|").replace("s.count", "count.count"));
+        assertRejected(COUNTER.replace("int amount", "int count").replace("+ amount", "+ count"));
+    }
+
     private static void assertRejected(String source) {
         assertThrows(IllegalArgumentException.class, () -> ProtectedScalarMirV1.lower(source));
     }

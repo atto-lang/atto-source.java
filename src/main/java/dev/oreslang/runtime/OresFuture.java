@@ -944,9 +944,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private static void requireBlockingAllowed() {
-        if (ActorRuntime.inActorExecution()) {
+        if (ActorRuntime.inActorExecution() || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()) {
             throw new IllegalStateException(
-                    "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    "await would block an actor dispatcher carrier or scheduler/CONTROL carrier; "
+                    + "actor continuation lowering must suspend/resume the mailbox turn");
         }
     }
 

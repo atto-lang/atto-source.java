@@ -1633,6 +1633,7 @@ public final class Parser {
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
         Ast.ConstructorDecl constructor = null;
+        java.util.Set<String> deferredFinals = new java.util.LinkedHashSet<>();
 
         while (!check(classTerminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
@@ -1689,7 +1690,9 @@ public final class Parser {
             if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT)))
                     || looksLikeTypeFirstClassField()) {
                 validateClassFieldModifiers(mods);
-                fields.add(parseTypeFirstClassField(annotations, mods.visibility));
+                Ast.FieldDecl field = parseTypeFirstClassField(annotations, mods.visibility);
+                if (field.initializer() == null) deferredFinals.add(field.name());
+                fields.add(field);
                 continue;
             }
 
@@ -1739,6 +1742,51 @@ public final class Parser {
                 braceStyle
                         ? "expected '}' to close class " + name
                         : "expected 'end' to close class " + name);
+        // Newly admitted explicit deferred-final syntax is restricted to a
+        // definite, straight-line initialization prefix. Do not mistake a
+        // conditional/loop/deferred write or early return for initialization.
+        if (!deferredFinals.isEmpty()) {
+            if (constructor == null) throw error(previous(), "E_INIT: deferred final fields require an explicit constructor");
+            java.util.Set<String> pending = new java.util.LinkedHashSet<>(deferredFinals);
+            java.util.Set<String> parameters = new java.util.HashSet<>();
+            for (Ast.Param param : constructor.parameters()) parameters.add(param.name());
+            // Permit the same narrow fresh-empty Array<int> prefix as the
+            // native LLVM profile. This is syntactic admission only; ordinary
+            // type, ownership, constructor and runtime checks remain mandatory.
+            int lastFreshArray = -1;
+            Ast.TypeRef intArray = new Ast.TypeRef("Array", List.of(Ast.TypeRef.simple("int")), false);
+            for (Ast.Stmt statement : constructor.body()) {
+                if (pending.isEmpty()) break;
+                if (!(statement instanceof Ast.ExprStmt expr
+                        && expr.expression() instanceof Ast.AssignExpr assignment
+                        && assignment.target() instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr receiver
+                        && receiver.name().equals("self")
+                        && pending.contains(member.member()))) {
+                    throw error(previous(), "E_INIT: deferred final fields require definite prefix initialization: " + pending);
+                }
+                if (assignment.value() instanceof Ast.NewExpr fresh) {
+                    int index = -1;
+                    for (int i = 0; i < fields.size(); i++) {
+                        if (fields.get(i).name().equals(member.member())) { index = i; break; }
+                    }
+                    if (index < 0 || index <= lastFreshArray
+                            || !fields.get(index).mutableReferent()
+                            || !fields.get(index).type().equals(intArray)
+                            || !fresh.type().equals(intArray)
+                            || !fresh.arguments().isEmpty()) {
+                        throw error(previous(), "E_CONSTRUCTOR_ARRAY_INIT: requires fresh empty mutable Array<int> in declaration order");
+                    }
+                    lastFreshArray = index;
+                } else if (!(assignment.value() instanceof Ast.NameExpr value
+                            && parameters.contains(value.name()) && !value.name().equals("self")
+                            || assignment.value() instanceof Ast.LiteralExpr)) {
+                    throw error(previous(), "E_INIT: deferred final fields require direct parameter or literal initialization before other statements: " + pending);
+                }
+                pending.remove(member.member());
+            }
+            if (!pending.isEmpty()) throw error(previous(), "E_INIT: constructor may complete without initializing final fields " + pending);
+        }
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
                 parents, interfaces, fields, constructor, methods,
@@ -2294,7 +2342,7 @@ public final class Parser {
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
-            Modifiers mods = parseModifiers();
+            Modifiers mods = parseModifiers(true);
             if (match(DEFINE)) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
@@ -2857,6 +2905,13 @@ public final class Parser {
         boolean mutableReferent = match(MUT);
         Ast.TypeRef type = applyTypeMetadataAnnotations(parseTypeRef(), annotations, false);
         String name = consume(IDENT, "expected class field name after type").lexeme();
+        // Explicit final fields may defer initialization to the constructor,
+        // using the same immutable storage and initialization checks as val.
+        // A literal semicolon is required; no implicit newline admission.
+        if (isFinal && match(SEMICOLON)) {
+            return new Ast.FieldDecl(name, visibility, Ast.BindingKind.VAL, type,
+                    annotations, null, mutableReferent);
+        }
         if (!match(COLON, EQUAL)) {
             throw error(peek(), "class field initializer requires ':' or '='");
         }
@@ -3381,7 +3436,9 @@ public final class Parser {
         return result;
     }
 
-    private Modifiers parseModifiers() {
+    private Modifiers parseModifiers() { return parseModifiers(false); }
+
+    private Modifiers parseModifiers(boolean actorBareCriticalAstOnly) {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
         boolean suspends = false;
@@ -3415,6 +3472,14 @@ public final class Parser {
             // A method literally named critical(...) is left to the normal
             // callable-name path during migration.
             if (isContextualIdentifier("critical") && !checkNext(LPAREN)) {
+                // The narrow actor-local legacy AST lane retains the critical
+                // bit for checked rejection. Never enable the generic modifier,
+                // return-first signatures, or critical-read/write here.
+                if (actorBareCriticalAstOnly && checkNext(IDENT)
+                        && current + 2 < tokens.size()
+                        && tokens.get(current + 2).type() == LPAREN
+                        && !isAdjacentCompoundKeyword("critical", "read")
+                        && !isAdjacentCompoundKeyword("critical", "write")) break;
                 if (suspends || checkNext(SUSPENDS)) {
                     throw error(peek(), "E_CALLABLE_MODIFIERS: critical suspends callable is forbidden");
                 }
@@ -9221,10 +9286,16 @@ public final class Parser {
     private String checkedInlineRecordPairName(String name) {
         // Use the same lexer as parameter declarations, and require exact
         // spelling, not merely one token after trivia/comment removal.
-        List<Token> parts = new Lexer(name).scan();
+        List<Token> parts;
+        try {
+            parts = new Lexer(name).scan();
+        } catch (IllegalArgumentException invalid) {
+            throw error(previous(), "E_RECORD_LABEL: Record.of Pair key must be a valid static parameter identifier");
+        }
         if (parts.size() != 2 || parts.getFirst().type() != IDENT
-                || !parts.getFirst().lexeme().equals(name)) {
-            throw error(previous(), "Record.of Pair key must be a valid static parameter identifier");
+                || !parts.getFirst().lexeme().equals(name)
+                || name.codePoints().anyMatch(Character::isISOControl)) {
+            throw error(previous(), "E_RECORD_LABEL: Record.of Pair key must be a valid static parameter identifier");
         }
         return name;
     }
@@ -9329,6 +9400,13 @@ public final class Parser {
                 } else {
                     Token fieldToken = peek();
                     name = consumeStaticObjectKeyName("expected static Record.of field name");
+                    // Canonical Record fields use the ordinary identifier domain,
+                    // unlike generic object/Map keys. Keep legacy parsing intact.
+                    if (canonicalAttoSource) {
+                        if (fieldToken.type() == STRING) name = checkedQuotedRecordLabel(fieldToken);
+                        else if (fieldToken.type() != IDENT)
+                            throw error(fieldToken, "E_RECORD_LABEL: expected ordinary identifier");
+                    }
                     if (check(FAT_ARROW)) {
                         throw error(peek(), "mixed record and map entries are forbidden: Record.of does not accept Entry arrows");
                     }
@@ -9629,14 +9707,14 @@ public final class Parser {
                 args.add(new Ast.SpreadExpr(parseExpression()));
                 continue;
             }
-            if (check(IDENT) && checkNext(COLON)) {
+            if (check(IDENT) && (checkNext(COLON) || (canonicalAttoSource && checkNext(EQUAL)))) {
                 namedStarted = true;
                 String name = advance().lexeme();
-                consume(COLON, "expected ':' after named argument");
+                advance(); // The lookahead proved the named argument separator.
                 if (!seenLabels.add(name)) {
                     throw error(previous(), "duplicate named argument '" + name + "'");
                 }
-                args.add(new Ast.NamedArgExpr(name, parseExpression()));
+                args.add(new Ast.NamedArgExpr(name, canonicalAttoSource ? parseRecordFieldValue() : parseExpression()));
                 continue;
             }
             if (namedStarted) {

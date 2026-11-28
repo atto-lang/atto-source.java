@@ -21,25 +21,27 @@ final class RecursiveRecordParserTest {
         assertEquals(parse("(x = (1, 2), y = (3, 4))"), parse("(\"x\" = (1, 2), \"y\" = (3, 4))"));
     }
     @Test void callArgumentsAreNotAssignmentsOrCoalescedRecords() {
-        assertEquals(parse("foo((x = 42))"), parse("foo(\"x\" = 42)"));
+        assertEquals(parse("foo((x = 42))"), parse("foo({x: 42})"));
         assertEquals(parse("foo(x: 42)"), parse("foo(x = 42)"));
-        assertNotEquals(parse("foo(x = 42)"), parse("foo(\"x\" = 42)"));
-        assertEquals(parse("foo((x = 1), (y = 2))"), parse("foo(\"x\" = 1, \"y\" = 2)"));
-        assertNotEquals(parse("foo((x = 1, y = 2))"), parse("foo(\"x\" = 1, \"y\" = 2)"));
-        assertEquals(parse("foo((outer = (inner = 42)))"), parse("foo(\"outer\" = (\"inner\" = 42))"));
-        assertEquals(parse("foo((x = (1, 2)), 3)"), parse("foo(\"x\" = (1, 2), 3)"));
-        reject("foo(x = 1, \"y\" = 2)", "positional arguments cannot follow named arguments");
+        assertNotEquals(parse("foo(x = 42)"), parse("foo({x: 42})"));
+        assertEquals(parse("foo((x = 1), (y = 2))"), parse("foo({x: 1}, {y: 2})"));
+        assertNotEquals(parse("foo((x = 1, y = 2))"), parse("foo({x: 1}, {y: 2})"));
+        assertEquals(parse("foo((outer = (inner = 42)))"), parse("foo({outer: {inner: 42}})"));
+        assertEquals(parse("foo((x = (1, 2)), 3)"), parse("foo({x: (1, 2)}, 3)"));
+        reject("foo(x = 1, {y: 2})", "positional arguments cannot follow named arguments");
         reject("foo(x = y = 42)", "E_RECORD_FIELD");
+        reject("foo(x = 1, x: 2)", "duplicate named argument");
+        reject("foo(\"x\" = 42)", "assignment target");
     }
     @Test void quotedLabelsAreValidatedAndComparedAfterDecoding() {
         assertEquals(parse("(outer_value2 = 42)"), parse("(\"outer_value2\" = 42)"));
         assertEquals(parse("(x = 42)"), parse("(\"x\" /* comment */ = 42)"));
         for (String label : new String[] {"", "2x", "x-y", "x y", "x ", "x.y", "x/*c*/", "return", "x\\n"}) {
             reject("(\"" + label + "\" = 42)", "E_RECORD_LABEL");
-            reject("foo(\"" + label + "\" = 42)", "E_RECORD_LABEL");
+            reject("foo((\"" + label + "\" = 42))", "E_RECORD_LABEL");
         }
         reject("('x' = 42)", "E_RECORD_LABEL");
-        reject("foo('x' = 42)", "E_RECORD_LABEL");
+        reject("foo(('x' = 42))", "E_RECORD_LABEL");
         reject("(\"x\" = 1, x = 2)", "E_DUPLICATE");
         reject("(\"x\" = 1, :x)", "E_DUPLICATE");
         reject("(\"x\" = 1, \"\\u0078\" = 2)", "E_DUPLICATE");
@@ -102,5 +104,31 @@ final class RecursiveRecordParserTest {
         reject("(x = 1, 2)", "E_LITERAL_KIND");
         reject("(2, x = 1)", "E_LITERAL_KIND");
         reject("(x = y = 1)", "E_RECORD_FIELD");
+    }
+
+    @Test void recordFactoryUsesSameIdentifierDomainAsLiteral() {
+        assertEquals(parse("Record.of(alpha: 42)"), parse("{alpha: 42}"));
+        assertEquals(parse("Record.of(\"alpha\": 42)"), parse("{alpha: 42}"));
+        assertEquals(parse("Record.of(\"alpha\" := 42)"), parse("{alpha: 42}"));
+        assertEquals(parse("Record.of(Pair.of(\"alpha\", 42))"), parse("{alpha: 42}"));
+        assertEquals(parse("Record.of(alpha: 40, Alpha: 2)"), parse("{alpha: 40, Alpha: 2}"));
+        for (String key : new String[] {"", "2x", "x-y", "x y", "x ", "x.y", "x/*c*/", "return", "x\\n"}) {
+            reject("Record.of(\"" + key + "\": 42)", "E_RECORD_LABEL");
+            reject("Record.of(\"" + key + "\" := 42)", "E_RECORD_LABEL");
+            reject("Record.of(Pair.of(\"" + key + "\", 42))", "E_RECORD_LABEL");
+        }
+        reject("Record.of(return: 42)", "E_RECORD_LABEL");
+        reject("Record.of(alpha: 4, \"alpha\": 2)", "duplicate named field");
+        reject("Record.of(\"x\" := 4, \"\\u0078\" := 2)", "duplicate named field");
+    }
+
+    @Test void recursiveProductsPreserveEachDelimiterLevel() {
+        assertEquals(parse("((5, 3), (a = 5), (a: 5))"),
+                     parse("((5, 3), {a: 5}, {a: 5})"));
+        assertNotEquals(parse("((5, 3), (a = 5), (a: 5))"),
+                        parse("((5, 3), {a: 5})"));
+        assertNotEquals(parse("((), ())"), parse("()"));
+        assertNotEquals(parse("foo(())"), parse("foo()"));
+        assertNotEquals(parse("foo(())"), parse("foo(...())"));
     }
 }

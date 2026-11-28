@@ -1403,11 +1403,13 @@ public final class ActorRuntime implements AutoCloseable {
      * unsettled lease retries by default so try-with-resources is lossless.
      */
     public final class RootControlLease implements AutoCloseable {
+        private final ActorSupervisorControlLane.Delivery delivery;
         private final ActorFailureNotice notice;
         private final AtomicBoolean settled = new AtomicBoolean();
 
-        private RootControlLease(ActorFailureNotice notice) {
-            this.notice = Objects.requireNonNull(notice, "notice");
+        private RootControlLease(ActorSupervisorControlLane.Delivery delivery) {
+            this.delivery = Objects.requireNonNull(delivery, "delivery");
+            this.notice = delivery.notice();
         }
 
         public ActorFailureNotice notice() {
@@ -1420,8 +1422,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("root CONTROL lease already settled");
             }
             try {
-                rootSupervisionControl.ack(
-                        notice.actor(), notice.generation());
+                rootSupervisionControl.ack(delivery);
             } catch (RuntimeException failure) {
                 settled.set(false);
                 throw failure;
@@ -1434,8 +1435,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("root CONTROL lease already settled");
             }
             try {
-                rootSupervisionControl.retry(
-                        notice.actor(), notice.generation());
+                rootSupervisionControl.retry(delivery);
             } catch (RuntimeException failure) {
                 settled.set(false);
                 throw failure;
@@ -1452,7 +1452,7 @@ public final class ActorRuntime implements AutoCloseable {
     /** Host-only nonblocking root supervisor admission with explicit settlement. */
     public Optional<RootControlLease> pollRootSupervisionControl() {
         requireSupervisorContext("poll root supervisor CONTROL events");
-        return rootSupervisionControl.poll().map(RootControlLease::new);
+        return rootSupervisionControl.pollMapped(RootControlLease::new);
     }
 
     public ActorControlStats rootSupervisionStats() {
@@ -10732,14 +10732,14 @@ public final class ActorRuntime implements AutoCloseable {
                 new ActorContinuationLedger(INTERNAL_CONTINUATION_SLOTS + 1);
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
-                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+                ChannelRuntime.Channel.runtimePrivateMailbox(INTERNAL_CONTINUATION_SLOTS);
         /**
          * Runtime-minted SourceTask commands, isolated from ordinary Future
          * continuations so actor STOP can discard the latter while retaining
          * the former for authenticated lexical cleanup.
          */
         private final ChannelRuntime.Channel<MessageEnvelope> sourceTaskMailbox =
-                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+                ChannelRuntime.Channel.runtimePrivateMailbox(INTERNAL_CONTINUATION_SLOTS);
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -10830,7 +10830,11 @@ public final class ActorRuntime implements AutoCloseable {
             this.parent = parent;
             // USER mail and runtime continuations are physically distinct
             // channels. Do not inflate the USER channel with CONTROL headroom.
-            this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
+            // These are runtime-private, bounded Channel<T> buffers with one
+            // lock per mailbox, not global guest select arms. The three queues
+            // are never exposed to guest SelectSet; general actor outputs
+            // intentionally keep the fully selectable channel semantics.
+            this.mailbox = ChannelRuntime.Channel.runtimePrivateMailbox(policy.maxMailboxMessages());
             // Producer-waiter retention is a separate resource from queued
             // mailbox depth. Payload byte accounting still constrains the
             // retained message snapshots themselves.
@@ -11561,6 +11565,16 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
                 return;
             }
+            if (continuationLedger.hasReleaseFailure()) {
+                // An ambiguous external release is not physical retirement.
+                // Keep the actor identity and storage fenced, not reclaimed.
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor continuation resource release incomplete; quarantine arena"));
+                lifecycleLock.notifyAll();
+                return;
+            }
+            if (continuationLedger.snapshot().running() != 0) return;
             if (scheduler != null && (!scheduler.actorStopPhysicallyQuiescent()
                     || activeUntrustedSourceTaskCount != 0
                     || activeUntrustedTimedAdmissions != 0)) return;
@@ -11598,6 +11612,30 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
+            // Seal receipts before draining the last admitted cleanup queue.
+            // The existing runtime admissions carry no external code lease;
+            // future image-lease admissions must also arrange release outside
+            // lifecycleLock and a finalization retry after physical completion.
+            continuationLedger.sealAll();
+            sourceTaskMailbox.close();
+            try { drainMailboxReservations(); }
+            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+            catch (Throwable failure) {
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(failure);
+                lifecycleLock.notifyAll();
+                return;
+            }
+            if (!continuationLedger.retirementReady()) {
+                // With admission sealed and all queues drained, any surviving
+                // receipt is a physical cleanup invariant violation. Do not
+                // close guest state, heap, memory slice or execution domain.
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor continuation receipts not retired; quarantine arena"));
+                lifecycleLock.notifyAll();
+                return;
+            }
             abortUpgradesLocked();
             finalized = true;
             // Only release virtual activation ownership after *all* physical
@@ -11605,13 +11643,6 @@ public final class ActorRuntime implements AutoCloseable {
             // Cleanup failures quarantine the logical identity, not guest data.
             boolean virtualPhysicalCleanupComplete = true;
             sourceScheduler = null;
-            sourceTaskMailbox.close();
-            try { drainMailboxReservations(); }
-            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) {
-                virtualPhysicalCleanupComplete = false;
-                recordFinalizationFailure(failure);
-            }
             staticSelectCursors.clear();
             // STOP has already joined physical SourceTask cleanup at this
             // finalization point. Only now retire the outstanding receive
@@ -12259,6 +12290,7 @@ public final class ActorRuntime implements AutoCloseable {
                         && (!stopped.get() || sourceStopCleanupActive)) {
                     MessageEnvelope envelope = null;
                     boolean sourceTaskCommand;
+                    ActorSupervisorControlLane.Delivery controlDelivery = null;
                     ActorFailureNotice controlNotice = null;
                     PendingUpgrade<M> upgradeToRun = null;
                     synchronized (lifecycleLock) {
@@ -12284,7 +12316,8 @@ public final class ActorRuntime implements AutoCloseable {
                             // while a suspended source receive owns actor state or
                             // after the bounded anti-starvation burst.
                             if (!sourceReceiveSuspended && !fairnessYield) {
-                                controlNotice = childControl.poll().orElse(null);
+                                controlDelivery = childControl.poll().orElse(null);
+                                if (controlDelivery != null) controlNotice = controlDelivery.notice();
                             }
                             if (controlNotice == null) {
                                 envelope = continuationMailbox.tryRead().orElse(null);
@@ -12330,9 +12363,7 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         synchronized (lifecycleLock) {
                             if (!stopped.get()) {
-                                childControl.ack(
-                                        controlNotice.actor(),
-                                        controlNotice.generation());
+                                childControl.ack(controlDelivery);
                                 rootSupervisionControl.retireGracefully(
                                         controlNotice.actor(),
                                         controlNotice.generation());

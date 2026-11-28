@@ -33,6 +33,28 @@ final class InlinePairRecordFactoryCurrentTest {
                 "Record.of(five := 5, three = \"box\")"
         }) assertThrows(IllegalArgumentException.class, () -> parse(expression), expression);
     }
+    @Test void bareRecordLocalPreservesClosedShapeAndRejectsScalarOrMissingField() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(
+                main("let Record r = Record.of(five := 5, three := \"box\"); return r.five;")));
+        for (String body : new String[] {
+                "let Record r = 42; return 0;",
+                "let Record r = Record.of(five := 5); return r.missing;",
+                "let Record r = Record.of(five := \"box\"); return r.five;"
+        }) assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheckStrictAtto(main(body)), body);
+    }
+    @Test void recordProjectionPreservesWidthAndRejectsErasedWidthSubstitution() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(
+                main("let int n = 5; let Record r = Record.of(five := n); return r.five;")));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(
+                main("let Record r = Record.of(five := 5); let Record s = r; return s.five;")));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheckStrictAtto(
+                main("let i32 n = 5; let Record r = Record.of(five := n); return r.five;")));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheckStrictAtto(
+                main("let Record r = Record.of(five := 5); let i32 n = 6; set r = Record.of(five := n); return r.five;")));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(
+                main("let Record r = Record.of(five := 5); set r = Record.of(five := 6); return r.five;")));
+    }
     @Test void actualCheckedGuestReadsHeterogeneousRecord() throws Exception {
         String source = main("let Record r = Record.of(five := 5, three := \"box\"); "
                 + "return if r.three eq \"box\" then r.five + 37 else 99 fi;");

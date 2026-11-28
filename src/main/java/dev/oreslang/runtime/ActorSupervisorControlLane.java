@@ -37,6 +37,8 @@ final class ActorSupervisorControlLane {
         Slot next;
         boolean queued;
         boolean inFlight;
+        long deliveryTicket;
+        Delivery activeDelivery;
 
         Slot(ActorRuntime.ActorId child, long generation) {
             this.child = child;
@@ -44,12 +46,15 @@ final class ActorSupervisorControlLane {
         }
     }
 
+    private static final Object TRANSFER_COORDINATOR = new Object();
+
     private final int capacity;
     private final Map<ActorRuntime.ActorId, Slot> slots = new HashMap<>();
     private Slot head;
     private Slot tail;
     private int pending;
     private int inFlight;
+    private long nextDeliveryTicket;
     private long published;
     private long acknowledged;
     private long retried;
@@ -93,43 +98,92 @@ final class ActorSupervisorControlLane {
         return true;
     }
 
-    synchronized Optional<ActorRuntime.ActorFailureNotice> poll() {
+    /**
+     * Opaque single-attempt settlement authority. Identity is the exact
+     * source lane, Slot object and monotonic poll ticket; never an actor ID
+     * or guest-manufacturable generation alone.
+     */
+    static final class Delivery {
+        private final ActorSupervisorControlLane owner;
+        private final Slot slot;
+        private final long ticket;
+        private final ActorRuntime.ActorFailureNotice notice;
+
+        private Delivery(ActorSupervisorControlLane owner, Slot slot, long ticket) {
+            this.owner = owner;
+            this.slot = slot;
+            this.ticket = ticket;
+            this.notice = slot.notice;
+        }
+
+        ActorRuntime.ActorFailureNotice notice() {
+            return notice;
+        }
+    }
+
+    Optional<Delivery> poll() {
+        return pollMapped(delivery -> delivery);
+    }
+
+    // Trusted internal receipt factory only. Construct outward receipt before dequeue.
+    synchronized <T> Optional<T> pollMapped(java.util.function.Function<Delivery, T> receipt) {
         if (inFlight != 0) {
             throw new IllegalStateException("overlapping supervisor CONTROL admissions");
         }
         if (head == null) return Optional.empty();
+        // Overflow rejects before removing anything from the queue. Reusing
+        // a ticket after wraparound would recreate a stale ACK authority.
+        long ticket = Math.addExact(nextDeliveryTicket, 1L);
         Slot slot = head;
+        // Allocate both the opaque delivery lease and its Optional wrapper
+        // before removing the notice from the queue. An allocation failure
+        // must leave the original CONTROL notice reachable and retryable.
+        Delivery delivery = new Delivery(this, slot, ticket);
+        Optional<T> ready = Optional.of(receipt.apply(delivery));
+        nextDeliveryTicket = ticket;
         head = slot.next;
         if (head == null) tail = null;
         slot.next = null;
         slot.queued = false;
         slot.inFlight = true;
+        slot.deliveryTicket = ticket;
+        slot.activeDelivery = delivery;
         inFlight = 1;
         pending--;
-        return Optional.of(slot.notice);
+        return ready;
     }
 
-    synchronized void ack(ActorRuntime.ActorId child, long generation) {
-        Slot slot = required(child, generation);
-        if (!slot.inFlight) {
-            throw new IllegalStateException("CONTROL event is not in flight");
-        }
-        slots.remove(child);
+    synchronized void ack(Delivery delivery) {
+        Slot slot = requiredDelivery(delivery);
+        slots.remove(slot.child);
         slot.inFlight = false;
+        slot.deliveryTicket = 0L;
+        slot.activeDelivery = null;
         slot.notice = null;
         inFlight = 0;
         acknowledged = saturatingIncrement(acknowledged);
     }
 
-    synchronized void retry(ActorRuntime.ActorId child, long generation) {
-        Slot slot = required(child, generation);
-        if (!slot.inFlight) {
-            throw new IllegalStateException("CONTROL event is not in flight");
-        }
+    synchronized void retry(Delivery delivery) {
+        Slot slot = requiredDelivery(delivery);
         slot.inFlight = false;
+        slot.deliveryTicket = 0L;
+        slot.activeDelivery = null;
         inFlight = 0;
         retried = saturatingIncrement(retried);
         enqueue(slot);
+    }
+
+    private Slot requiredDelivery(Delivery delivery) {
+        Objects.requireNonNull(delivery, "delivery");
+        Slot slot = delivery.slot;
+        if (delivery.owner != this || slots.get(slot.child) != slot
+                || !slot.inFlight || slot.activeDelivery != delivery || slot.deliveryTicket != delivery.ticket
+                || slot.notice != delivery.notice) {
+            throw new IllegalStateException(
+                    "stale, foreign or already-settled supervisor CONTROL delivery");
+        }
+        return slot;
     }
 
     synchronized void retireGracefully(ActorRuntime.ActorId child, long generation) {
@@ -149,13 +203,20 @@ final class ActorSupervisorControlLane {
      * root never transfers back into a child. Both monitors are held through
      * validation and commit so root poll/ack cannot observe a partial batch.
      */
-    synchronized void transferPublishedTo(ActorSupervisorControlLane root) {
+    void transferPublishedTo(ActorSupervisorControlLane root) {
         Objects.requireNonNull(root, "root");
         if (root == this) {
             throw new IllegalArgumentException("cannot transfer CONTROL to its own lane");
         }
-        if (inFlight == 0 && head == null) return;
+        synchronized (TRANSFER_COORDINATOR) {
+            synchronized (this) {
+                transferLocked(root);
+            }
+        }
+    }
 
+    private void transferLocked(ActorSupervisorControlLane root) {
+        if (inFlight == 0 && head == null) return;
         synchronized (root) {
             if (inFlight != 0) {
                 for (Slot slot : slots.values()) {
@@ -176,6 +237,9 @@ final class ActorSupervisorControlLane {
                         root.publish(slot.notice);
                         iterator.remove();
                         slot.inFlight = false;
+                        slot.deliveryTicket = 0L;
+                        slot.activeDelivery = null;
+                        slot.notice = null;
                         inFlight = 0;
                         transferred = saturatingIncrement(transferred);
                         break;
@@ -191,6 +255,7 @@ final class ActorSupervisorControlLane {
                 slot.queued = false;
                 pending--;
                 slots.remove(slot.child);
+                slot.notice = null;
                 transferred = saturatingIncrement(transferred);
             }
             tail = null;

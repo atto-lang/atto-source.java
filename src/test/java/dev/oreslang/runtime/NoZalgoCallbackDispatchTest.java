@@ -26,6 +26,8 @@ final class NoZalgoCallbackDispatchTest {
             AtomicBoolean insideRegistrar = new AtomicBoolean();
             AtomicLong firstDispatch = new AtomicLong();
             AtomicReference<Thread> registrarCarrier = new AtomicReference<>();
+            AtomicBoolean callbackDoneInsideRegistrar = new AtomicBoolean();
+            AtomicInteger segmentsSeenInsideRegistrar = new AtomicInteger(-1);
 
             OresFuture<Integer> result = scheduler.start(resume -> {
                 if (segments.getAndIncrement() == 0) {
@@ -35,13 +37,18 @@ final class NoZalgoCallbackDispatchTest {
                         insideRegistrar.set(true);
                         try {
                             callback.resolve(41);
-                            assertTrue(callback.isDone());
-                            assertEquals(1, segments.get(),
-                                    "synchronous settlement must not recurse into guest code");
+                            // Registrar exceptions after resolve() are intentionally
+                            // swallowed by the callback adapter. Capture evidence here
+                            // and assert it *after* fromCallback has returned.
+                            callbackDoneInsideRegistrar.set(callback.isDone());
+                            segmentsSeenInsideRegistrar.set(segments.get());
                         } finally {
                             insideRegistrar.set(false);
                         }
                     });
+                    assertTrue(callbackDoneInsideRegistrar.get());
+                    assertEquals(1, segmentsSeenInsideRegistrar.get(),
+                            "synchronous foreign settlement recursively entered guest code");
                     assertEquals(41, settled.get(0, TimeUnit.MILLISECONDS));
                     return OresScheduler.await(settled);
                 }
@@ -60,6 +67,90 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void alreadyCompletedHostCompletionStageCannotResumeGuestInline()
+            throws Exception {
+        try (var scheduler = new OresScheduler(2)) {
+            AtomicInteger segments = new AtomicInteger();
+            AtomicLong registeringDispatch = new AtomicLong();
+            AtomicBoolean registering = new AtomicBoolean();
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                if (segments.getAndIncrement() == 0) {
+                    registering.set(true);
+                    registeringDispatch.set(OresScheduler.currentDispatchId());
+                    try {
+                        var host = java.util.concurrent.CompletableFuture.completedFuture(73);
+                        OresFuture<Integer> awaited = OresFuture.from(host);
+                        assertEquals(1, segments.get(),
+                                "host whenComplete must not invoke guest continuation inline");
+                        return OresScheduler.await(awaited);
+                    } finally {
+                        registering.set(false);
+                    }
+                }
+                assertFalse(registering.get());
+                assertEquals(73, resume.value());
+                assertNotEquals(registeringDispatch.get(), OresScheduler.currentDispatchId());
+                return OresScheduler.done(74);
+            });
+            assertEquals(74, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, segments.get());
+        }
+    }
+
+    @Test
+    void throwingForeignCompletionStageRegistrationBecomesFailedFuture() throws Exception {
+        java.util.concurrent.CompletableFuture<Integer> broken =
+                new java.util.concurrent.CompletableFuture<>() {
+                    @Override
+                    public java.util.concurrent.CompletableFuture<Integer> whenComplete(
+                            java.util.function.BiConsumer<? super Integer, ? super Throwable> action) {
+                        throw new IllegalStateException("foreign listener rejected");
+                    }
+                };
+        OresFuture<Integer> normalized = assertDoesNotThrow(() -> OresFuture.from(broken));
+        var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> normalized.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertEquals("foreign listener rejected", failure.getCause().getMessage());
+        assertEquals(0, normalized.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void synchronousHostStageCompletionWinsOverLaterRegistrationThrow() throws Exception {
+        java.util.concurrent.CompletableFuture<Integer> oddStage =
+                new java.util.concurrent.CompletableFuture<>() {
+                    @Override
+                    public java.util.concurrent.CompletableFuture<Integer> whenComplete(
+                            java.util.function.BiConsumer<? super Integer, ? super Throwable> action) {
+                        action.accept(33, null);
+                        throw new IllegalStateException("late host registration exception");
+                    }
+                };
+        OresFuture<Integer> normalized = assertDoesNotThrow(() -> OresFuture.from(oddStage));
+        assertEquals(33, normalized.get(5, TimeUnit.SECONDS),
+                "a later registrar failure cannot overwrite an already-settled Future");
+        assertEquals(0, normalized.pendingRuntimeWaiterCount());
+
+        // The synchronous host delivery is still not a guest dispatch. Await
+        // must return through a new scheduler turn, even for this odd stage.
+        try (var scheduler = new OresScheduler(1)) {
+            AtomicInteger segments = new AtomicInteger();
+            AtomicLong firstDispatch = new AtomicLong();
+            OresFuture<Integer> guest = scheduler.start(resume -> {
+                if (segments.getAndIncrement() == 0) {
+                    firstDispatch.set(OresScheduler.currentDispatchId());
+                    return OresScheduler.await(normalized);
+                }
+                assertNotEquals(firstDispatch.get(), OresScheduler.currentDispatchId());
+                assertEquals(33, resume.value());
+                return OresScheduler.done(34);
+            });
+            assertEquals(34, guest.get(5, TimeUnit.SECONDS));
+            assertEquals(2, segments.get());
+        }
+    }
+
+    @Test
     void completionFromForeignThreadDuringCurrentSegmentCannotEnterGuestInline()
             throws Exception {
         try (var scheduler = new OresScheduler(2)) {
@@ -68,6 +159,7 @@ final class NoZalgoCallbackDispatchTest {
             var producerFinished = new CountDownLatch(1);
             var insideFirstSegment = new AtomicBoolean();
             var producer = new AtomicReference<Thread>();
+            var producerFailure = new AtomicReference<Throwable>();
             var segments = new AtomicInteger();
             var firstDispatch = new AtomicLong();
 
@@ -98,12 +190,15 @@ final class NoZalgoCallbackDispatchTest {
                 try {
                     producer.set(Thread.currentThread());
                     assertTrue(source.completeFromRuntime(9));
+                } catch (Throwable failure) {
+                    producerFailure.compareAndSet(null, failure);
                 } finally {
                     producerFinished.countDown();
                 }
             });
             foreign.join(5_000);
             assertFalse(foreign.isAlive());
+            assertNull(producerFailure.get(), () -> String.valueOf(producerFailure.get()));
             assertEquals(10, result.get(5, TimeUnit.SECONDS));
             assertEquals(2, segments.get());
         }
@@ -149,6 +244,88 @@ final class NoZalgoCallbackDispatchTest {
             assertNull(callbackFailure.get(), () -> String.valueOf(callbackFailure.get()));
             assertEquals(1, callbacks.get(), "guest callback must run exactly once");
             actor.cancel();
+        }
+    }
+
+    @Test
+    void settledFutureRegisteredDuringBlockedReceiveCannotRunGuestOnAnotherCarrier()
+            throws Exception {
+        CountDownLatch registered = new CountDownLatch(1);
+        CountDownLatch releaseReceive = new CountDownLatch(1);
+        CountDownLatch callbackRan = new CountDownLatch(1);
+        AtomicBoolean receiving = new AtomicBoolean();
+        AtomicInteger callbacks = new AtomicInteger();
+        AtomicReference<Throwable> violation = new AtomicReference<>();
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(4, 4, 1, 128))) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                receiving.set(true);
+                try {
+                    var target = runtime.captureCurrentContinuationTarget();
+                    runtime.enqueueOnCompletion(OresFuture.completed(17), target, (value, failure) -> {
+                        try {
+                            assertFalse(receiving.get(),
+                                    "asynchronous guest callback overtook active receive");
+                            assertTrue(runtime.currentThreadOwnsActorExecutionLease());
+                            assertNull(failure);
+                            assertEquals(17, value);
+                            callbacks.incrementAndGet();
+                        } catch (Throwable problem) {
+                            violation.compareAndSet(null, problem);
+                        } finally {
+                            callbackRan.countDown();
+                        }
+                    });
+                    registered.countDown();
+                    assertTrue(releaseReceive.await(5, TimeUnit.SECONDS));
+                    assertEquals(0, callbacks.get(),
+                            "callback executed before synchronous receive finished");
+                } finally {
+                    receiving.set(false);
+                }
+            });
+            try {
+                actor.ready().get(5, TimeUnit.SECONDS);
+                actor.send("register");
+                assertTrue(registered.await(5, TimeUnit.SECONDS));
+                assertEquals(0, callbacks.get(), "settled callback ran inline on registration");
+                assertEquals(1L, callbackRan.getCount(),
+                        "callback bypassed the active actor physical lease");
+            } finally {
+                releaseReceive.countDown();
+            }
+            assertTrue(callbackRan.await(5, TimeUnit.SECONDS), "deferred callback was lost");
+            assertNull(violation.get(), () -> String.valueOf(violation.get()));
+            assertEquals(1, callbacks.get());
+            actor.cancel();
+        }
+    }
+
+    @Test
+    void lateCompletionCannotResurrectAnActorAfterCancellation() throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        CountDownLatch registered = new CountDownLatch(1);
+        AtomicInteger guestCallbacks = new AtomicInteger();
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                var target = runtime.captureCurrentContinuationTarget();
+                runtime.enqueueOnCompletion(pending, target, (value, failure) -> {
+                    guestCallbacks.incrementAndGet();
+                });
+                registered.countDown();
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS),
+                    "callback was not registered inside the actor");
+            actor.cancel();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(pending.isDone(), "actor teardown must revoke owned Futures");
+            assertFalse(pending.completeFromRuntime(99),
+                    "a late host completion must not revive an actor-owned Future");
+            assertEquals(0, guestCallbacks.get(),
+                    "a retired actor generation executed a stale guest continuation");
+            assertFalse(runtime.currentThreadOwnsActorExecutionLease());
         }
     }
 
