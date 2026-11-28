@@ -108,6 +108,40 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void explicitLexicalScopeDropReleasesNativeRootsAndFencesStaleCells() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        ActorNativeArena.ValueCell stale;
+        try (ActorNativeArena arena = arena(16 * 1024, charged)) {
+            Map<String, Object> owned = arena.fields(List.of("value"), marker);
+            stale = arena.valueCell(owned, marker);
+            assertSame(owned, stale.get());
+            assertEquals(1, arena.nativeReferenceCount());
+            long nativeAddress = stale.nativeOffset();
+            long allocated = arena.allocatedBytes();
+            assertTrue(nativeAddress >= 0);
+
+            stale.close();
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "scope drop must retire the slot's native reference without actor termination");
+            assertEquals(allocated, arena.allocatedBytes(),
+                    "scope drop does not silently recycle actor-relative slab space");
+            assertThrows(IllegalStateException.class, stale::get);
+            assertThrows(IllegalStateException.class, stale::nativeOffset);
+            assertThrows(IllegalStateException.class, () -> stale.trySet(owned));
+            assertThrows(IllegalStateException.class, () -> stale.trySet(null));
+            stale.close(); // idempotent while the owning actor arena is live
+
+            ActorNativeArena.ValueCell nulled = arena.valueCell(null, marker);
+            nulled.close();
+            assertThrows(IllegalStateException.class, nulled::get);
+        }
+        assertEquals(0, charged.get(), "arena close still refunds every native slab");
+        assertThrows(IllegalStateException.class, stale::close,
+                "post-arena-close access must never resurrect native authority");
+    }
+
+    @Test
     void nativeListUsesArenaSlotsAcrossChunksAndReleasesElementReferences() {
         AtomicLong charged = new AtomicLong();
         AtomicLong foreignCharged = new AtomicLong();
@@ -714,6 +748,201 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void taskFrameSpillsSurviveAwaitAndReleaseReferencesAtCompletion() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged)) {
+            Map<String, Object> child = arena.fields(List.of("value"), marker);
+            child.put("value", 101L);
+            ActorNativeArena.TaskFrame frame = arena.taskFrame();
+            frame.configureSpillSlots(3);
+            assertEquals(3, frame.spillSlotCount());
+            assertThrows(IllegalStateException.class, () -> frame.configureSpillSlots(1));
+            assertThrows(IllegalStateException.class, () -> frame.spill(0, 1L));
+            assertThrows(IllegalArgumentException.class,
+                    () -> arena.taskFrame().configureSpillSlots(0));
+            frame.beginInitialResume();
+            assertThrows(IndexOutOfBoundsException.class, () -> frame.restore(3));
+            frame.spill(0, child);
+            frame.spill(1, "saved-over-await");
+            frame.spill(2, -0.0d);
+            assertEquals(1, arena.nativeReferenceCount());
+            assertThrows(IllegalArgumentException.class, () -> frame.spill(1, new Object()));
+            assertEquals("saved-over-await", frame.restore(1),
+                    "failed native spill must preserve prior payload");
+
+            frame.enterSourceSite(101L);
+            long ticket = frame.awaiting();
+            assertThrows(IllegalStateException.class, () -> frame.restore(0),
+                    "a suspended actor frame must not be read from outside a resumed turn");
+            assertThrows(IllegalStateException.class, () -> frame.spill(2, 9L));
+            frame.beginResume(ActorNativeArena.SuspensionKind.AWAIT, ticket);
+            assertSame(child, frame.restore(0));
+            assertEquals("saved-over-await", frame.restore(1));
+            assertEquals(Double.doubleToRawLongBits(-0.0d),
+                    Double.doubleToRawLongBits((double) frame.restore(2)));
+            frame.done();
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "terminal native frames must release all spilled native facade roots");
+            assertThrows(IllegalStateException.class, () -> frame.restore(0));
+            assertThrows(IllegalStateException.class, () -> frame.spill(0, child));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void rejectedNativeTaskSpillLayoutLeavesFrameUnconfigured() {
+        AtomicLong charged = new AtomicLong();
+        // The frame consumes 72 bytes and leaves too little capacity
+        // for even one additional 24-byte spill slot.
+        try (ActorNativeArena arena = arena(80, charged)) {
+            ActorNativeArena.TaskFrame frame = arena.taskFrame();
+            long priorAllocated = arena.allocatedBytes();
+            long priorCommitted = arena.committedBytes();
+            assertThrows(IllegalStateException.class, () -> frame.configureSpillSlots(1));
+            assertEquals(0, frame.spillSlotCount(),
+                    "failed reservation must not publish a partial native spill bank");
+            assertEquals(priorAllocated, arena.allocatedBytes());
+            assertEquals(priorCommitted, arena.committedBytes());
+            frame.beginInitialResume();
+            frame.done();
+            assertEquals(ActorNativeArena.TaskPhase.DONE, frame.phase());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void taskFrameFailureReleasesSuspendedSpillsAndRejectsForeignFacades() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged);
+             ActorNativeArena foreign = arena(16 * 1024, new AtomicLong())) {
+            ActorNativeArena.TaskFrame frame = arena.taskFrame();
+            frame.configureSpillSlots(1);
+            Map<String, Object> foreignChild = foreign.fields(List.of("value"), marker);
+            frame.beginInitialResume();
+            assertThrows(SecurityException.class, () -> frame.spill(0, foreignChild));
+            assertNull(frame.restore(0));
+            Map<String, Object> local = arena.fields(List.of("value"), marker);
+            frame.spill(0, local);
+            frame.enterSourceSite(201L);
+            long ticket = frame.cooperating();
+            assertEquals(1, arena.nativeReferenceCount());
+            frame.failed();
+            assertEquals(ActorNativeArena.TaskPhase.FAILED, frame.phase());
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "failure during suspension must drop actor-local reference roots");
+            assertThrows(IllegalStateException.class,
+                    () -> frame.beginResume(ActorNativeArena.SuspensionKind.COOPERATE, ticket));
+            assertThrows(IllegalStateException.class, () -> frame.restore(0));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void nativeListClearDropsReferencesAcrossChunksAndReusesExistingStorage() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(256 * 1024, charged)) {
+            ActorNativeArena.NativeList list = arena.nativeList();
+            Map<String, Object> child = arena.fields(List.of("v"), marker);
+            for (int i = 0; i < 161; i++) list.add(i % 16 == 0 ? child : (long) i);
+            assertEquals(161, list.size());
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "multiple list references to one child use one identity entry");
+            long allocated = arena.allocatedBytes();
+            list.clear();
+            assertEquals(0, list.size());
+            assertEquals(0, arena.nativeReferenceCount());
+            for (int i = 0; i < 161; i++) list.add((long) i);
+            assertEquals(161, list.size());
+            assertEquals(160L, list.get(160));
+            assertEquals(allocated, arena.allocatedBytes(),
+                    "cleared native chunks must be reusable without new actor allocation");
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void trappedSourceErrorCompletesSuspendedFramesWithoutLeakingSpillRoots() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged)) {
+            Map<String, Object> payload = arena.fields(List.of("v"), marker);
+
+            for (ActorNativeArena.SuspensionKind kind :
+                    ActorNativeArena.SuspensionKind.values()) {
+                ActorNativeArena.TaskFrame frame = arena.taskFrame();
+                frame.configureSpillSlots(1);
+                assertThrows(IllegalStateException.class, frame::completeTrappedFailure,
+                        "NEW is not an entered continuation and cannot complete");
+                frame.beginInitialResume();
+                frame.spill(0, payload);
+                assertEquals(1, arena.nativeReferenceCount());
+                frame.enterSourceSite(301L + kind.ordinal());
+                long ticket = kind == ActorNativeArena.SuspensionKind.AWAIT
+                        ? frame.awaiting() : frame.cooperating();
+                frame.completeTrappedFailure();
+                assertEquals(ActorNativeArena.TaskPhase.DONE, frame.phase());
+                assertEquals(0, arena.nativeReferenceCount(),
+                        "trapping a partially suspended task must drop its native roots");
+                assertThrows(IllegalStateException.class,
+                        () -> frame.beginResume(kind, ticket),
+                        "trapped completion must revoke outstanding resume tickets");
+                assertThrows(IllegalStateException.class, frame::completeTrappedFailure);
+                assertThrows(IllegalStateException.class, () -> frame.restore(0));
+            }
+
+            ActorNativeArena.TaskFrame running = arena.taskFrame();
+            running.configureSpillSlots(1);
+            running.beginInitialResume();
+            running.spill(0, 42L);
+            running.completeTrappedFailure();
+            assertEquals(ActorNativeArena.TaskPhase.DONE, running.phase());
+
+            ActorNativeArena.TaskFrame failed = arena.taskFrame();
+            failed.beginInitialResume();
+            failed.failed();
+            assertThrows(IllegalStateException.class, failed::completeTrappedFailure,
+                    "FAILED frames must not transition into successful completion");
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void nativeSourceLabelsRejectUnenteredOrStaleContinuationLocations() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = arena(4096, charged)) {
+            ActorNativeArena.TaskFrame frame = arena.taskFrame();
+            assertEquals(0L, frame.sourceSite());
+            assertThrows(IllegalStateException.class, () -> frame.enterSourceSite(1L));
+            frame.beginInitialResume();
+            assertThrows(IllegalStateException.class, frame::awaiting,
+                    "a source actor cannot suspend without a statement-site authority");
+            assertEquals(ActorNativeArena.TaskPhase.RUNNING, frame.phase());
+            assertThrows(IllegalArgumentException.class, () -> frame.enterSourceSite(0));
+            frame.enterSourceSite(99);
+            long ticket = frame.awaiting();
+            assertEquals(99L, frame.sourceSite());
+            assertThrows(IllegalStateException.class, () -> frame.enterSourceSite(100),
+                    "a suspended callback must not mutate its resume label");
+            assertThrows(IllegalStateException.class,
+                    () -> frame.beginResume(ActorNativeArena.SuspensionKind.AWAIT, ticket + 1));
+            frame.beginResume(ActorNativeArena.SuspensionKind.AWAIT, ticket);
+            assertEquals(99L, frame.sourceSite());
+            frame.enterSourceSite(100);
+            long cooperateTicket = frame.cooperating();
+            frame.beginResume(ActorNativeArena.SuspensionKind.COOPERATE, cooperateTicket);
+            assertEquals(100L, frame.sourceSite());
+            frame.done();
+            assertEquals(0L, frame.sourceSite(),
+                    "terminal source frames must revoke the old program location");
+            assertThrows(IllegalStateException.class, () -> frame.enterSourceSite(101));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void actorTaskFramesPersistResumeAuthorityInNativeMemory() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(4096, charged)) {
@@ -726,6 +955,7 @@ final class ActorNativeArenaTest {
             frame.beginInitialResume();
             assertEquals(ActorNativeArena.TaskPhase.RUNNING, frame.phase());
             assertEquals(1, frame.resumeCount());
+            frame.enterSourceSite(401L);
             long awaitTicket = frame.awaiting();
             assertTrue(awaitTicket > 0);
             assertEquals(ActorNativeArena.TaskPhase.AWAITING, frame.phase());
@@ -736,6 +966,8 @@ final class ActorNativeArenaTest {
 
             frame.beginResume(ActorNativeArena.SuspensionKind.AWAIT, awaitTicket);
             assertEquals(2, frame.resumeCount());
+            assertEquals(401L, frame.sourceSite());
+            frame.enterSourceSite(402L);
             long cooperateTicket = frame.cooperating();
             assertTrue(cooperateTicket > awaitTicket);
             assertEquals(ActorNativeArena.TaskPhase.COOPERATING, frame.phase());
@@ -752,6 +984,7 @@ final class ActorNativeArenaTest {
             ActorNativeArena.TaskFrame failed = arena.taskFrame();
             assertNotEquals(address, failed.nativeOffset());
             failed.beginInitialResume();
+            failed.enterSourceSite(403L);
             long failedTicket = failed.awaiting();
             failed.failed();
             assertThrows(IllegalStateException.class,

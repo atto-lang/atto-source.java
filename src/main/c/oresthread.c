@@ -34,6 +34,7 @@ struct ores_carrier_pool {
     JavaVM *jvm;
     jobject executor;
     jmethodID carrier_loop;
+    jmethodID pool_retired;
     pthread_t *threads;
     ores_carrier_arg *args;
     int max_threads;
@@ -202,10 +203,15 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         return 0;
     }
     pool->carrier_loop = (*env)->GetMethodID(env, executor_class, "nativeCarrierLoop", "(I)V");
+    if (pool->carrier_loop != NULL) {
+        pool->pool_retired = (*env)->GetMethodID(env, executor_class, "nativePoolRetired", "()V");
+    }
     (*env)->DeleteLocalRef(env, executor_class);
-    if (pool->carrier_loop == NULL) {
+    if (pool->carrier_loop == NULL || pool->pool_retired == NULL) {
         free_pool(env, pool);
-        throw_illegal_state(env, "nativeCarrierLoop(int) JNI callback is missing");
+        if (!(*env)->ExceptionCheck(env)) {
+            throw_illegal_state(env, "native carrier JNI lifecycle callback is missing");
+        }
         return 0;
     }
 
@@ -342,6 +348,13 @@ static void *carrier_reaper_main(void *raw) {
     jint status = (*jvm)->AttachCurrentThreadAsDaemon(
             jvm, (void **)&env, &attach);
     if (status == JNI_OK && env != NULL) {
+        // The Java executor must not report termination until all native
+        // carrier pthreads have been joined, including JVM detach/exit.
+        (*env)->CallVoidMethod(env, pool->executor, pool->pool_retired);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
         free_pool(env, pool);
         (*jvm)->DetachCurrentThread(jvm);
     }

@@ -51,6 +51,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicBoolean shutdown = new AtomicBoolean();
     /** Serializes Java->native pool calls against asynchronous native retirement. */
     private final Object nativeLifecycleLock = new Object();
+    /** Counts native pools until their pthreads have been joined by the JNI reaper. */
+    private int nativePoolsInFlight;
     /** Zero until the first accepted dispatch initializes the native carriers. */
     private volatile long nativeHandle;
     private final String threadPrefix;
@@ -188,6 +190,18 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
     }
 
+    /** JNI callback after all pthreads in a retired pool have been joined. */
+    @SuppressWarnings("unused") // called by the native retirement reaper
+    private void nativePoolRetired() {
+        synchronized (nativeLifecycleLock) {
+            if (nativePoolsInFlight <= 0) {
+                throw new IllegalStateException("native carrier retirement without a registered pool");
+            }
+            nativePoolsInFlight--;
+            nativeLifecycleLock.notifyAll();
+        }
+    }
+
     private static void dispatchUncaught(Throwable failure) {
         Thread current = Thread.currentThread();
         Thread.UncaughtExceptionHandler handler = current.getUncaughtExceptionHandler();
@@ -210,6 +224,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         if (handle == 0L) {
             throw new IllegalStateException("native carrier pool returned a null handle");
         }
+        // Registration precedes nativeStart, including its failure/reaper path.
+        nativePoolsInFlight++;
         // pthreads created by nativeCreate wait for nativeStart. Publish
         // the handle before waking them so nativeCarrierLoop never sees zero.
         nativeHandle = handle;
@@ -295,6 +311,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             long handle = nativeHandle;
             nativeHandle = 0L;
             if (handle != 0L) nativeShutdown(handle);
+            nativeLifecycleLock.notifyAll();
             return List.copyOf(abandoned);
         }
     }
@@ -309,21 +326,18 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
         Objects.requireNonNull(unit, "unit");
         if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-        long nanos = unit.toNanos(timeout);
-        long deadline = System.nanoTime() + nanos;
-        for (;;) {
-            boolean anyAttached = false;
-            for (int slot = 0; slot < carrierThreads.length(); slot++) {
-                if (carrierThreads.get(slot) != null) {
-                    anyAttached = true;
-                    break;
-                }
+        long remaining = unit.toNanos(timeout);
+        long startedWaiting = System.nanoTime();
+        synchronized (nativeLifecycleLock) {
+            // Zero attached carrier threads is not termination: an unopened
+            // pool may still accept work, and native pthreads may be between
+            // their Java loop exit and the JNI join/reaper callback.
+            while (!shutdown.get() || nativePoolsInFlight != 0) {
+                if (remaining <= 0L) return false;
+                TimeUnit.NANOSECONDS.timedWait(nativeLifecycleLock, remaining);
+                remaining = unit.toNanos(timeout) - (System.nanoTime() - startedWaiting);
             }
-            if (!anyAttached) return true;
-            if (nanos == 0L || System.nanoTime() >= deadline) return false;
-            long remaining = deadline - System.nanoTime();
-            long millis = Math.max(1L, Math.min(10L, TimeUnit.NANOSECONDS.toMillis(remaining)));
-            Thread.sleep(millis);
+            return true;
         }
     }
 
@@ -360,11 +374,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
 
     @Override
     public boolean isTerminated() {
-        if (!shutdown.get()) return false;
-        for (int slot = 0; slot < carrierThreads.length(); slot++) {
-            if (carrierThreads.get(slot) != null) return false;
+        synchronized (nativeLifecycleLock) {
+            return shutdown.get() && nativePoolsInFlight == 0;
         }
-        return true;
     }
 
     public void setCorePoolSize(int value) {

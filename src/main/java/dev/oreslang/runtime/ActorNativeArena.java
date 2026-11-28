@@ -114,7 +114,7 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     private static final int SLOT_BYTES = 24;
-    private static final int TASK_FRAME_BYTES = 40;
+    private static final int TASK_FRAME_BYTES = 72;
     private static final int LIST_HEADER_BYTES = 32;
     private static final int LIST_CHUNK_SLOTS = 16;
     private static final int LIST_CHUNK_HEADER_BYTES = Long.BYTES;
@@ -333,8 +333,22 @@ public final class ActorNativeArena implements AutoCloseable {
             synchronized (ActorNativeArena.this) {
                 checkList();
                 int count = Math.toIntExact(read(header, 8));
-                for (int i = 0; i < count; i++) {
-                    storeValue(elementSlot(i), null, null);
+                // Walk the native chunk chain once. Calling elementSlot(i)
+                // for every element re-traversed all preceding chunks, turning
+                // large actor-list scope cleanup into quadratic work.
+                int cleared = 0;
+                long chunk = read(header, 16);
+                while (cleared < count) {
+                    if (chunk == NO_OFFSET) {
+                        throw new IllegalStateException("native actor List chunk chain is truncated");
+                    }
+                    int elements = Math.min(LIST_CHUNK_SLOTS, count - cleared);
+                    for (int lane = 0; lane < elements; lane++) {
+                        storeValue(chunk + LIST_CHUNK_HEADER_BYTES
+                                + (long) lane * SLOT_BYTES, null, null);
+                    }
+                    cleared += elements;
+                    chunk = read(chunk, 0);
                 }
                 write(header, 8, 0L);
                 // Preserve first-chunk ownership for bounded append reuse.
@@ -398,9 +412,10 @@ public final class ActorNativeArena implements AutoCloseable {
         return cell;
     }
 
-    public final class ValueCell implements NativeValue {
+    public final class ValueCell implements NativeValue, AutoCloseable {
         private final long slot;
         private final Object uninitialized;
+        private boolean dropped;
 
         private ValueCell(long slot, Object uninitialized) {
             this.slot = slot;
@@ -409,16 +424,21 @@ public final class ActorNativeArena implements AutoCloseable {
 
         @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
 
+        private void requireLiveCell() {
+            checkAccess();
+            if (dropped) throw new IllegalStateException("native lexical cell has been dropped");
+        }
+
         @Override public long nativeOffset() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                requireLiveCell();
                 return slot;
             }
         }
 
         public Object get() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                requireLiveCell();
                 return loadValue(slot, uninitialized);
             }
         }
@@ -430,10 +450,31 @@ public final class ActorNativeArena implements AutoCloseable {
          */
         public boolean trySet(Object value) {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                requireLiveCell();
                 if (!supportsValue(value, uninitialized)) return false;
                 storeValue(slot, value, uninitialized);
                 return true;
+            }
+        }
+
+        /**
+         * Explicit compiler-lowered lexical scope drop. The tagged payload is
+         * cleared while this actor holds its arena authority, which decrements
+         * native facade/opaque-handle reference counts immediately. The slab
+         * storage itself remains actor-owned until physical finalization; no
+         * actor-relative address can be recycled during an actor lifetime.
+         *
+         * <p>A drop is terminal for this cell, even if the guest value was
+         * already null. Callers must prove the slot has no outstanding lexical
+         * aliases before dropping it; source Env teardown is not yet wired to
+         * this operation.</p>
+         */
+        @Override public void close() {
+            synchronized (ActorNativeArena.this) {
+                checkAccess();
+                if (dropped) return;
+                storeValue(slot, null, uninitialized);
+                dropped = true;
             }
         }
     }
@@ -568,6 +609,10 @@ public final class ActorNativeArena implements AutoCloseable {
         write(base, 16, 0L); // resume generation/count
         write(base, 24, 0L); // suspension ticket generation
         write(base, 32, 0L); // active SuspensionKind, 0 when running/terminal
+        write(base, 40, NO_OFFSET); // native spill-register slots
+        write(base, 48, 0L); // declared spill-register count
+        write(base, 56, 0L); // source statement-site label, 0 before first site
+        write(base, 64, 0L); // label captured by the active suspension ticket
         return new TaskFrame(base);
     }
 
@@ -644,6 +689,115 @@ public final class ActorNativeArena implements AutoCloseable {
             }
         }
 
+
+        /**
+         * Reserve a fixed, native-backed register bank for compiler-lowered
+         * locals that must survive await/cooperate. Register payloads are the
+         * normal tagged arena values, not Java Object[] references.
+         *
+         * <p>Configuration is single-shot before the first resume. A failed
+         * admission does not publish a half-initialized bank or consume a
+         * second bank on retry.</p>
+         */
+        public void configureSpillSlots(int count) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                if (TaskPhase.fromCode(read(base, 8)) != TaskPhase.NEW
+                        || read(base, 40) != NO_OFFSET) {
+                    throw new IllegalStateException("native task spill layout is already sealed");
+                }
+                if (count <= 0 || count > 1024) {
+                    throw new IllegalArgumentException("native task spill count must be in [1,1024]");
+                }
+                long location = allocate(Math.multiplyExact(count, SLOT_BYTES));
+                for (int i = 0; i < count; i++) {
+                    long slot = location + (long) i * SLOT_BYTES;
+                    write(slot, 0, NULL);
+                    write(slot, 8, 0L);
+                    write(slot, 16, 0L);
+                }
+                write(base, 40, location);
+                write(base, 48, count);
+            }
+        }
+
+        public int spillSlotCount() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                return Math.toIntExact(read(base, 48));
+            }
+        }
+
+        public void spill(int index, Object value) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                requireRunning();
+                long slot = spillAddress(index);
+                if (!supportsValue(value, null)) {
+                    throw new IllegalArgumentException(
+                            "native task spill requires native value lowering");
+                }
+                storeValue(slot, value, null);
+            }
+        }
+
+        public Object restore(int index) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                requireRunning();
+                return loadValue(spillAddress(index), null);
+            }
+        }
+
+        /** Deterministically drop native reference roots when a task terminates. */
+        private void clearSpills() {
+            int count = Math.toIntExact(read(base, 48));
+            if (count == 0) return;
+            long first = read(base, 40);
+            for (int i = 0; i < count; i++) {
+                storeValue(first + (long) i * SLOT_BYTES, null, null);
+            }
+        }
+
+        private long spillAddress(int index) {
+            int count = Math.toIntExact(read(base, 48));
+            if (index < 0 || index >= count) {
+                throw new IndexOutOfBoundsException("native task spill index outside declared frame");
+            }
+            return read(base, 40) + (long) index * SLOT_BYTES;
+        }
+
+        private void requireRunning() {
+            if (TaskPhase.fromCode(read(base, 8)) != TaskPhase.RUNNING) {
+                throw new IllegalStateException("native task spill access requires RUNNING");
+            }
+        }
+
+        /**
+         * Compiler/evaluator-supplied source statement label. Labels are
+         * positive and stable within a linked code unit, not raw code pointers.
+         * They identify the statement that may suspend; the monotonic ticket
+         * disambiguates repeated suspensions inside the same statement/loop.
+         */
+        public void enterSourceSite(long site) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                requireRunning();
+                if (site <= 0L) {
+                    throw new IllegalArgumentException("native continuation site must be positive");
+                }
+                write(base, 56, site);
+            }
+        }
+
+        /** Host-only/auditing view of the actor-owned statement label. */
+        public long sourceSite() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                return read(base, 56);
+            }
+        }
+
         public void beginInitialResume() {
             synchronized (ActorNativeArena.this) {
                 checkFrame();
@@ -672,7 +826,9 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (current != expectedKind.phase
                         || suspensionTicket <= 0L
                         || activeTicket != suspensionTicket
-                        || activeKind != expectedKind.code) {
+                        || activeKind != expectedKind.code
+                        || read(base, 64) <= 0L
+                        || read(base, 64) != read(base, 56)) {
                     throw new IllegalStateException(
                             "stale or mismatched native actor continuation resume: phase=" + current
                                     + " expected=" + expectedKind
@@ -681,6 +837,7 @@ public final class ActorNativeArena implements AutoCloseable {
                 }
                 long generation = Math.addExact(read(base, 16), 1L);
                 write(base, 32, 0L);
+                write(base, 64, 0L);
                 write(base, 16, generation);
                 write(base, 8, TaskPhase.RUNNING.code);
             }
@@ -691,8 +848,43 @@ public final class ActorNativeArena implements AutoCloseable {
 
         public void done() {
             synchronized (ActorNativeArena.this) {
+                checkFrame();
+                requireRunning();
+                clearSpills();
                 transitionFromRunning(TaskPhase.DONE);
                 write(base, 32, 0L);
+                write(base, 56, 0L);
+                write(base, 64, 0L);
+            }
+        }
+
+        /**
+         * Complete a source function that intentionally converts a trapped
+         * guest exception into an ordinary Err/None outcome. The source
+         * evaluator can encounter that exception after committing a suspend
+         * ticket but before yielding the corresponding scheduler Step.
+         *
+         * <p>Only a live, already-entered task can be completed this way.
+         * Suspended tickets are revoked and native spill roots dropped before
+         * publishing DONE. Callers must have independently checked that the
+         * exception is trappable; this is not a generic cancellation path.</p>
+         */
+        public void completeTrappedFailure() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                TaskPhase current = TaskPhase.fromCode(read(base, 8));
+                if (current != TaskPhase.RUNNING
+                        && current != TaskPhase.AWAITING
+                        && current != TaskPhase.COOPERATING) {
+                    throw new IllegalStateException(
+                            "trapped native actor task completion requires a live entered frame: phase="
+                                    + current);
+                }
+                clearSpills();
+                write(base, 32, 0L);
+                write(base, 56, 0L);
+                write(base, 64, 0L);
+                write(base, 8, TaskPhase.DONE.code);
             }
         }
 
@@ -706,7 +898,10 @@ public final class ActorNativeArena implements AutoCloseable {
                 checkFrame();
                 TaskPhase current = TaskPhase.fromCode(read(base, 8));
                 if (current == TaskPhase.DONE || current == TaskPhase.FAILED) return;
+                clearSpills();
                 write(base, 32, 0L);
+                write(base, 56, 0L);
+                write(base, 64, 0L);
                 write(base, 8, TaskPhase.FAILED.code);
             }
         }
@@ -720,9 +915,15 @@ public final class ActorNativeArena implements AutoCloseable {
                             "native actor task suspension requires unsuspended RUNNING frame; phase="
                                     + current + " kind=" + kind);
                 }
+                long site = read(base, 56);
+                if (site <= 0L) {
+                    throw new IllegalStateException(
+                            "native actor task cannot suspend without an entered source site");
+                }
                 long ticket = Math.addExact(read(base, 24), 1L);
                 if (ticket <= 0L) throw new IllegalStateException("native actor suspension ticket exhausted");
                 write(base, 24, ticket);
+                write(base, 64, site);
                 write(base, 32, kind.code);
                 write(base, 8, kind.phase.code);
                 return ticket;

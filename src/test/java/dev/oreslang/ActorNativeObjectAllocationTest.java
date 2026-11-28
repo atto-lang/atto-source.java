@@ -66,6 +66,47 @@ final class ActorNativeObjectAllocationTest {
         }
     }
     @Test
+    void nativeSourceSitesFollowAwaitAndCooperateAcrossActorKinds() throws Exception {
+        // The executable source continuation enters a distinct AST statement
+        // for each suspend. Both logical actors must use their own native
+        // frame even when a later turn lands on a different carrier.
+        for (String actorKind : new String[] {"actor", "isoactor"}) {
+            String program = """
+                    async fnc produce(int seed): int {
+                      rt cooperate;
+                      return seed + 1;
+                    }
+
+                    define %s Worker as
+                      receive(ActorMail<String> mail): void {
+                        let first = await produce(40);
+                        rt cooperate;
+                        let second = await produce(first);
+                        self.send(second);
+                        self.end();
+                        return;
+                      }
+                    end
+
+                    pub async routine main(): void {
+                      val worker = await spawn Worker();
+                      worker.send("go");
+                      val result = (await worker.outputs.next()).value.unwrap();
+                      stdio.stdout.write(result.value);
+                      await worker.get_done();
+                      return;
+                    }
+                    """.formatted(actorKind);
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            Path entry = temp.resolve("native-site-" + actorKind + ".ores");
+            Files.writeString(entry, program);
+            LinkedProgramRunner.run(entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    Set.of(), Map.of(), output, new ByteArrayOutputStream());
+            assertEquals("42", output.toString(StandardCharsets.UTF_8), actorKind);
+        }
+    }
+
+    @Test
     void actorMayUseSharedHelperCodeAndImmutableModuleData() throws Exception {
         String program = """
                 define module constants
