@@ -73,10 +73,16 @@ public final class AttoReadonlyReferenceCompiler {
     public static String emit(String source){
         Parser p=new Parser(source);p.parse();
         StringBuilder out=new StringBuilder("public final class AttoReadonlyGuest {\nprivate static final class Obj {\n");
-        for(int i=0;i<p.fields.size();i++)out.append("final long f").append(i).append("=").append(p.fields.get(i).value).append("L;\n");
-        out.append("}\n");
+        for(int i=0;i<p.fields.size();i++)out.append("final long f").append(i).append(";\n");
+        out.append("Obj(");
+        for(int i=0;i<p.fields.size();i++){if(i>0)out.append(',');out.append("long a").append(i);}
+        out.append("){");
+        for(int i=0;i<p.fields.size();i++)out.append("this.f").append(i).append("=a").append(i).append(';');
+        out.append("}\n}\n");
         for(int i=0;i<p.helpers.size();i++){Helper h=p.helpers.get(i);out.append("private static long f").append(i).append("(Obj p){return ").append(h.forward?"f"+h.index+"(p)":"p.f"+h.index).append(";}\n");}
-        out.append("public static long run(){Obj p=new Obj();long r=f").append(p.calls.get(0)).append("(p);\n");
+        out.append("public static long run(){Obj p=new Obj(");
+        for(int i=0;i<p.fields.size();i++){if(i>0)out.append(',');out.append(p.fields.get(i).value).append('L');}
+        out.append(");long r=f").append(p.calls.get(0)).append("(p);\n");
         for(int i=1;i<p.calls.size();i++)out.append("r=Math.").append(p.ops.get(i-1).equals("+")?"addExact":"subtractExact").append("(r,f").append(p.calls.get(i)).append("(p));\n");
         return out.append("return r;}\npublic static void main(String[] args){System.out.println(run());}\n}\n").toString();
     }
@@ -95,7 +101,10 @@ public final class AttoReadonlyReferenceCompiler {
                 throw reject("output already exists");
             long size = Files.size(source);
             if (size < 1 || size > 16384) throw reject("source byte budget");
-            byte[] bytes = Files.readAllBytes(source);
+            byte[] bytes;
+            try (var in = Files.newInputStream(source, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+                bytes = in.readNBytes(16385);
+            }
             if (bytes.length != size) throw reject("source changed during admission");
             String actual = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
             if (expectedSha == null || !HASH.matcher(expectedSha).matches()
