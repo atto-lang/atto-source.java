@@ -190,7 +190,8 @@ define module time as
     // Scheduler may inspect this only while armed.
     pub next_due(): Result<Instant, String> {
       if !self.armed; do return Err("TimerInactive"); fi
-      return Ok(self.deadline.due);
+      // A fresh Instant: the receiver is borrowed, so its field cannot move out.
+      return Ok(new Instant(self.deadline.due.clock_id, self.deadline.due.ticks_ns));
     }
     pub is_armed(): bool { return self.armed; }
     pub did_fire(): bool { return self.fired; }

@@ -35,7 +35,12 @@ define module process as
   // Stdio modes: 0 closed, 1 inherited, 2 bounded async pipe.
   // Inheritance is subject to a separate host permission.
   pub fnc with_stdio(Command value, int stdin_mode, int stdout_mode, int stderr_mode): Command {
-    return new Command(value.executable, value.arguments, stdin_mode, stdout_mode, stderr_mode);
+    // Copy the argument list: a field of value cannot be moved out on its own.
+    let mut Array<String> args = new Array<String>();
+    for (let int i = 0; i < value.arguments.size; i = i + 1) {
+      args.add(value.arguments.get(i));
+    }
+    return new Command(value.executable, rt take args, stdin_mode, stdout_mode, stderr_mode);
   }
 
   pub fnc valid_stdio(Command value): bool {

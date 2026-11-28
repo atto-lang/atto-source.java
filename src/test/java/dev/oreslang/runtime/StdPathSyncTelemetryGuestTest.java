@@ -112,7 +112,7 @@ final class StdPathSyncTelemetryGuestTest {
                 () -> "shared policy parity failed; stderr=" +
                         stderr.toString(StandardCharsets.UTF_8));
         assertEquals("", stdout.toString(StandardCharsets.UTF_8).trim());
-        assertEquals("", stderr.toString(StandardCharsets.UTF_8).trim());
+        assertEquals("", withoutInterpreterOnlyWarning(stderr.toString(StandardCharsets.UTF_8)).trim());
 
         String correct = "if !path.is_separator(47, false) then return 1; fi";
         String inverted = "if path.is_separator(47, false) then return 1; fi";
@@ -189,4 +189,14 @@ final class StdPathSyncTelemetryGuestTest {
         }
     }
 
+
+    /** Truffle prints a one-time fallback-runtime notice on JVMs without JVMCI. */
+    private static String withoutInterpreterOnlyWarning(String err) {
+        int start = err.indexOf("[To redirect Truffle log output");
+        if (start < 0) start = err.indexOf("[engine] WARNING: The polyglot engine uses a fallback runtime");
+        if (start < 0) return err;
+        String tail = "WarnInterpreterOnly=false' system property.";
+        int end = err.indexOf(tail, start);
+        return end < 0 ? err : (err.substring(0, start) + err.substring(end + tail.length()));
+    }
 }
