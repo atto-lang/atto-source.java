@@ -2366,6 +2366,19 @@ public final class OwnershipChecker {
             };
             return new ValueInfo(result, kindOfType(result), null);
         }
+        if (expr instanceof Ast.SelectExpr valueSelect) {
+            // Same registration, borrow-suspension, deferred-capture and
+            // per-arm move rules as the procedural select; each arm's value
+            // is checked in that arm's binding scope.
+            checkStatement(valueSelect.asStatement(), scope, Ast.TypeRef.inferred());
+            Ast.TypeRef element = Ast.TypeRef.inferred();
+            Ast.TypeRef result = switch (valueSelect.select().mode()) {
+                case BLOCKING -> element;
+                case NONBLOCKING -> new Ast.TypeRef("Future", List.of(element), false);
+                case IMMEDIATE -> new Ast.TypeRef("Option", List.of(element), false);
+            };
+            return new ValueInfo(result, kindOfType(result), null);
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             if (selected.mode() == Ast.WaitMode.BLOCKING) {
                 checkSuspensionBorrows(scope, "select from cases");
@@ -5262,6 +5275,9 @@ public final class OwnershipChecker {
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) {
             scanExpr(e.cases(), locals, outer, recursiveBinding, captures, false);
+        }
+        else if (expr instanceof Ast.SelectExpr e) {
+            scanStatements(List.of(e.asStatement()), locals, outer, recursiveBinding, captures);
         }
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);

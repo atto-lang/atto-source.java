@@ -2256,6 +2256,7 @@ public final class TypeChecker {
                 || expr instanceof Ast.TaskExpr
                 || expr instanceof Ast.ChannelOpExpr
                 || expr instanceof Ast.DynamicSelectExpr
+                || expr instanceof Ast.SelectExpr
                 || expr instanceof Ast.AssignExpr) return true;
         if (expr instanceof Ast.RuntimeCallExpr) {
             // All runtime intrinsics carry semantics beyond an ordinary
@@ -7262,6 +7263,59 @@ public final class TypeChecker {
                 env.restoreInitialization(before);
             }
         }
+        if (expr instanceof Ast.SelectExpr valueSelect) {
+            Ast.SelectStmt selected = valueSelect.select();
+            Type result = null;
+            for (int i = 0; i < selected.arms().size(); i++) {
+                Ast.SelectArm arm = selected.arms().get(i);
+                Env armEnv = new Env(env);
+                if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
+                    Type source = typeOf(arm.channel(), env, generics, self);
+                    Type element;
+                    if (arm.operation() == Ast.ChannelOperation.AWAIT) {
+                        if (!(deref(source) instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException("when await requires Future<T>, got " + source);
+                        }
+                        element = future.arguments().getFirst();
+                    } else {
+                        element = channelElementType(source, "select " + arm.operation().name().toLowerCase());
+                    }
+                    if (arm.operation() == Ast.ChannelOperation.WRITE) {
+                        requireAssignable(typeOf(arm.value(), env, generics, self), element, "writech select value");
+                    } else if (arm.bindingName() != null) {
+                        Type bound = element;
+                        if (arm.bindingType() != null) {
+                            bound = resolve(arm.bindingType(), generics, self);
+                            requireReadonlyCapabilityPreserved(element, bound,
+                                    "typed select binding '" + arm.bindingName() + "'");
+                            requireAssignable(element, bound, "typed select binding '" + arm.bindingName() + "'");
+                        }
+                        requireMutableReferentCompatible(bound, arm.mutableReferent(),
+                                "select binding '" + arm.bindingName() + "'");
+                        armEnv.define(arm.bindingName(), bound, arm.bindingKind());
+                    }
+                }
+                Type actual = typeOf(valueSelect.armValues().get(i), armEnv, generics, self);
+                if (actual == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            "value select arm must produce a value; use 'do select { ... }' for effects only");
+                }
+                if (result == null) {
+                    result = actual;
+                } else {
+                    requireReadonlyCapabilityPreserved(actual, result, "select arm");
+                    requireAssignable(actual, result, "select arm");
+                    requireAssignable(result, actual, "select arm");
+                }
+            }
+            return switch (selected.mode()) {
+                case BLOCKING -> result;
+                case NONBLOCKING -> new Named("Future", List.of(result));
+                case IMMEDIATE -> new Named("Option", List.of(result));
+            };
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
@@ -10928,7 +10982,7 @@ public final class TypeChecker {
      */
     private static boolean hasSuspendingSumCallbackSyntax(Ast.Expr expr) {
         if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
-                || expr instanceof Ast.DynamicSelectExpr) return true;
+                || expr instanceof Ast.DynamicSelectExpr || expr instanceof Ast.SelectExpr) return true;
         if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return false;
         if (expr instanceof Ast.BinaryExpr binary)
             return hasSuspendingSumCallbackSyntax(binary.left())
