@@ -91,7 +91,8 @@ final class AttoAllocGuestTest {
         // not Java-only models or parser-only fixture acceptance.
         for (String name : new String[]{
                 "allocator-transactions-positive.atto",
-                "set-hash-operations-positive.atto"}) {
+                "set-hash-operations-positive.atto",
+                "set-dense-xor-positive.atto"}) {
             Path guest = Path.of("tests", "fixtures", "alloc-java-guest", name);
             assertTrue(Files.isRegularFile(guest), "missing Atto fixture " + name);
             assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()), name);
