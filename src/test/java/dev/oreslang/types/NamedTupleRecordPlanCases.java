@@ -2,6 +2,8 @@ package dev.oreslang.types;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Predicate;
 import static dev.oreslang.types.NamedTupleRecordPlan.*;
@@ -84,6 +86,28 @@ public final class NamedTupleRecordPlanCases {
         try { plan.discarded().clear(); throw new AssertionError("mutable discards"); }
         catch (UnsupportedOperationException expected) {}
         cases += 2;
+        var members = new LinkedHashMap<String, String>();
+        members.put("z", "string");
+        members.put("a", "int");
+        members.put("m", "bool");
+        var expectedCanonical = List.of(new Slot<>("a", "int"), new Slot<>("m", "bool"), new Slot<>("z", "string"));
+        equal(reverse(members, null, VALID), expectedCanonical);
+        equal(reverse(members, List.of("z", "a", "m"), VALID),
+                List.of(new Slot<>("z", "string"), new Slot<>("a", "int"), new Slot<>("m", "bool")));
+        equal(reverse(Map.of("a", "int", "m", "bool", "z", "string"), null, VALID), expectedCanonical);
+        equal(reverse(Map.<String,String>of(), null, VALID), List.of());
+        reject(() -> reverse(members, List.of("a", "a", "m"), VALID), "E_RECORD_ORDER");
+        reject(() -> reverse(members, List.of("a", "z"), VALID), "E_RECORD_ORDER");
+        reject(() -> reverse(members, List.of("a", "m", "unknown"), VALID), "E_RECORD_ORDER");
+        reject(() -> reverse(Map.of("bad-key", "int"), null, VALID), "E_RECORD_KEY");
+        try { reverse(members, null, VALID).clear(); throw new AssertionError("mutable reverse shape"); }
+        catch (UnsupportedOperationException expected) {}
+        var large = new LinkedHashMap<String,String>();
+        for (int i = 0; i < 4096; i++) large.put("a" + i, "int");
+        equal(reverse(large, null, VALID).size(), 4096);
+        large.put("extra", "int");
+        reject(() -> reverse(large, null, VALID), "E_RECORD_SHAPE_LIMIT");
+        cases += 11;
         System.out.println("NAMED_TUPLE_RECORD_PLAN_PASS cases=" + cases);
     }
 }
