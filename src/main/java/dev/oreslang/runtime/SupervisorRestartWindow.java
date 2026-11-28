@@ -117,9 +117,10 @@ public final class SupervisorRestartWindow {
 
         if (size >= maxRestarts) {
             long oldest = admittedAt[head];
-            long deadline = saturatingAdd(oldest, windowNanos);
-            lastRetryAfterNanos =
-                    deadline <= now ? 0L : deadline - now;
+            // expire(now) guarantees the oldest admission is still within
+            // the window. Compute remaining duration rather than saturating
+            // an absolute deadline, which becomes incorrect near Long.MAX_VALUE.
+            lastRetryAfterNanos = windowNanos - (now - oldest);
             suppressed = saturatingIncrement(suppressed);
             if (isPowerOfTwo(suppressed)) {
                 CoreLog.record(
