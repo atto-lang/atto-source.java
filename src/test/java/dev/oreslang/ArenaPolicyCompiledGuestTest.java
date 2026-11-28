@@ -31,6 +31,23 @@ final class ArenaPolicyCompiledGuestTest {
                 ExecutionProfile.serverJit(),new ByteArrayOutputStream(),new ByteArrayOutputStream());
         assertEquals(expected,result.exitStatus(),name);
     }
+    @Test
+    @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="atto.arena.corpus.dir",matches=".+")
+    void sharedDifferentialCorpus() throws Exception {
+        String prefix=String.join("\n",
+            pinned("stdlib/policy/core/arena_limits.atto","5928e893a2ce1baadb0376a4ccb14f63249f77d4"),
+            pinned("stdlib/policy/alloc/arena_lifecycle.atto","e4795c6d4bd561be3d913cdc617d103d0e2828c8"));
+        Path corpus=Path.of(System.getProperty("atto.arena.corpus.dir"));
+        int tested=0;
+        for(int start=0;start<352;start+=16){
+            String batch=Files.readString(corpus.resolve("batch-"+start+".atto"));
+            assertEquals(16,batch.lines().filter(line->line.stripLeading().startsWith("if ")).count());
+            execute("differential-"+start,prefix+"\n"+batch,100);
+            tested+=16;
+        }
+        assertEquals(352,tested);
+        System.out.println("JAVA_ARENA_POLICY_DIFFERENTIAL_PASS cases="+tested);
+    }
     @Test void exactSharedPolicyAndWrongOracle() throws Exception {
         String source=String.join("\n",
             pinned("stdlib/policy/core/arena_limits.atto","5928e893a2ce1baadb0376a4ccb14f63249f77d4"),
