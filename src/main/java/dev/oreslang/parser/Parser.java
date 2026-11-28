@@ -7342,8 +7342,21 @@ public final class Parser {
                 throw error(declaration, "E_UNIT_DUPLICATE: quantity name is already declared");
             }
             if (dimension) {
+                var vector = VerifiedQuantityUnit.base(name);
+                if (match(EQUAL)) {
+                    if (strictVerifiedI64) throw error(declaration, "E_VERIFY_UNSUPPORTED: compound dimension pilot is not strict-profile admitted");
+                    vector = readDeclaredDimension();
+                    int factors = 1;
+                    while (match(STAR, SLASH)) {
+                        boolean divide = previous().type() == SLASH;
+                        if (++factors > 128) throw error(declaration, "E_UNIT_LIMIT: compound dimension factor budget exceeded");
+                        vector = vector.combine(readDeclaredDimension(), divide);
+                    }
+                    if (vector.powers().isEmpty() || dimensions.containsValue(vector))
+                        throw error(declaration, "E_UNIT_DIMENSION: equal or empty vectors require explicit nominal kind admission");
+                }
                 consume(SEMICOLON, "expected ';' after dimension declaration");
-                dimensions.put(name, VerifiedQuantityUnit.base(name));
+                dimensions.put(name, vector);
                 continue;
             }
             consume(COLON, "expected ':' before a unit's dimension");
@@ -7372,6 +7385,13 @@ public final class Parser {
             consume(SEMICOLON, "expected ';' after unit declaration");
             units.put(name, unit);
         }
+    }
+
+    private VerifiedQuantityUnit readDeclaredDimension() {
+        Token name = consume(IDENT, "E_UNIT_NAME: expected dimension");
+        var unit = dimensions.get(name.lexeme());
+        if (unit == null) throw error(name, "E_UNIT_NAME: unknown or forward dimension");
+        return unit;
     }
 
     private VerifiedQuantityUnit readQuantityUnit() {
