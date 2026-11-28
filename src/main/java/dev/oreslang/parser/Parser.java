@@ -1633,7 +1633,7 @@ public final class Parser {
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
         Ast.ConstructorDecl constructor = null;
-        Set<String> deferredFinals = new java.util.LinkedHashSet<>();
+        java.util.Set<String> deferredFinals = new java.util.LinkedHashSet<>();
 
         while (!check(classTerminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
@@ -1747,8 +1747,8 @@ public final class Parser {
         // conditional/loop/deferred write or early return for initialization.
         if (!deferredFinals.isEmpty()) {
             if (constructor == null) throw error(previous(), "E_INIT: deferred final fields require an explicit constructor");
-            Set<String> pending = new java.util.LinkedHashSet<>(deferredFinals);
-            Set<String> parameters = new java.util.HashSet<>();
+            java.util.Set<String> pending = new java.util.LinkedHashSet<>(deferredFinals);
+            java.util.Set<String> parameters = new java.util.HashSet<>();
             for (Ast.Param param : constructor.parameters()) parameters.add(param.name());
             for (Ast.Stmt statement : constructor.body()) {
                 if (pending.isEmpty()) break;
