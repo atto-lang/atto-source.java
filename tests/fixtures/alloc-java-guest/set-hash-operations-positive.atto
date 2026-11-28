@@ -23,6 +23,17 @@ pub fnc main(): int {
   if !keys.same_members(rt borrow other) || !other.same_members(rt borrow keys) ||
      !keys.is_subset_of(rt borrow other) || keys.len() neq 2 || other.len() neq 2;
     do return 5; fi
+  if keys.intersection_size(rt borrow other) neq 2 ||
+     keys.symmetric_difference_size(rt borrow other) neq 0; do return 6; fi
+  other.insert(0);
+  keys.insert(-9);
+  if keys.intersection_size(rt borrow other) neq 2 ||
+     keys.symmetric_difference_size(rt borrow other) neq 2 ||
+     other.symmetric_difference_size(rt borrow keys) neq 2 ||
+     keys.len() neq 3 || other.len() neq 3; do return 7; fi
+  let mut IntHashSet empty = new IntHashSet(1);
+  if keys.symmetric_difference_size(rt borrow empty) neq 3 ||
+     empty.symmetric_difference_size(rt borrow empty) neq 0; do return 8; fi
   keys.clear();
   return keys.is_empty() && !keys.contains(7) ? 42 : 2;
 }
