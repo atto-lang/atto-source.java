@@ -57,9 +57,11 @@ public final class ActorCriticalLoanPreflight {
                 for (Ast.Stmt nested : branch.body()) scanOutside(nested, fields, effects);
             }
             for (Ast.Stmt nested : conditional.elseBody()) scanOutside(nested, fields, effects);
+        } else {
+            // No unchecked AST statement kind may hide a state-loan call.
+            // This is deliberately conservative while native execution is disabled.
+            throw error("sealed actor method contains an unexamined statement kind");
         }
-        // Other methods and all unknown statements remain runtime-denied
-        // by TypeChecker. Do not treat this source visitor as a proof.
     }
 
     private static void scanOutside(Ast.Expr expr, Map<String, Ast.TypeRef> fields, Ast.StateEffect effects) {
@@ -97,6 +99,14 @@ public final class ActorCriticalLoanPreflight {
             scanOutside(conditional.whenTrue(), fields, effects);
             scanOutside(conditional.whenFalse(), fields, effects);
         } else if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr receiver
+                    && receiver.name().equals("self")
+                    && (fields.containsKey(member.member()) || member.member().equals("state"))) {
+                throw error("sealed actor state cannot be accessed directly; use a checked critical loan");
+            }
+            if (isIntrinsic(member)) {
+                throw error("self.handle_state is a compiler-owned intrinsic, not a first-class value");
+            }
             scanOutside(member.receiver(), fields, effects);
         } else if (expr instanceof Ast.IndexExpr index) {
             scanOutside(index.receiver(), fields, effects);
@@ -106,6 +116,8 @@ public final class ActorCriticalLoanPreflight {
             if (lambda.blockBody() != null) {
                 for (Ast.Stmt nested : lambda.blockBody()) scanOutside(nested, fields, effects);
             }
+        } else if (!(expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr)) {
+            throw error("sealed actor method contains an unexamined expression kind");
         }
     }
 

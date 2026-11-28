@@ -1,0 +1,70 @@
+name: Critical actor-loan preflight exact-head Java 25
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/types/ActorCriticalLoanPreflight.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/ActorCriticalLoanPreflightTest.java'
+      - '.github/workflows/actor-critical-loan-preflight-exact.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: critical-loan-preflight-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  compiler-and-junit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Attest exact checked-out Git source
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo "SOURCE_HEAD_SHA=$(git rev-parse HEAD)"
+          echo "SOURCE_TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
+      - name: Provision GraalVM / JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Verify actual compiler and focused JUnit
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -version
+          mvn -B -ntp -Dtest=ActorCriticalLoanPreflightTest -DfailIfNoTests=true test
+      - name: Enforce nonempty JUnit XML, no failures or skips
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { readFileSync, existsSync } from 'node:fs';
+          const path = 'target/surefire-reports/TEST-dev.oreslang.ActorCriticalLoanPreflightTest.xml';
+          if (!existsSync(path)) throw Error('NO_JUNIT_XML: compiler or tests did not execute');
+          const xml = readFileSync(path, 'utf8');
+          const suite = xml.match(/<testsuite\b([^>]+)>/);
+          if (!suite) throw Error('INVALID_JUNIT_XML: missing testsuite');
+          const metrics = Object.fromEntries(
+            [...suite[1].matchAll(/\b(tests|failures|errors|skipped)="(\d+)"/g)]
+              .map(match => [match[1], Number(match[2])])
+          );
+          if (!['tests', 'failures', 'errors', 'skipped'].every(key => Number.isSafeInteger(metrics[key])))
+            throw Error('INCOMPLETE_JUNIT_COUNTS');
+          if (metrics.tests < 9 || metrics.failures !== 0 || metrics.errors !== 0 || metrics.skipped !== 0)
+            throw Error('NATIVE_PREFLIGHT_UNVERIFIED ' + JSON.stringify(metrics));
+          console.log('NATIVE_PREFLIGHT_JUNIT_RESULT ' + JSON.stringify({
+            ...metrics, passed: true, scope: 'Java compiler and JUnit preflight only; no protected-state guest runtime'
+          }));
+          NODE

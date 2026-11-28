@@ -104,6 +104,34 @@ final class ActorCriticalLoanPreflightTest {
         rejected("critical[write]", "let s = 1; s.count = 2;", "cannot be shadowed");
     }
 
+    @Test void directSealedStateFieldAccessOutsideLoanIsRejected() {
+        for (String member : new String[] {"count", "state"}) {
+            String source = """
+                    define actor Counter as
+                      state { count: int = 0; }
+                      pub leak(): int { return self.%s; }
+                    end
+                    """.formatted(member);
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorCriticalLoanPreflight.auditClass(parsed(source)));
+            assertTrue(denied.getMessage().contains("sealed actor state cannot be accessed directly"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void uncalledIntrinsicMethodCannotEscapeAsFirstClassValue() {
+        String source = """
+                define actor Counter as
+                  state { count: int = 0; }
+                  pub leak(): int { return self.handle_state; }
+                end
+                """;
+        var denied = assertThrows(IllegalArgumentException.class,
+                () -> ActorCriticalLoanPreflight.auditClass(parsed(source)));
+        assertTrue(denied.getMessage().contains("compiler-owned intrinsic"),
+                denied::getMessage);
+    }
+
     @Test void stillNoGuestExecutionUntilLoansAndArenasExist() {
         var program = Parser.parse(actor("critical[write]",
                 "s.count = s.count + 1;", "int"));
