@@ -188,6 +188,8 @@ final class TreeShakerTest {
                 """, BuildOptions.library(Map.of()));
 
         assertTrue(result.retained(Parser.ROOT_MODULE + ".public_answer"));
+        assertTrue(result.rootSymbols().contains(Parser.ROOT_MODULE + ".public_answer"));
+        assertFalse(result.rootSymbols().contains(Parser.ROOT_MODULE + ".hidden_answer"));
         assertTrue(result.removed(Parser.ROOT_MODULE + ".hidden_answer"));
     }
 
@@ -313,6 +315,219 @@ final class TreeShakerTest {
                 .findFirst().orElseThrow();
         assertEquals(Ast.BindingKind.VAL, read.bindingKind());
         assertTrue(read.mutableReferent());
+    }
+
+
+    @Test
+    void treeShakingPreservesCheckedClassViewForRewrittenIndexReceiver() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                define class Parent as
+                    pub let int id = 7;
+                end
+
+                pub fnc read(): int {
+                    val Parent value = new Parent();
+                    return (rt borrow value)["id"];
+                }
+                """, BuildOptions.library(Map.of()));
+
+        Ast.FunctionDecl read = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("read"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ReturnStmt returned = read.body().stream()
+                .filter(Ast.ReturnStmt.class::isInstance)
+                .map(Ast.ReturnStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.IndexExpr indexed = assertInstanceOf(Ast.IndexExpr.class, returned.value());
+
+        assertEquals(
+                "Parent",
+                Ast.CheckedClassView.lookup(indexed.receiver()),
+                "optimizer must transfer the type checker's static class-domain proof");
+    }
+
+    @Test
+    void treeShakingPreservesCheckedClassViewThroughConstantCallInlining() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                define class Parent as
+                    pub let int id = 7;
+                end
+
+                fnc inlineRead(): int {
+                    return (new Parent())["id"];
+                }
+
+                pub fnc read(): int {
+                    return inlineRead();
+                }
+                """, BuildOptions.library(Map.of()));
+
+        Ast.FunctionDecl read = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("read"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ReturnStmt returned = read.body().stream()
+                .filter(Ast.ReturnStmt.class::isInstance)
+                .map(Ast.ReturnStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.IndexExpr indexed = assertInstanceOf(Ast.IndexExpr.class, returned.value());
+
+        assertEquals(
+                "Parent",
+                Ast.CheckedClassView.lookup(indexed.receiver()),
+                "constant-call substitution must preserve the type checker's static class-domain proof");
+    }
+
+    @Test
+    void treeShakingPreservesCheckedOptionDepthForRewrittenCall() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                pub fnc read(Option<Option<int>> value): int {
+                    return value.unwrap_all();
+                }
+                """, BuildOptions.library(Map.of()));
+
+        Ast.FunctionDecl read = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("read"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ReturnStmt returned = read.body().stream()
+                .filter(Ast.ReturnStmt.class::isInstance)
+                .map(Ast.ReturnStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.CallExpr call = assertInstanceOf(Ast.CallExpr.class, returned.value());
+
+        assertEquals(
+                2,
+                Ast.CheckedOptionDepth.require(call),
+                "optimizer must transfer the type checker's checked Option depth");
+    }
+
+    @Test
+    void treeShakingPreservesCheckedOptionDepthThroughConstantCallInlining() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc inlineRead(): int {
+                    return Some(Some(42)).unwrap_all();
+                }
+
+                pub fnc read(): int {
+                    return inlineRead();
+                }
+                """, BuildOptions.library(Map.of()));
+
+        Ast.FunctionDecl read = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("read"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ReturnStmt returned = read.body().stream()
+                .filter(Ast.ReturnStmt.class::isInstance)
+                .map(Ast.ReturnStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.CallExpr call = assertInstanceOf(Ast.CallExpr.class, returned.value());
+
+        assertEquals(
+                2,
+                Ast.CheckedOptionDepth.require(call),
+                "constant-call substitution must preserve the checked Option depth");
+    }
+
+    @Test
+    void treeShakingPreservesStructuralFieldDomainForRewrittenReceiver() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                define class Product as
+                    pub val float x = 3.0;
+                    pub val float y = 4.0;
+                    private val string hidden = "secret";
+                end
+
+                pub fnc read(structural Product value, bool chooseLeft, string key): float {
+                    return (chooseLeft ? value : value)[key];
+                }
+                """, BuildOptions.library(Map.of()));
+
+        Ast.FunctionDecl read = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("read"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ReturnStmt returned = read.body().stream()
+                .filter(Ast.ReturnStmt.class::isInstance)
+                .map(Ast.ReturnStmt.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.IndexExpr indexed = assertInstanceOf(Ast.IndexExpr.class, returned.value());
+        assertInstanceOf(Ast.ConditionalExpr.class, indexed.receiver());
+
+        assertEquals(
+                Set.of("x", "y"),
+                Ast.CheckedStructuralFieldDomain.lookup(indexed.receiver()),
+                "optimizer must transfer the checked structural field domain");
+    }
+
+    @Test
+    void treeShakingPreservesTypedValueMatchArmResultAndPrefix() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc helper(): int {
+                  return match<int> true over
+                    on true -> ::
+                      val int base = 41;
+                      return base + 1;
+                    end
+                    on false -> 0;
+                  end;
+                }
+
+                pub fnc entry(): int {
+                  return helper();
+                }
+                """, BuildOptions.library(Map.of()));
+
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".helper"),
+                "block value-match helpers must not be constant-inlined until statement-aware substitution is proven");
+
+        Ast.FunctionDecl helper = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("helper"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, helper.body().getFirst());
+        Ast.MatchExpr matched = assertInstanceOf(
+                Ast.MatchExpr.class, returned.value());
+        Ast.MatchValueArm selected = matched.arms().getFirst();
+
+        assertEquals(1, selected.prefixStatements().size());
+        assertInstanceOf(Ast.BindingStmt.class, selected.prefixStatements().getFirst());
+        assertInstanceOf(Ast.BinaryExpr.class, selected.value());
+        assertTrue(selected.prefixStatements().stream()
+                        .noneMatch(Ast.ReturnStmt.class::isInstance),
+                "ARM_RESULT must remain a typed MatchValueArm value, not an ordinary ReturnStmt");
     }
 
 }

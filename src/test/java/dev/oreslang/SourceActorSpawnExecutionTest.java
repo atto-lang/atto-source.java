@@ -6,7 +6,10 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -53,22 +56,17 @@ final class SourceActorSpawnExecutionTest {
                   val privateWorker = spawn PrivateWorker();
                   val sandboxed = spawn SandboxedWorker();
 
-                  // A readiness signal is level-triggered and awaitable.
-                  await shared.get_ready_signal();
-                  await privateWorker.get_ready_signal();
-                  await sandboxed.get_ready_signal();
-                  // Late/duplicate waiting must observe the same readiness.
-                  await shared.get_ready_signal();
+                  await shared.get_ready();
+                  await privateWorker.get_ready();
+                  await sandboxed.get_ready();
 
                   shared.send("stop");
                   privateWorker.send("stop");
                   sandboxed.send("stop");
 
-                  await shared.get_done_signal();
-                  await privateWorker.get_done_signal();
-                  await sandboxed.get_done_signal();
-                  // Terminal lifecycle signals are safe to await more than once.
-                  await shared.get_done_signal();
+                  await shared.get_done();
+                  await privateWorker.get_done();
+                  await sandboxed.get_done();
 
                   stdio.stdout.write("actors-done");
                   return;
@@ -101,8 +99,8 @@ final class SourceActorSpawnExecutionTest {
                   val left = spawn Counter();
                   val right = spawn Counter();
 
-                  await left.ready;
-                  await right.ready;
+                  await left.get_ready();
+                  await right.get_ready();
 
                   left.send("go");
                   right.send("go");
@@ -114,8 +112,8 @@ final class SourceActorSpawnExecutionTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(rightOut.value);
 
-                  await left.done;
-                  await right.done;
+                  await left.get_done();
+                  await right.get_done();
                   return;
                 }
                 """;
@@ -124,6 +122,20 @@ final class SourceActorSpawnExecutionTest {
                 "1|1",
                 run(program, "source-shared-code-distinct-state.ores"),
                 "actors may share immutable code identity but never writable actor fields");
+    }
+
+    @Test
+    void actorPrivateActorRefFieldOwnsChildAndSurvivesReceiveAwait() throws Exception {
+        String program = resource("/parity/actorref-child-capability-v1.ores");
+        assertEquals(
+                "599d1366b5926e5afc567cb7832d4769ebef6c43cd19b8010aeca22fdf83b585",
+                sha256(program),
+                "fixture bytes must match common-source ActorRef child capability v1");
+
+        assertEquals(
+                "42",
+                run(program, "actorref-child-capability-v1.ores"),
+                "actor-private ActorRef fields must retain a structured child capability across await");
     }
 
     @Test
@@ -144,7 +156,7 @@ final class SourceActorSpawnExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
                   return;
                 }
                 """;
@@ -154,7 +166,9 @@ final class SourceActorSpawnExecutionTest {
                         PolyglotException.class,
                         () -> run(program, "source-actor-startup-failure.ores"));
         assertTrue(
-                failure.getMessage().contains("did not initialize field 'required'"),
+                // #1223: the spawning guest sees the cause-free snapshot, not the
+                // child's diagnostic text.
+                failure.getMessage().contains("terminated: FAILURE"),
                 failure.getMessage());
     }
 
@@ -199,7 +213,7 @@ final class SourceActorSpawnExecutionTest {
 
                 pub async routine main(): void {
                   val worker = spawn Worker();
-                  await worker.ready;
+                  await worker.get_ready();
 
                   // Queue both messages before the first receive cooperates.
                   worker.send("first");
@@ -214,7 +228,7 @@ final class SourceActorSpawnExecutionTest {
                   stdio.stdout.write("|");
                   stdio.stdout.write(c.value);
 
-                  await worker.done;
+                  await worker.get_done();
                   return;
                 }
                 """;
@@ -222,6 +236,242 @@ final class SourceActorSpawnExecutionTest {
         assertEquals(
                 "before|after|second",
                 run(program, "source-actor-suspending-receive.ores"));
+    }
+
+    @Test
+    void awaitSpawnIsAReadinessBarrierThatReturnsTheActorRef() throws Exception {
+        String program = """
+                define actor WorkerActor as
+                  let int initialized;
+
+                  on_start(): void {
+                    self.initialized = 1;
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    if self.initialized == 1; do
+                      self.send("ready");
+                    fi
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn WorkerActor();
+                  worker.send("run");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        assertEquals("ready", run(program, "source-await-spawn-ref.ores"));
+    }
+
+    @Test
+    void awaitSpawnFailsWhenOnStartFails() throws Exception {
+        String program = """
+                define actor WorkerActor as
+                  val int required;
+
+                  on_start(): void {
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn WorkerActor();
+                  worker.send("unreachable");
+                  return;
+                }
+                """;
+        PolyglotException error = assertThrows(
+                PolyglotException.class,
+                () -> run(program, "source-await-spawn-failure.ores"));
+        assertTrue(error.getMessage().contains("terminated: FAILURE"),
+                error.getMessage());
+    }
+
+    @Test
+    void actorLifecycleAwaitObserversAreReusableAndDirectAwaitMeansReady() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> message): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+
+                  await worker;
+                  await worker;
+
+                  val ready = worker.get_ready();
+                  await ready;
+                  await ready;
+
+                  worker.send("finish");
+
+                  val done_observer = worker.get_done();
+                  await done_observer;
+                  await done_observer;
+
+                  stdio.stdout.write("lifecycle-observers-reusable");
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "lifecycle-observers-reusable",
+                run(program, "source-actor-lifecycle-repeated-await.ores"),
+                "ActorRef/ready/done lifecycle observation must be non-consuming");
+    }
+
+    @Test
+    void actorLifecycleReadyPersistsAfterPhysicalDone() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val firstReady = worker.get_ready();
+                  val secondReady = worker.get_ready();
+                  await firstReady;
+                  await worker;
+                  worker.send("finish");
+                  val firstDone = worker.get_done();
+                  val secondDone = worker.get_done();
+                  await secondDone;
+                  await firstDone;
+                  await firstDone;
+                  await secondReady;
+                  await firstReady;
+                  await worker;
+                  await worker.get_done();
+                  stdio.stdout.write("ready-after-done-reusable");
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "ready-after-done-reusable",
+                run(program, "source-actor-ready-after-done-reusable.ores"),
+                "physical DONE must not consume or invalidate settled READY/DONE observers");
+    }
+
+    @Test
+    void actorLifecycleMethodsReturnAwaitableFuturesAndRejectPropertyAccess() throws Exception {
+        String valid = """
+                define actor Worker as
+                  receive(ActorMail<String> message): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val initialized = worker.get_ready();
+                  await initialized;
+                  worker.send("finish");
+                  val finalized = worker.get_done();
+                  await finalized;
+                  stdio.stdout.write("finished");
+                  return;
+                }
+                """;
+        assertEquals("finished", run(valid, "source-actor-future-getters.ores"));
+
+        for (String forbidden : java.util.List.of(
+                "await worker.ready;",
+                "await worker.done;",
+                "await worker.get_ready(1);",
+                "await worker.get_done(1);",
+                "await worker.get_ready;",
+                "await worker.get_done;")) {
+            String source = """
+                    define actor Worker as
+                      receive(ActorMail<String> message): void {
+                        self.end();
+                        return;
+                      }
+                    end
+                    pub async routine main(): void {
+                      val worker = spawn Worker();
+                      """ + forbidden + """
+                      
+                      worker.stop();
+                      return;
+                    }
+                    """;
+            assertThrows(PolyglotException.class,
+                    () -> run(source, "source-actor-bad-lifecycle-access.ores"),
+                    forbidden + " must not be accepted");
+        }
+    }
+
+    @Test
+    void emptyGroupedSpawnUsesRealActorReadinessReceiveAndTermination() throws Exception {
+        String source = """
+                define actor Worker as
+                  let int initialized;
+                  on_start(): void {
+                    self.initialized = 42;
+                    return;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.send(self.initialized);
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = await spawn Worker() OPTIONS;
+                  worker.send("run");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        for (String options : java.util.List.of("", "with {}", "with { schedule {} resources {} init {} }")) {
+            assertEquals("42", run(source.replace("OPTIONS", options), "grouped-spawn-empty.ores"));
+        }
+        for (String options : java.util.List.of(
+                "with { schedule { max_parallelism = 1; } }",
+                "with { resources { heap_size = 1024; } }",
+                "with { init { seed = 42; } }")) {
+            assertThrows(PolyglotException.class,
+                    () -> run(source.replace("OPTIONS", options), "grouped-spawn-nonempty.ores"));
+        }
+    }
+
+    private static String resource(String path) throws Exception {
+        try (InputStream input =
+                SourceActorSpawnExecutionTest.class.getResourceAsStream(path)) {
+            assertNotNull(input, "missing test resource " + path);
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static String sha256(String value) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256")
+                        .digest(value.getBytes(StandardCharsets.UTF_8)));
     }
 
     private static String run(String sourceText, String name) throws Exception {

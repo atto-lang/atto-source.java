@@ -1,0 +1,58 @@
+// Analytic reverse-mode reference for one two-input affine unit with MSE.
+// This is a valid primitive VJP, not yet a dynamic DAG tape engine.
+define module affine2_grad as
+  pub define class Affine2Tape as
+    pub val float input0;
+    pub val float input1;
+    pub val float weight0;
+    pub val float weight1;
+    pub val float bias;
+    pub val float target;
+  end
+
+  pub fnc prediction(&Affine2Tape tape): float {
+    return tape.input0 * tape.weight0 +
+      tape.input1 * tape.weight1 + tape.bias;
+  }
+
+  pub fnc residual(&Affine2Tape tape): float {
+    return prediction(&tape) - tape.target;
+  }
+
+  pub fnc squared_loss(&Affine2Tape tape): float {
+    val float diff = residual(&tape);
+    return diff * diff;
+  }
+
+  pub fnc vjp_weight0(&Affine2Tape tape): float {
+    return 2.0 * residual(&tape) * tape.input0;
+  }
+
+  pub fnc vjp_weight1(&Affine2Tape tape): float {
+    return 2.0 * residual(&tape) * tape.input1;
+  }
+
+  pub fnc vjp_bias(&Affine2Tape tape): float {
+    return 2.0 * residual(&tape);
+  }
+
+  pub fnc vjp_input0(&Affine2Tape tape): float {
+    return 2.0 * residual(&tape) * tape.weight0;
+  }
+
+  pub fnc vjp_input1(&Affine2Tape tape): float {
+    return 2.0 * residual(&tape) * tape.weight1;
+  }
+
+  // Exact forward-mode directional derivative of the loss.
+  pub fnc jvp_loss(
+    &Affine2Tape tape,
+    float d_input0, float d_input1,
+    float d_weight0, float d_weight1, float d_bias
+  ): float {
+    val float d_pred =
+      d_input0 * tape.weight0 + tape.input0 * d_weight0 +
+      d_input1 * tape.weight1 + tape.input1 * d_weight1 + d_bias;
+    return 2.0 * residual(&tape) * d_pred;
+  }
+end

@@ -1,0 +1,50 @@
+// Stateless scalar SGD reference. A full optimizer must add generation-fenced
+// model ownership, vectorized kernels, momentum and atomic checkpoint commit.
+define module scalar_sgd as
+  pub define class SgdPolicy as
+    pub val float learning_rate;
+    pub val float max_gradient;
+  end
+
+  pub fnc valid_policy(&SgdPolicy policy): bool {
+    // Negated comparisons also reject IEEE NaN values.
+    if !(policy.learning_rate > 0.0 && policy.learning_rate <= 1.0); do
+      return false;
+    fi
+    // Inf - Inf and NaN - NaN are NaN under IEEE-754 semantics.
+    // A finite positive bound is required; this is not runtime float parity proof.
+    return policy.max_gradient > 0.0 &&
+      policy.max_gradient - policy.max_gradient == 0.0;
+  }
+
+  pub fnc clip_gradient(float gradient, float maximum): float {
+    if !(maximum > 0.0 && maximum - maximum == 0.0); do
+      rt fail("invalid gradient clipping range");
+    fi
+    if gradient - gradient != 0.0; do
+      rt fail("non-finite gradient");
+    fi
+    if gradient > maximum; do
+      return maximum;
+    fi
+    if gradient < 0.0 - maximum; do
+      return 0.0 - maximum;
+    fi
+    return gradient;
+  }
+
+  pub fnc update_scalar(float weight, float gradient, &SgdPolicy policy): float {
+    if !valid_policy(&policy); do
+      rt fail("invalid SGD policy");
+    fi
+    if weight - weight != 0.0; do
+      rt fail("non-finite model weight");
+    fi
+    val float next_weight = weight - policy.learning_rate *
+      clip_gradient(gradient, policy.max_gradient);
+    if next_weight - next_weight != 0.0; do
+      rt fail("non-finite SGD result");
+    fi
+    return next_weight;
+  }
+end

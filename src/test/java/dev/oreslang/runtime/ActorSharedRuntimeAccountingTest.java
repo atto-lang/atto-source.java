@@ -94,4 +94,33 @@ final class ActorSharedRuntimeAccountingTest {
             assertEquals(0L, runtime.sharedMemoryBytes());
         }
     }
+    @Test
+    void concurrentBalancedReservationsDoNotLoseRuntimeAccounting() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            Method reserve = operation(
+                    "reserveSharedRuntimeBytes", long.class, String.class);
+            Method release = operation("releaseSharedRuntimeBytes", long.class);
+            var pool = Executors.newFixedThreadPool(6);
+            try {
+                java.util.ArrayList<java.util.concurrent.Future<?>> tasks = new java.util.ArrayList<>();
+                for (int carrier = 0; carrier < 6; carrier++) {
+                    tasks.add(pool.submit(() -> {
+                        try {
+                            for (int i = 0; i < 500; i++) {
+                                reserve.invoke(runtime, 1L, "concurrent accounting");
+                                release.invoke(runtime, 1L);
+                            }
+                        } catch (ReflectiveOperationException e) {
+                            throw new AssertionError("balanced reservation failed", e);
+                        }
+                    }));
+                }
+                for (java.util.concurrent.Future<?> task : tasks) task.get(10, TimeUnit.SECONDS);
+                assertEquals(0L, runtime.sharedMemoryBytes(),
+                        "concurrent reserve/release pairs must fully balance");
+            } finally {
+                pool.shutdownNow();
+            }
+        }
+    }
 }

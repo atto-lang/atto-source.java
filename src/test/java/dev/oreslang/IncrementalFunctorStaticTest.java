@@ -30,10 +30,10 @@ final class IncrementalFunctorStaticTest {
         assertEquals("payments", program.namespace());
         assertEquals("api", program.modules().getFirst().name());
 
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+        assertEquals("company.payments", Parser.parse("""
                 namespace company.payments;
                 fnc x(): void { return; }
-                """));
+                """).namespace());
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define module company.payments

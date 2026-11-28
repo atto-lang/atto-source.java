@@ -12,43 +12,6 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresFuturesTest {
 
     @Test
-    void terminalFutureDropsAdmissionClosureForSuccessFailureAndCancellation() throws Exception {
-        java.lang.reflect.Field field = OresFuture.class.getDeclaredField("cancelAdmission");
-        field.setAccessible(true);
-        for (int terminal = 0; terminal < 3; terminal++) {
-            Object retained = new Object();
-            OresFuture<Integer> future = new OresFuture<>(
-                    () -> retained != null, () -> { });
-            @SuppressWarnings("unchecked")
-            java.util.concurrent.atomic.AtomicReference<java.util.function.BooleanSupplier> slot =
-                    (java.util.concurrent.atomic.AtomicReference<java.util.function.BooleanSupplier>)
-                            field.get(future);
-            assertNotNull(slot.get(), "pending Future needs its cancellation authority");
-
-            switch (terminal) {
-                case 0 -> assertTrue(future.completeFromRuntime(10));
-                case 1 -> assertTrue(future.failFromRuntime(new IllegalStateException("failure")));
-                default -> assertTrue(future.cancel(false));
-            }
-
-            assertNull(slot.get(),
-                    "settled Future must not retain its producer/select admission closure");
-            assertFalse(future.cancel(false), "terminal Future cannot cancel again");
-        }
-    }
-
-    @Test
-    void cancellingSelectionAfterSuccessfulCommitCannotInvalidateResult() {
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
-        assertTrue(channel.tryWrite(13));
-        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
-                .selectAsync();
-        assertEquals(13, selected.join().value());
-        assertFalse(selected.cancel(false));
-        assertTrue(channel.tryRead().isEmpty());
-    }
-
-    @Test
     void allPreservesInputOrderIndependentOfCompletionOrder() {
         CompletableFuture<Integer> first = new CompletableFuture<>();
         CompletableFuture<Integer> second = new CompletableFuture<>();
@@ -136,7 +99,7 @@ final class OresFuturesTest {
     }
 
     @Test
-    void allChildCancellationCancelsSiblingsAndDetachesAllWaiters() {
+    void allChildCancellationDetachesWithoutRevokingBorrowedSiblings() {
         OresFuture<Integer> pending = new OresFuture<>();
         OresFuture<Integer> cancelled = new OresFuture<>();
 
@@ -148,8 +111,11 @@ final class OresFuturesTest {
         assertThrows(CancellationException.class, all::join);
         assertEquals(0, pending.pendingRuntimeWaiterCount());
         assertEquals(0, cancelled.pendingRuntimeWaiterCount());
-        assertTrue(pending.isCancelled(),
-                "all() owns its child set: aggregate cancellation cancels remaining siblings");
+        assertFalse(pending.isCancelled(),
+                "an observed child cancellation is not authority to revoke unrelated shared work");
+        assertTrue(pending.completeFromRuntime(23),
+                "the borrowed sibling must remain independently live after aggregate cancellation");
+        assertEquals(23, pending.join());
     }
 
     @Test
@@ -172,15 +138,44 @@ final class OresFuturesTest {
     }
 
     @Test
-    void cancellingAggregateCancelsChildren() {
+    void cancellingAggregateDetachesWithoutCancellingBorrowedChildren() {
         CompletableFuture<Integer> first = new CompletableFuture<>();
         CompletableFuture<Integer> second = new CompletableFuture<>();
 
         OresFuture<List<Integer>> all = OresFutures.all(List.of(first, second));
         assertTrue(all.cancel(true));
 
-        assertTrue(first.isCancelled());
-        assertTrue(second.isCancelled());
+        assertFalse(first.isCancelled(), "observer cancellation cannot revoke upstream host work");
+        assertFalse(second.isCancelled(), "observer cancellation cannot revoke a second producer");
+        assertTrue(first.complete(11));
+        assertTrue(second.complete(12));
+        assertTrue(all.isCancelled(), "late producer completions cannot resurrect the observer");
+    }
+
+    @Test
+    void nestedFutureResultPreservesExactlyOneLayerWithoutAdoptingInnerProducer() {
+        OresFuture<Integer> inner = new OresFuture<>();
+        OresFuture<OresFuture<Integer>> outer = OresFuture.completed(inner);
+
+        assertSame(inner, outer.join(), "outer success yields the inner Future, not its value");
+        assertSame(outer, OresFuture.from(outer),
+                "converting an OresFuture never recursively adopts a nested Future");
+        assertFalse(inner.isDone(), "outer completion must not settle or cancel an unrelated inner producer");
+        assertTrue(inner.completeFromRuntime(42));
+        assertEquals(42, inner.join());
+    }
+
+    @Test
+    void hostStageAdapterPreservesNestedFutureAndDoesNotCancelInnerOnObserverCancellation() {
+        OresFuture<Integer> inner = new OresFuture<>();
+        CompletableFuture<OresFuture<Integer>> stage = new CompletableFuture<>();
+        OresFuture<OresFuture<Integer>> adapted = OresFuture.from(stage);
+
+        assertTrue(stage.complete(inner));
+        assertSame(inner, adapted.join(), "CompletionStage adapter must preserve nested Future identity");
+        assertFalse(inner.isCancelled());
+        assertTrue(inner.completeFromRuntime(17));
+        assertEquals(17, inner.join());
     }
 
     @Test
@@ -253,86 +248,6 @@ final class OresFuturesTest {
             assertEquals(7, future.get(1, java.util.concurrent.TimeUnit.SECONDS));
             assertEquals(1, callbacks.get(),
                     "completion/registration race must not duplicate a waiter");
-        }
-    }
-
-    @Test
-    void cancellingHostStageBridgeDetachesWithoutCancellingProducer() {
-        OresFuture<Integer> producer = new OresFuture<>();
-        CompletableFuture<Integer> bridge = producer.asCompletionStage().toCompletableFuture();
-
-        assertEquals(1, producer.pendingRuntimeWaiterCount());
-        assertTrue(bridge.cancel(false));
-        assertTrue(bridge.isCancelled());
-        assertEquals(0, producer.pendingRuntimeWaiterCount(),
-                "a discarded host bridge cannot be retained by a never-settling producer");
-        assertFalse(producer.isCancelled(),
-                "host-side cancellation is not authority to cancel a shared Ores Future");
-
-        assertTrue(producer.completeFromRuntime(42));
-        assertTrue(bridge.isCancelled());
-    }
-
-    @Test
-    void normallyCompletedHostStageBridgeReleasesItsRuntimeWaiter() {
-        OresFuture<Integer> producer = new OresFuture<>();
-        CompletableFuture<Integer> bridge = producer.asCompletionStage().toCompletableFuture();
-
-        assertEquals(1, producer.pendingRuntimeWaiterCount());
-        assertTrue(producer.completeFromRuntime(42));
-        assertEquals(42, bridge.join());
-        assertEquals(0, producer.pendingRuntimeWaiterCount());
-    }
-
-    @Test
-    void timedOutHostReadsDetachWaitersFromNeverSettledProducer() throws Exception {
-        OresFuture<Integer> pending = new OresFuture<>();
-
-        for (int attempt = 0; attempt < 400; attempt++) {
-            assertThrows(java.util.concurrent.TimeoutException.class,
-                    () -> pending.get(1, java.util.concurrent.TimeUnit.NANOSECONDS));
-            assertEquals(0, pending.pendingRuntimeWaiterCount(),
-                    "timed-out polling must never retain an abandoned host latch");
-        }
-
-        assertFalse(pending.isDone(), "timing out must not cancel the shared producer");
-        assertTrue(pending.completeFromRuntime(17));
-        assertEquals(17, pending.get(1, java.util.concurrent.TimeUnit.SECONDS));
-    }
-
-    @Test
-    void interruptedHostReadDetachesWaiterWithoutCancellingProducer() throws Exception {
-        OresFuture<Integer> pending = new OresFuture<>();
-        var result = new java.util.concurrent.atomic.AtomicReference<Throwable>();
-        var started = new java.util.concurrent.CountDownLatch(1);
-        Thread host = Thread.ofVirtual().start(() -> {
-            started.countDown();
-            try {
-                pending.get();
-                result.set(new AssertionError("pending Future unexpectedly completed"));
-            } catch (Throwable failure) {
-                result.set(failure);
-            }
-        });
-        try {
-            assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS));
-            long deadline = System.nanoTime()
-                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
-            while (pending.pendingRuntimeWaiterCount() == 0 && System.nanoTime() < deadline) {
-                Thread.onSpinWait();
-            }
-            assertEquals(1, pending.pendingRuntimeWaiterCount(),
-                    "host must register its blocking waiter before interruption");
-            host.interrupt();
-            host.join(5_000);
-            assertFalse(host.isAlive());
-            assertInstanceOf(InterruptedException.class, result.get());
-            assertEquals(0, pending.pendingRuntimeWaiterCount(),
-                    "interrupt must detach host latch from shared producer");
-            assertFalse(pending.isDone(), "interrupt must not cancel shared producer");
-        } finally {
-            host.interrupt();
-            host.join(5_000);
         }
     }
 

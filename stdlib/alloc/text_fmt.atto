@@ -1,0 +1,43 @@
+// Atto alloc/text_fmt: deterministic HEAP-BACKED text formatting.
+// Core scalar formatting is allocator-independent in core/fmt.
+// Each output string is an owned value. The compiler must prove no borrowed
+// memory reaches a Result or actor mailbox without ownership transfer.
+define module text_fmt as
+  pub fnc format_bool(bool value): String {
+    if value; do return "true"; fi
+    return "false";
+  }
+
+  pub fnc format_int(int value): String {
+    if value == 0; do return "0"; fi
+    val digits = arr["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    // Negative magnitude handles i64::MIN without abs/negation overflow.
+    // Walk decimal powers as scalars: no temporary powers array.
+    let int remaining = value > 0 ? -value : value;
+    let int power = -1000000000000000000;
+    let String result = "";
+    while power < 0; do
+      // Both operands are nonpositive; divisor is never zero or -1
+      // with an i64::MIN dividend (remaining shrinks on every digit).
+      val int digit = remaining / power;
+      remaining = remaining - power * digit;
+      if digit > 0 || result != ""; do
+        result = result + digits.get(digit);
+      fi
+      power = power / 10;
+    done
+    if value < 0; do return "-" + result; fi
+    return result;
+  }
+
+  pub fnc format_hex_byte(int value): Result<String, String> {
+    if value < 0 || value > 255; do
+      return Err("hex byte out of range");
+    fi
+    val digits = arr["0", "1", "2", "3", "4", "5", "6", "7",
+                     "8", "9", "a", "b", "c", "d", "e", "f"];
+    val int high = value / 16;
+    val int low = value - high * 16;
+    return Ok(digits.get(high) + digits.get(low));
+  }
+end

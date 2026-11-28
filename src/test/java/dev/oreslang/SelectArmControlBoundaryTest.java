@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -29,7 +30,7 @@ final class SelectArmControlBoundaryTest {
     }
 
     @Test
-    void doSelectCannotBreakEnclosingLoop() {
+    void doSelectCanBreakEnclosingLoop() throws Exception {
         String source = """
                 pub fnc main(): void {
                   loop {
@@ -39,29 +40,36 @@ final class SelectArmControlBoundaryTest {
                       }
                     }
                   }
+                  stdio.stdout.write("exited");
+                  return;
                 }
                 """;
-        var problem = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(problem.getMessage().contains("break"), problem::getMessage);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("exited", SelectNestedReturnContractTest.run(source));
     }
 
     @Test
-    void doSelectCannotContinueEnclosingLoop() {
+    void doSelectCanContinueAndBreakEnclosingLoopAtRuntime() throws Exception {
         String source = """
                 pub fnc main(): void {
+                  let int iterations = 0;
                   loop {
+                    iterations = iterations + 1;
                     do select {
                       default: {
-                        continue;
+                        if iterations < 3; then
+                          continue;
+                        fi
+                        break;
                       }
                     }
                   }
+                  stdio.stdout.write(iterations);
+                  return;
                 }
                 """;
-        var problem = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(problem.getMessage().contains("continue"), problem::getMessage);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("3", SelectNestedReturnContractTest.run(source));
     }
 
     @Test

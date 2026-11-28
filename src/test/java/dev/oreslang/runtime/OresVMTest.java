@@ -8,22 +8,187 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 final class OresVMTest {
+
     @Test
-    void onlyRootOrRegisteredSupervisorsAreRecognizedAsGuestProcessLanes()
+    void shutdownNowReportsQueuedPhysicalStopNeverStartedExactlyOnce()
             throws Exception {
-        try (OresVM vm = OresVM.create(Runnable::run);
-             OresScheduler unrelated = new OresScheduler(1)) {
-            assertTrue(!vm.isGuestProcessSchedulerCurrent(),
-                    "host/test thread is not an Oreslang guest lane");
-            OresScheduler daddy = vm.createSupervisorScheduler("daddy");
-            assertTrue(vm.rootScheduler().startSync(vm::isGuestProcessSchedulerCurrent)
-                    .get(5, TimeUnit.SECONDS));
-            assertTrue(daddy.startSync(vm::isGuestProcessSchedulerCurrent)
-                    .get(5, TimeUnit.SECONDS));
-            assertTrue(!unrelated.startSync(vm::isGuestProcessSchedulerCurrent)
-                    .get(5, TimeUnit.SECONDS));
-            assertTrue(!vm.executeControl(() -> {}).isCancelled());
+        var runningEntered = new java.util.concurrent.CountDownLatch(1);
+        var runningFinished = new java.util.concurrent.CountDownLatch(1);
+        var releaseRunning = new java.util.concurrent.CountDownLatch(1);
+        var discarded = new java.util.concurrent.CountDownLatch(1);
+        var queuedRan = new java.util.concurrent.atomic.AtomicInteger();
+        var onDiscard = new java.util.concurrent.atomic.AtomicInteger();
+        var runningStarted = new java.util.concurrent.atomic.AtomicInteger();
+        var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+        // One worker, one queue slot. Deterministic without changing process
+        // properties or depending on availableProcessors().
+        OresVM vm = OresVM.createWithPhysicalStopLimits(1, 1);
+        try {
+            vm.executePhysicalStop(() -> {
+                runningStarted.incrementAndGet();
+                runningEntered.countDown();
+                try {
+                    releaseRunning.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    // shutdownNow() interrupts an ACTUAL running worker;
+                    // the worker's own finally, not the discard callback,
+                    // accounts for physical exit.
+                    Thread.currentThread().interrupt();
+                } finally {
+                    runningFinished.countDown();
+                }
+            }, cause -> unexpected.compareAndSet(null,
+                    new AssertionError("RUNNING worker treated as discarded", cause)));
+            assertTrue(runningEntered.await(3, TimeUnit.SECONDS));
+            vm.executePhysicalStop(queuedRan::incrementAndGet, failure -> {
+                onDiscard.incrementAndGet();
+                if (!(failure instanceof java.util.concurrent.RejectedExecutionException)) {
+                    unexpected.compareAndSet(null, failure);
+                }
+                discarded.countDown();
+            });
+            assertEquals(0, queuedRan.get(), "second job must be queued");
+            assertEquals(0, onDiscard.get(), "queued job is not failed before shutdown");
+            vm.close();
+            assertTrue(discarded.await(3, TimeUnit.SECONDS));
+            assertTrue(runningFinished.await(3, TimeUnit.SECONDS));
+            assertEquals(1, runningStarted.get());
+            assertEquals(0, queuedRan.get(), "cancelled-before-start job must never run");
+            assertEquals(1, onDiscard.get(),
+                    "shutdown must deliver exactly one failure receipt");
+            org.junit.jupiter.api.Assertions.assertNull(unexpected.get(),
+                    () -> String.valueOf(unexpected.get()));
+        } finally {
+            releaseRunning.countDown();
+            vm.close();
         }
+    }
+
+    @Test
+    void concurrentWorkerStartAndShutdownClaimOneExclusiveReceipt()
+            throws Exception {
+        // CAS winner must own the terminal witness. Shutdown may either
+        // discard the queued task BEFORE worker entry or let the worker start;
+        // it cannot report both, repeat either, or lose the task entirely.
+        for (int round = 0; round < 32; round++) {
+            var holdingEntered = new java.util.concurrent.CountDownLatch(1);
+            var releaseHolding = new java.util.concurrent.CountDownLatch(1);
+            var started = new java.util.concurrent.atomic.AtomicInteger();
+            var discarded = new java.util.concurrent.atomic.AtomicInteger();
+            var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            OresVM vm = OresVM.createWithPhysicalStopLimits(1, 1);
+            try {
+                vm.executePhysicalStop(() -> {
+                    holdingEntered.countDown();
+                    try {
+                        releaseHolding.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }, failure -> unexpected.compareAndSet(null,
+                        new AssertionError("first RUNNING job was discarded", failure)));
+                assertTrue(holdingEntered.await(3, TimeUnit.SECONDS));
+                vm.executePhysicalStop(started::incrementAndGet,
+                        failure -> discarded.incrementAndGet());
+                Thread closer = Thread.ofVirtual().start(() -> {
+                    try {
+                        vm.close();
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                });
+                releaseHolding.countDown();
+                closer.join(TimeUnit.SECONDS.toMillis(3));
+                assertTrue(!closer.isAlive(), "VM close hung in round " + round);
+                assertEquals(1, started.get() + discarded.get(),
+                        "physical STOP start and cancel-before-start are exclusive in round " + round);
+                org.junit.jupiter.api.Assertions.assertNull(unexpected.get(),
+                        () -> String.valueOf(unexpected.get()));
+            } finally {
+                releaseHolding.countDown();
+                vm.close();
+            }
+        }
+    }
+
+    @Test
+    void saturatedPhysicalStopQueueRejectsNewSubmissionWithoutFabricatingReceipt()
+            throws Exception {
+        var runningEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseRunning = new java.util.concurrent.CountDownLatch(1);
+        var rejected = new java.util.concurrent.atomic.AtomicInteger();
+        var thirdRan = new java.util.concurrent.atomic.AtomicInteger();
+        var queuedDiscarded = new java.util.concurrent.atomic.AtomicInteger();
+        OresVM vm = OresVM.createWithPhysicalStopLimits(1, 1);
+        try {
+            vm.executePhysicalStop(() -> {
+                runningEntered.countDown();
+                try {
+                    releaseRunning.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }, cause -> org.junit.jupiter.api.Assertions.fail(
+                    "active worker must not receive neverStarted"));
+            assertTrue(runningEntered.await(3, TimeUnit.SECONDS));
+            vm.executePhysicalStop(() -> { }, failure -> queuedDiscarded.incrementAndGet());
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.RejectedExecutionException.class,
+                    () -> vm.executePhysicalStop(thirdRan::incrementAndGet,
+                            failure -> rejected.incrementAndGet()));
+            assertEquals(0, rejected.get(),
+                    "failed admission is a synchronous exception, not an accepted-discard callback");
+            assertEquals(0, thirdRan.get());
+            vm.close();
+            assertEquals(1, queuedDiscarded.get(),
+                    "shutdown must report the one accepted queued job");
+            assertEquals(0, rejected.get());
+            assertEquals(0, thirdRan.get());
+        } finally {
+            releaseRunning.countDown();
+            vm.close();
+        }
+    }
+
+
+    @Test
+    void blockedPhysicalStopDoesNotStarveVmControlAndShutdownRevokesAdmission()
+            throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var stopped = new java.util.concurrent.CountDownLatch(1);
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            vm.executePhysicalStop(() -> {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        failure.set(new AssertionError("test physical STOP never released"));
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    failure.set(interrupted);
+                } finally {
+                    stopped.countDown();
+                }
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertEquals(73, vm.rootScheduler()
+                    .startSync(() -> 73).get(3, TimeUnit.SECONDS),
+                    "blocked resource teardown must not occupy CONTROL");
+        } finally {
+            release.countDown();
+            assertTrue(stopped.await(3, TimeUnit.SECONDS));
+            vm.close();
+        }
+        org.junit.jupiter.api.Assertions.assertNull(failure.get(),
+                () -> String.valueOf(failure.get()));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                java.util.concurrent.RejectedExecutionException.class,
+                () -> vm.executePhysicalStop(() -> { }),
+                "a closed VM must not admit another physical STOP");
     }
 
     @Test
@@ -56,12 +221,10 @@ final class OresVMTest {
         OresVM vm = OresVM.create(Runnable::run);
         try {
             assertTrue(vm.started());
-            assertEquals(1, vm.rootScheduler().parallelism(),
-                    "ROOT is one logical user-code process");
-            assertEquals(1, vm.controlCarrierCount(),
-                    "only one CONTROL carrier should be eager on bootstrap");
-            assertEquals(1, vm.guestCarrierCount(),
-                    "only one guest-process carrier should be eager on bootstrap");
+            assertEquals(
+                    vm.controlParallelism(),
+                    vm.controlCarrierCount(),
+                    "all CONTROL carriers must be resident before root execution");
 
             OresFuture<String> first =
                     vm.rootScheduler().start(resume -> {
@@ -74,9 +237,136 @@ final class OresVMTest {
                     });
 
             String threadName = first.get(5, TimeUnit.SECONDS);
-            assertTrue(threadName.startsWith("ores-guest-process-"));
+            assertTrue(threadName.startsWith("ores-root-process-"));
         } finally {
             vm.close();
+        }
+    }
+
+    @Test
+    void closeFromRootCarrierFailsBeforeRevokingVmAndHostCanStillClose() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            OresFuture<Integer> first = vm.rootScheduler().start(resume -> {
+                IllegalStateException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::close);
+                assertTrue(denied.getMessage().contains("outside actor, Mailman and scheduler"));
+                assertTrue(vm.started(),
+                        "failed self-close must never poison the live VM's STARTED state");
+                return OresScheduler.done(41);
+            });
+            assertEquals(41, first.get(5, TimeUnit.SECONDS));
+            assertTrue(vm.started());
+
+            OresFuture<Integer> next =
+                    vm.rootScheduler().start(resume -> OresScheduler.done(42));
+            assertEquals(42, next.get(5, TimeUnit.SECONDS),
+                    "a denied self-close must not revoke subsequent CONTROL turns");
+        } finally {
+            vm.close();
+        }
+        assertTrue(!vm.started(), "external teardown must complete normally");
+        vm.close(); // idempotent
+    }
+
+    @Test
+    void rootClosePreflightDoesNotWaitForVmMonitorHeldByAnotherThread() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        var acquired = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        Thread holdingMonitor = Thread.ofPlatform().start(() -> {
+            synchronized (vm) {
+                acquired.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("test monitor-release timed out");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            }
+        });
+        try {
+            assertTrue(acquired.await(5, TimeUnit.SECONDS));
+            var task = vm.rootScheduler().start(resume -> {
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::close);
+                return OresScheduler.done(9);
+            });
+            assertEquals(9, task.get(2, TimeUnit.SECONDS),
+                    "self-close rejection must run BEFORE waiting on VM monitor");
+        } finally {
+            release.countDown();
+            holdingMonitor.join(5000);
+            assertTrue(!holdingMonitor.isAlive());
+            vm.close();
+        }
+    }
+
+    @Test
+    void independentUserSchedulerCannotCloseVmWhileItsOwnTaskIsExecuting() throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run);
+             OresScheduler user = new OresScheduler(1)) {
+            OresFuture<Integer> attempted = user.startSync(() -> {
+                assertEquals(user, OresScheduler.current());
+                IllegalStateException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::close);
+                assertTrue(denied.getMessage().contains("outside actor, Mailman and scheduler"));
+                return 87;
+            });
+            assertEquals(87, attempted.get(5, TimeUnit.SECONDS));
+            assertTrue(vm.started(), "foreign scheduler cannot poison VM lifecycle state");
+            assertEquals(88, vm.rootScheduler()
+                    .startSync(() -> 88).get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void actorAndMailmanCallbacksCannotCloseTheOwningVm() throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run);
+             ActorRuntime runtime = new ActorRuntime(
+                     IsolatePolicy.developer(),
+                     new ActorRuntime.DispatcherConfig(1, 1, 8, 64),
+                     ActorRuntime.TurnExecutor.direct(),
+                     vm::executeControl)) {
+            var actorDenied = new java.util.concurrent.CountDownLatch(1);
+            var mailmanDenied = new java.util.concurrent.CountDownLatch(1);
+            var callbackFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            group.<Integer>installMailman(8, (mail, context) -> {
+                try {
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            IllegalStateException.class, vm::close);
+                    assertTrue(vm.started());
+                    assertEquals(group.id(), context.groupId());
+                } catch (Throwable failure) {
+                    callbackFailure.compareAndSet(null, failure);
+                } finally {
+                    mailmanDenied.countDown();
+                }
+            });
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() -> (message, context) -> {
+                try {
+                    group.joinCurrent(join);
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            IllegalStateException.class, vm::close);
+                    assertTrue(vm.started());
+                    group.emit(message);
+                } catch (Throwable failure) {
+                    callbackFailure.compareAndSet(null, failure);
+                } finally {
+                    actorDenied.countDown();
+                }
+            });
+            actor.send(17);
+            assertTrue(actorDenied.await(5, TimeUnit.SECONDS));
+            assertTrue(mailmanDenied.await(5, TimeUnit.SECONDS));
+            org.junit.jupiter.api.Assertions.assertNull(callbackFailure.get(),
+                    "the actor and CONTROL Mailman must both reject VM close");
+            assertEquals(23, vm.rootScheduler().startSync(() -> 23)
+                    .get(5, TimeUnit.SECONDS));
         }
     }
 
@@ -103,153 +393,80 @@ final class OresVMTest {
             assertTrue(dispatch > 0L);
             vm.startup();
             vm.startup();
-            assertTrue(vm.controlCarrierCount() >= 1);
-            assertTrue(vm.guestCarrierCount() >= 1);
+            assertEquals(vm.controlParallelism(), vm.controlCarrierCount());
+            assertEquals(1, vm.rootScheduler().parallelism());
+        } finally {
+            vm.close();
+        }
+    }
+    @Test
+    void vmOwnsOneRuntimeAndRetiresActorsBeforeClosingControl() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8, 64);
+        ActorRuntime runtime = vm.createActorRuntime(IsolatePolicy.developer(),
+                config, ActorRuntime.TurnExecutor.direct());
+        try {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                    () -> vm.createActorRuntime(IsolatePolicy.developer(),
+                            config, ActorRuntime.TurnExecutor.direct()));
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {});
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            assertEquals(1, runtime.actorCount());
+            vm.close();
+            assertEquals(0, runtime.actorCount());
+            org.junit.jupiter.api.Assertions.assertFalse(vm.started());
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                    () -> vm.createActorRuntime(IsolatePolicy.developer(),
+                            config, ActorRuntime.TurnExecutor.direct()));
         } finally {
             vm.close();
         }
     }
 
-    @Test
-    void rootTasksAreSingleFlightWhileControlPoolRemainsParallel() throws Exception {
-        try (OresVM vm = OresVM.create(Runnable::run)) {
-            var entered = new java.util.concurrent.CountDownLatch(1);
-            var release = new java.util.concurrent.CountDownLatch(1);
-            var active = new java.util.concurrent.atomic.AtomicInteger();
-            var maximum = new java.util.concurrent.atomic.AtomicInteger();
 
+    @Test
+    void blockedRootTurnDoesNotStarveControlOrPermitAnotherRootTurn() throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var secondStarted = new java.util.concurrent.atomic.AtomicBoolean();
+        try (OresVM vm = OresVM.createConfigured(Runnable::run, null, "1")) {
+            assertEquals(1, vm.rootScheduler().parallelism());
+            assertEquals(1, vm.rootCarrierCount());
             OresFuture<Integer> first = vm.rootScheduler().startSync(() -> {
-                int now = active.incrementAndGet();
-                maximum.accumulateAndGet(now, Math::max);
                 entered.countDown();
-                try {
-                    if (!release.await(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("test gate timed out");
-                    }
-                    return 1;
-                } finally {
-                    active.decrementAndGet();
-                }
-            });
-            assertTrue(entered.await(5, TimeUnit.SECONDS));
-
-            var rest = new java.util.ArrayList<OresFuture<Integer>>();
-            for (int i = 0; i < 64; i++) {
-                rest.add(vm.rootScheduler().startSync(() -> {
-                    int now = active.incrementAndGet();
-                    maximum.accumulateAndGet(now, Math::max);
-                    try { return now; }
-                    finally { active.decrementAndGet(); }
-                }));
-            }
-
-            // This is a separate logical control/mailman domain, not ROOT.
-            vm.executeControl(() -> {}).get(5, TimeUnit.SECONDS);
-            release.countDown();
-            assertEquals(1, first.get(5, TimeUnit.SECONDS));
-            for (var future : rest) {
-                assertEquals(1, future.get(5, TimeUnit.SECONDS));
-            }
-            assertEquals(1, maximum.get(), "no two ROOT tasks may overlap");
-        }
-    }
-
-    @Test
-    void rootAwaitReleasesProcessLaneAndContinuationReturnsThroughIt()
-            throws Exception {
-        try (OresVM vm = OresVM.create(Runnable::run)) {
-            OresFuture<Integer> gate = new OresFuture<>();
-            var turns = new java.util.concurrent.atomic.AtomicInteger();
-            OresFuture<Integer> waiting = vm.rootScheduler().start(resume -> {
-                if (turns.getAndIncrement() == 0) return OresScheduler.await(gate);
-                return OresScheduler.done((Integer) resume.value() + 1);
-            });
-            OresFuture<Integer> other = vm.rootScheduler().startSync(() -> 7);
-            assertEquals(7, other.get(5, TimeUnit.SECONDS));
-            assertTrue(!waiting.isDone());
-            Thread producer = Thread.ofPlatform().start(() -> gate.completeFromRuntime(41));
-            producer.join();
-            assertEquals(42, waiting.get(5, TimeUnit.SECONDS));
-            assertEquals(2, turns.get());
-        }
-    }
-
-    @Test
-    void independentRootProcessesCanRunInParallel() throws Exception {
-        try (OresVM grandaddy = OresVM.create(Runnable::run);
-             OresVM daddy = OresVM.create(Runnable::run)) {
-            var bothEntered = new java.util.concurrent.CountDownLatch(2);
-            var release = new java.util.concurrent.CountDownLatch(1);
-            java.util.concurrent.Callable<Integer> body = () -> {
-                bothEntered.countDown();
-                if (!release.await(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException("parallel process test timed out");
-                }
+                assertTrue(release.await(10, TimeUnit.SECONDS));
                 return 1;
-            };
-            OresFuture<Integer> parent = grandaddy.rootScheduler().startSync(body);
-            OresFuture<Integer> child = daddy.rootScheduler().startSync(body);
+            });
             try {
-                assertTrue(bothEntered.await(5, TimeUnit.SECONDS),
-                        "different process lanes must not share a global lock");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                OresFuture<Integer> second = vm.rootScheduler().startSync(() -> {
+                    secondStarted.set(true);
+                    return 2;
+                });
+                vm.executeControl(() -> {
+                    assertTrue(Thread.currentThread().getName().startsWith("ores-control-plane-"));
+                    assertTrue(!secondStarted.get(), "ROOT turns must be single-flight");
+                }).get(5, TimeUnit.SECONDS);
+                release.countDown();
+                assertEquals(1, first.get(5, TimeUnit.SECONDS));
+                assertEquals(2, second.get(5, TimeUnit.SECONDS));
             } finally {
                 release.countDown();
             }
-            assertEquals(1, parent.get(5, TimeUnit.SECONDS));
-            assertEquals(1, child.get(5, TimeUnit.SECONDS));
         }
     }
 
     @Test
-    void siblingSupervisorsInSameVmHaveIndependentSingleFlightLanes()
-            throws Exception {
-        try (OresVM vm = OresVM.create(Runnable::run)) {
-            OresScheduler daddyA = vm.createSupervisorScheduler("daddy-A");
-            OresScheduler daddyB = vm.createSupervisorScheduler("daddy-B");
-            assertEquals(2, vm.supervisorCount());
-            assertNotEquals(daddyA.name(), daddyB.name());
-            var bothEntered = new java.util.concurrent.CountDownLatch(2);
-            var release = new java.util.concurrent.CountDownLatch(1);
-            var daddyAActive = new java.util.concurrent.atomic.AtomicInteger();
-            var daddyAMax = new java.util.concurrent.atomic.AtomicInteger();
-
-            OresFuture<Integer> aFirst = daddyA.startSync(() -> {
-                int now = daddyAActive.incrementAndGet();
-                daddyAMax.accumulateAndGet(now, Math::max);
-                bothEntered.countDown();
-                try {
-                    if (!release.await(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("daddy A gate timed out");
-                    }
-                    return 10;
-                } finally {
-                    daddyAActive.decrementAndGet();
-                }
-            });
-            OresFuture<Integer> aSecond = daddyA.startSync(() -> {
-                int now = daddyAActive.incrementAndGet();
-                daddyAMax.accumulateAndGet(now, Math::max);
-                try { return 20; }
-                finally { daddyAActive.decrementAndGet(); }
-            });
-            OresFuture<Integer> b = daddyB.startSync(() -> {
-                bothEntered.countDown();
-                if (!release.await(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException("daddy B gate timed out");
-                }
-                return 30;
-            });
-            try {
-                assertTrue(bothEntered.await(5, TimeUnit.SECONDS),
-                        "sibling supervisors must not share one global lane");
-            } finally {
-                release.countDown();
-            }
-            assertEquals(10, aFirst.get(5, TimeUnit.SECONDS));
-            assertEquals(20, aSecond.get(5, TimeUnit.SECONDS));
-            assertEquals(30, b.get(5, TimeUnit.SECONDS));
-            assertEquals(1, daddyAMax.get(),
-                    "two tasks owned by daddy A cannot overlap");
+    void controlKeepsStrictCallerAdmission() throws Exception {
+        var turns = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        try (OresVM vm = OresVM.create(Runnable::run, turns::add)) {
+            Thread caller = Thread.currentThread();
+            assertEquals(0, vm.rootCarrierCount());
+            OresFuture<Void> control = vm.executeControl(() ->
+                    assertEquals(caller, Thread.currentThread()));
+            assertTrue(!control.isDone());
+            java.util.Objects.requireNonNull(turns.poll(5, TimeUnit.SECONDS)).run();
+            control.get(5, TimeUnit.SECONDS);
         }
     }
 }

@@ -8,42 +8,6 @@ bounded channel-backed mailboxes, actor identity, child supervision, and
 **already used for ActorGroup Mailman outbox messages**. Do not silently
 repurpose it as a class actor's inbound message.
 
-## Actor lifecycle signal API (PR #519)
-
-`await actor.get_ready_signal()` is the preferred stable source spelling.
-It returns one actor-owned, non-consumable `ReadySignal<void>` implementing the
-runtime's `Awaitable<void>` protocol. It currently projects an `OresFuture`;
-the channel/Future implementation can change without changing source callers.
-All waiters observe the same startup outcome; subscribing after initialization
-still completes, and all startup failures settle exceptionally. It is **not**
-a consumable channel read or a capability to complete/cancel readiness.
-`actor.ready` remains for source compatibility. Do not pass a `ReadySignal`
-into `Future.all` as if it were a raw Future; await each or add an explicit
-`Awaitable.all` combinator later.
-
-`await actor.get_done_signal()` is the symmetric termination lifecycle API.
-It returns the same cached `DoneSignal<void>` wrapper for every call. The
-signal is read-only, non-consumable, safe for multiple simultaneous or late
-waiters, and observes finalization **after actor cleanup and TurnExecutor
-exit**. Successful completion resolves to void; actor failure settles the
-signal exceptionally. Merely requesting a done signal does not initialize
-an unstarted actor (unlike requesting its ready signal). Like readiness, the
-public type is an `Awaitable`; an internal Future or channel/notification
-implementation may change without changing source call sites. `actor.done`
-remains a compatibility property.
-
-**Hardening contract:** `ReadySignal<T>` and `DoneSignal<T>` are
-actor-lifecycle observation capabilities, not plain serializable values.
-They cannot be passed through actor mailboxes or across an independent async
-task boundary, and actor classes cannot override `get_ready_signal` or
-`get_done_signal` as instance methods. `await` projects an
-`Awaitable<T>` to an internal Future but rejects a value that is not actually
-awaitable at runtime. The already-settled Future path resolves first, then
-invokes the continuation **once**, without retrying downstream code if it
-throws. A done signal remains pending until guest cleanup and the
-TurnExecutor context-exit boundary have finished; it does not imply that
-a caller may cancel or start the actor.
-
 ## Target `main.ores` (partially implemented end-to-end target)
 
 ```ores
@@ -73,10 +37,7 @@ end
 
 pub async routine main(): void {
   val workers = [spawn Worker(), spawn Worker(), spawn Worker()];
-  // Readiness is a multicast, non-consuming awaitable signal.
-  await workers[0].get_ready_signal();
-  await workers[1].get_ready_signal();
-  await workers[2].get_ready_signal();
+  await Future.all([workers[0].ready, workers[1].ready, workers[2].ready]);
 
   // Creating an actor does not automatically send a receive() message.
   for const worker of workers do
@@ -90,9 +51,7 @@ pub async routine main(): void {
     stdio.println(output.actor_id, output.sequence, output.value);
   done
 
-  await workers[0].get_done_signal();
-  await workers[1].get_done_signal();
-  await workers[2].get_done_signal();
+  await Future.all([workers[0].done, workers[1].done, workers[2].done]);
   return;
 }
 ```
@@ -110,12 +69,10 @@ of output strings.
 | --- | --- | --- |
 | `spawn Worker()` | `ActorRef<Worker>` | Allocates actor identity; reserved on_start hook runs in actor execution context, not the caller |
 | `w.id`, `w.kind` | `ActorId`, `ActorKind` | Immutable identity/diagnostics |
-| `w.get_ready_signal()` | `ReadySignal<void>` (awaitable) | Stable reusable readiness abstraction; all waiters, including late waiters, observe completion or startup failure |
-| `w.ready` | `Future<void>` (compatibility) | Legacy property retained while userland migrates to get_ready_signal(); do not design new APIs around its implementation type |
+| `w.ready` | `Future<void>` | Completes once actor-local field initialization and reserved `on_start()` succeed; fails if startup fails/stops |
 | `w.send(mail)` | `void` or explicit nonblocking variant | **Inbound**, serialized, bounded actor mailbox; reject capability/pointer/function payloads |
 | `w.outputs` | `AsyncIterator<ActorOutput<T>>` or read-only `Channel<ActorOutput<T>>` | **Outbound**, bounded, async/backpressure-capable, parent-observable stream |
-| `w.get_done_signal()` | `DoneSignal<void>` (awaitable) | Stable reusable completion abstraction; completion includes actor finalization and carrier exit, and failures propagate to every waiter |
-| `w.done` | `Future<void>` (compatibility) | Legacy completion property retained while userland migrates to get_done_signal() |
+| `w.done` | `Future<void>` | Settles after actor finalization and isolate/carrier cleanup |
 | `w.stop()`, `w.cancel()` | `void`, `bool` | Graceful stop vs structured cancellation (supervisor authority checks apply) |
 | `w.kill()` | `bool` | Force-isolated cancellation only if revoker is configured; never thread interruption masquerading as isolation |
 | `self.send(value)` | `Future<void>` or nonblocking admission acknowledgement | **Outbound** from actor to its output stream; NOT recursive delivery to own inbox |
@@ -123,6 +80,15 @@ of output strings.
 | `self.endWithCleanup(|| -> { ... })` | `void` | Same immediate inbox fence as `self.end()`, plus one synchronous zero-arg final cleanup action after the current turn unwinds and before outputs close / `done` settles |
 | `receive(ActorMail<T>)` | `void` | Lifecycle handler invoked once per incoming envelope, serialized and actor-local |
 | `rt cooperate` | `void` scheduling effect | Suspension/safepoint; no implicit publication or message delivery |
+
+Readiness failure has one canonical source type name: `ActorTerminated`.
+The Java host runtime currently materializes stop-before-ready as
+`ActorRuntime.ActorTerminatedException`; that JVM class is an implementation
+detail, not the source spelling. A source callable that directly awaits actor
+readiness must eventually expose `throws ActorTerminated` (or handle/trap the
+same typed effect) once executable checked-effect propagation is enabled.
+Parser retention of that type does not by itself claim executable throw
+lowering.
 
 `self.send(value)`, `self.end()`, and `self.endWithCleanup(...)` are **non-overridable runtime actor operations**. Actor classes may not declare instance methods named `send`, `end`, or `endWithCleanup`, and source code does not use `super.send(...)` to reach transport.
 This keeps quota checks, serialization, termination fences, and output-stream
@@ -237,7 +203,7 @@ example are separate gates; do not silently substitute fat arrows.
 // completeness remains independently gated where syntax/runtime coverage is missing.
 const create = async || -> {
   const worker = spawn Worker();
-  await worker.get_ready_signal();
+  await worker.ready;
   return worker;
 };
 ```

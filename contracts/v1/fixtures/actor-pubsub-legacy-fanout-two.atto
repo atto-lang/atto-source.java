@@ -1,0 +1,53 @@
+// Legacy asynchronous RELIABLE fan-out; not portable v1 try_publish.
+// Both actors independently subscribe to one group topic, then drain a
+// single publication. Exact outputs are asserted by the Polyglot guest test.
+define actor FanoutSubscriber as
+  suspends receive(ActorMail<String> mail): void {
+    val group = actor.group("fanout-group");
+    val topic = group.topic<String>("events");
+    val subscription = topic.subscribe();
+
+    self.send("ready");
+    val value = await subscription.next();
+    self.send(value);
+
+    subscription.close();
+    self.end();
+    return;
+  }
+end
+
+pub suspends fnc main(): void {
+  val group = actor.group("fanout-group");
+  val topic = group.topic<String>("events", "reliable", 4);
+  val a = spawn FanoutSubscriber();
+  val b = spawn FanoutSubscriber();
+  await a.get_ready();
+  await b.get_ready();
+  group.join(a);
+  group.join(b);
+
+  a.send("start");
+  b.send("start");
+  val aReady = (await a.outputs.next()).value.unwrap();
+  val bReady = (await b.outputs.next()).value.unwrap();
+  stdio.stdout.write(aReady.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(bReady.value);
+  stdio.stdout.write("|");
+
+  await topic.publish("event-42");
+
+  val aValue = (await a.outputs.next()).value.unwrap();
+  val bValue = (await b.outputs.next()).value.unwrap();
+  stdio.stdout.write(aValue.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(bValue.value);
+
+  await a.get_done();
+  await b.get_done();
+  group.leave(a);
+  group.leave(b);
+  group.close();
+  return;
+}

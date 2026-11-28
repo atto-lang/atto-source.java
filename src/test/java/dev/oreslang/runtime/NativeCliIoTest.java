@@ -57,11 +57,11 @@ final class NativeCliIoTest {
                 .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_READ);
         String source = """
             pub routine main(): void {
-              val names = fs.list_dir("%s");
+              val names = await fs.list_dir_blocking("%s");
               stdio.println(names.get(0));
               stdio.println(names.get(1));
-              stdio.println(fs.is_dir("%s"));
-              stdio.println(fs.is_symlink("%s"));
+              stdio.println(await fs.is_dir_blocking("%s"));
+              stdio.println(await fs.is_symlink_blocking("%s"));
               return;
             }
             """.formatted(root.toString().replace("\\", "\\\\"),
@@ -79,7 +79,7 @@ final class NativeCliIoTest {
         assertTrue(logged.contains("true"));
         String rejected = """
             pub routine main(): void {
-              val children = fs.list_dir("%s");
+              val children = await fs.list_dir_blocking("%s");
               return;
             }
             """.formatted(link.toString().replace("\\", "\\\\"));
@@ -96,7 +96,7 @@ final class NativeCliIoTest {
                 Path.of("src/test/resources/oreslang/stack-cli-main.ores"));
         assertTrue(source.contains("fnc api_leaf"));
         assertTrue(source.contains("fnc walk"));
-        assertTrue(source.contains("fs.write_text_atomic"));
+        assertTrue(source.contains("await fs.write_text_atomic_blocking"));
         OresCompiler.parseAndTypeCheck(source);
     }
 
@@ -108,8 +108,8 @@ final class NativeCliIoTest {
         Path output = root.resolve("program.ores");
         String program = """
             pub routine main(): void {
-              fs.write_text_atomic("%s", "first");
-              fs.write_text_atomic("%s", "second");
+              await fs.write_text_atomic_blocking("%s", "first");
+              await fs.write_text_atomic_blocking("%s", "second");
               return;
             }
             """.formatted(target, target);
@@ -128,7 +128,7 @@ final class NativeCliIoTest {
         Files.createSymbolicLink(symlink, outside.resolve("outside-link.ores"));
         Files.writeString(output, """
             pub routine main(): void {
-              fs.write_text_atomic("%s", "forbidden");
+              await fs.write_text_atomic_blocking("%s", "forbidden");
               return;
             }
             """.formatted(symlink));
@@ -141,7 +141,7 @@ final class NativeCliIoTest {
         Files.createSymbolicLink(ancestor, outside);
         Files.writeString(output, """
             pub routine main(): void {
-              fs.write_text_atomic("%s", "forbidden");
+              await fs.write_text_atomic_blocking("%s", "forbidden");
               return;
             }
             """.formatted(ancestor.resolve("write.ores")));
@@ -151,6 +151,58 @@ final class NativeCliIoTest {
                         new ByteArrayOutputStream(), new ByteArrayOutputStream()));
         assertFalse(Files.exists(outside.resolve("write.ores")));
     }
+
+    @Test
+    void missingParentMetadataIsFalseButSymlinkAncestorStillFailsClosed() throws Exception {
+        Path root = Files.createTempDirectory("ores-cli-metadata-missing-").toRealPath();
+        Path outside = Files.createTempDirectory("ores-cli-metadata-other-").toRealPath();
+        Path absent = root.resolve("absent").resolve("child.ores");
+        Path broken = root.resolve("broken");
+        Files.createSymbolicLink(broken, outside.resolve("missing-target"));
+        Path escape = root.resolve("escape");
+        Files.createSymbolicLink(escape, outside);
+        Path sourceFile = root.resolve("probe.ores");
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString());
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_READ);
+
+        // Metadata for an absent nested entry is harmless and deterministic;
+        // a dangling final symlink remains visible for explicit rejection.
+        String source = """
+            pub routine main(): void {
+              stdio.println(await fs.is_dir_blocking("%s"));
+              stdio.println(await fs.is_symlink_blocking("%s"));
+              stdio.println(await fs.is_symlink_blocking("%s"));
+              return;
+            }
+            """.formatted(absent, absent, broken);
+        Files.writeString(sourceFile, source);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(sourceFile, policy, permissions,
+                PermissionCheckMode.RUNTIME, ExecutionProfile.serverJit(),
+                Set.of(), System.getenv(), out, new ByteArrayOutputStream());
+        String logged = out.toString(java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals("false\nfalse\ntrue", logged.trim().replace("\r", ""));
+
+        // A symlink in the parent is never treated as a missing ordinary
+        // directory; an escaping existing parent is still denied.
+        for (Path forbidden : java.util.List.of(
+                broken.resolve("child.ores"), escape.resolve("secret.ores"))) {
+            Files.writeString(sourceFile, """
+                pub routine main(): void {
+                  stdio.println(await fs.is_dir_blocking("%s"));
+                  return;
+                }
+                """.formatted(forbidden));
+            assertThrows(RuntimeException.class, () ->
+                    LinkedProgramRunner.run(sourceFile, policy, permissions,
+                            PermissionCheckMode.RUNTIME, ExecutionProfile.serverJit(),
+                            Set.of(), System.getenv(), new ByteArrayOutputStream(),
+                            new ByteArrayOutputStream()));
+        }
+    }
+
     @Test
     void metadataCannotEscapeReadScopeThroughSymlinkedParent() throws Exception {
         Path root = Files.createTempDirectory("ores-cli-metadata-").toRealPath();
@@ -161,7 +213,7 @@ final class NativeCliIoTest {
         Path sourceFile = root.resolve("program.ores");
         Files.writeString(sourceFile, """
             pub routine main(): void {
-              stdio.println(fs.is_dir("%s"));
+              stdio.println(await fs.is_dir_blocking("%s"));
               return;
             }
             """.formatted(escape.resolve("secret.txt")));

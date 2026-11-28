@@ -1,0 +1,594 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class OresKeyedMapTest {
+    @Test void symbolKeysUseLogicalIdentityNotInterningOrHostAddress() {
+        OresKeyedMap<OresSymbol, Integer> map = OresKeyedMap.symbolKeys();
+        OresSymbol first = OresSymbol.process("cafe\u0301");
+        OresSymbol equivalent = OresSymbol.process("café");
+        assertNotSame(first, equivalent);
+        assertNull(map.put(first, 7));
+        assertEquals(7, map.get(equivalent));
+        assertEquals(7, map.put(equivalent, 8));
+        assertEquals(1, map.size());
+        assertEquals(8, map.get(first));
+        assertEquals(8, map.remove(equivalent));
+        assertTrue(map.isEmpty());
+    }
+
+    @Test void distinctNamespacesCoexistOnlyInExplicitMixedDomain() {
+        OresKeyedMap<Object, Integer> map = OresKeyedMap.stringOrSymbolKeys();
+        OresSymbol process = OresSymbol.process("ready");
+        OresSymbol stable = OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000");
+        OresSymbol sameTextProcess = OresSymbol.process(stable.name());
+        map.put("ready", 1);
+        map.put(process, 2);
+        map.put("#ready", 3);
+        map.put(stable, 4);
+        map.put(sameTextProcess, 5);
+        assertEquals(5, map.size());
+        assertEquals(1, map.get("ready"));
+        assertEquals(2, map.get(OresSymbol.process("ready")));
+        assertEquals(3, map.get("#ready"));
+        assertEquals(4, map.get(OresSymbol.stable(stable.name())));
+        assertEquals(5, map.get(sameTextProcess));
+        assertEquals(List.of("ready", process, "#ready", stable, sameTextProcess),
+                map.entrySnapshot().stream().map(Map.Entry::getKey).toList());
+    }
+
+    @Test void wrongKeyDomainsAreRejectedInsteadOfCoerced() {
+        OresKeyedMap<OresSymbol, Integer> symbols = OresKeyedMap.symbolKeys();
+        OresKeyedMap<String, Integer> strings = OresKeyedMap.stringKeys();
+        @SuppressWarnings("rawtypes")
+        OresKeyedMap rawSymbols = symbols;
+        assertThrows(IllegalArgumentException.class, () -> rawSymbols.put("ready", 1));
+        assertThrows(IllegalArgumentException.class, () -> strings.containsKey(OresSymbol.process("ready")));
+        assertThrows(IllegalArgumentException.class, () -> strings.get(OresSymbol.process("ready")));
+        assertThrows(NullPointerException.class, () -> strings.put(null, 1));
+        assertThrows(NullPointerException.class, () -> strings.put("ready", null));
+        assertThrows(IllegalArgumentException.class, () ->
+                OresKeyedMap.stringOrSymbolKeys().put(123, "bad"));
+        assertEquals(0, symbols.size());
+        assertEquals(0, strings.size());
+    }
+
+    @Test void reifiedValueDomainsRejectWrongRuntimeValues() {
+        OresKeyedMap<OresSymbol, Object> integers =
+                OresKeyedMap.symbolKeys(OresKeyedMap.ValueDomain.INT);
+        OresSymbol key = OresSymbol.process("ready");
+        integers.put(key, 17L);
+        integers.put(key, java.math.BigInteger.valueOf(20));
+        assertThrows(IllegalArgumentException.class, () -> integers.put(key, "wrong"));
+        assertThrows(IllegalArgumentException.class, () -> integers.put(key, 1.0));
+        assertEquals(java.math.BigInteger.valueOf(20), integers.get(key));
+        assertEquals(1, integers.size());
+
+        OresKeyedMap<String, Object> booleans =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.BOOL);
+        booleans.put("ok", Boolean.TRUE);
+        assertThrows(IllegalArgumentException.class, () -> booleans.put("ok", 1));
+        assertEquals(Boolean.TRUE, booleans.get("ok"));
+
+        OresKeyedMap<OresSymbol, Object> symbols =
+                OresKeyedMap.symbolKeys(OresKeyedMap.ValueDomain.SYMBOL);
+        symbols.put(key, OresSymbol.process("value"));
+        assertThrows(IllegalArgumentException.class, () -> symbols.put(key, "value"));
+
+        OresKeyedMap<String, Object> text =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.STRING);
+        text.put("status", "#ready");
+        assertThrows(IllegalArgumentException.class,
+                () -> text.put("status", OresSymbol.process("ready")));
+    }
+
+    @Test void invalidValueInBatchNeverCommitsEarlierEntries() {
+        OresKeyedMap<String, Object> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.put("existing", 5);
+        LinkedHashMap<String, Object> batch = new LinkedHashMap<>();
+        batch.put("valid", 7L);
+        batch.put("invalid", "not an int");
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(batch));
+        assertEquals(Map.of("existing", 5), map.shallowSnapshot());
+    }
+
+    @Test void mutableMapsAreNotSendableActorMessages() {
+        OresKeyedMap<OresSymbol, Integer> map =
+                OresKeyedMap.symbolKeys(OresKeyedMap.ValueDomain.INT);
+        map.put(OresSymbol.process("ready"), 1);
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(map));
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorRuntime.freeze(List.of(Map.of("embedded", map))));
+    }
+
+    @Test void concurrentWritesCannotLoseKeysOrCorruptIteration() throws Exception {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        java.util.concurrent.ExecutorService workers =
+                java.util.concurrent.Executors.newFixedThreadPool(8);
+        try {
+            List<java.util.concurrent.Callable<Void>> jobs = new java.util.ArrayList<>();
+            for (int worker = 0; worker < 8; worker++) {
+                final int identity = worker;
+                jobs.add(() -> {
+                    for (int index = 0; index < 250; index++) {
+                        String key = "worker" + identity + "-" + index;
+                        map.put(key, index);
+                        assertEquals(index, map.get(key));
+                    }
+                    return null;
+                });
+            }
+            for (var future : workers.invokeAll(jobs)) {
+                future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            }
+            assertEquals(2_000, map.size());
+            assertEquals(2_000, map.entrySnapshot().size());
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test void mapRejectsOversizedAndMalformedUtf8Keys() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES), 1);
+        assertThrows(IllegalArgumentException.class, () ->
+                map.put("x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES + 1), 2));
+        assertThrows(IllegalArgumentException.class, () ->
+                map.put("\uD800", 3));
+        assertThrows(IllegalArgumentException.class, () ->
+                map.put("🚀".repeat(4097), 4));
+        assertEquals(1, map.size());
+    }
+
+    @Test void mapCapacityFailsBeforeInsertionIncludingAtomicBatch() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        for (int i = 0; i < OresKeyedMap.MAX_ENTRIES - 1; i++) {
+            map.put("key" + i, i);
+        }
+        assertThrows(IllegalArgumentException.class, () ->
+                map.putAll(Map.of("next", 1, "overflow", 2)));
+        assertFalse(map.containsKey("next"));
+        assertFalse(map.containsKey("overflow"));
+        map.put("last", 3);
+        assertEquals(OresKeyedMap.MAX_ENTRIES, map.size());
+        assertThrows(IllegalArgumentException.class, () -> map.put("too-many", 4));
+        assertEquals(3, map.put("last", 5));
+        assertEquals(5, map.get("last"));
+    }
+
+    @Test void putAllRejectsEntireInvalidBatchBeforeMutation() {
+        OresKeyedMap<String, Integer> strings = OresKeyedMap.stringKeys();
+        strings.put("already", 7);
+        LinkedHashMap<Object, Integer> invalid = new LinkedHashMap<>();
+        invalid.put("good", 8);
+        invalid.put(OresSymbol.process("bad"), 9);
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        Map<? extends String, ? extends Integer> unchecked = (Map) invalid;
+        assertThrows(IllegalArgumentException.class, () -> strings.putAll(unchecked));
+        assertEquals(Map.of("already", 7), strings.shallowSnapshot());
+        invalid.remove(OresSymbol.process("bad"));
+        invalid.put("fine", 9);
+        strings.putAll(unchecked);
+        assertEquals(List.of("already", "good", "fine"),
+                strings.entrySnapshot().stream().map(Map.Entry::getKey).toList());
+    }
+
+    @Test void batchRejectsDuplicateNominalSymbolKeysFromIdentityBasedMap() {
+        OresKeyedMap<OresSymbol, Integer> map = OresKeyedMap.symbolKeys();
+        OresSymbol existing = OresSymbol.process("already");
+        map.put(existing, 9);
+        java.util.IdentityHashMap<OresSymbol, Integer> batch =
+                new java.util.IdentityHashMap<>();
+        OresSymbol composed = OresSymbol.process("café");
+        OresSymbol decomposed = OresSymbol.process("café");
+        assertNotSame(composed, decomposed);
+        assertEquals(composed, decomposed);
+        batch.put(composed, 1);
+        batch.put(decomposed, 2);
+        assertEquals(2, batch.size(), "identity map should expose both distinct Java keys");
+
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () -> map.putAll(batch));
+        assertTrue(denied.getMessage().contains("duplicate logical key"),
+                denied.getMessage());
+        assertEquals(Map.of(existing, 9), map.shallowSnapshot(),
+                "a failed batch must not modify previously stored entries");
+    }
+
+    @Test void requiredLookupDoesNotReturnNullForMissingTypedKey() {
+        OresKeyedMap<OresSymbol, Integer> map = OresKeyedMap.symbolKeys(
+                OresKeyedMap.ValueDomain.INT);
+        OresSymbol key = OresSymbol.process("ready");
+        assertNull(map.get(key), "optional host lookup retains null for absence");
+        assertThrows(IllegalArgumentException.class, () -> map.getRequired(key));
+        map.put(key, 8);
+        assertEquals(8, map.getRequired(OresSymbol.process("ready")));
+        map.remove(key);
+        assertThrows(IllegalArgumentException.class, () -> map.getRequired(key));
+    }
+
+    @Test void requiredLookupRemainsTotalDuringConcurrentRemovals() throws Exception {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT);
+        map.put("status", 1);
+        var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var writer = workers.submit(() -> {
+                for (int i = 0; i < 5_000; i++) {
+                    map.remove("status");
+                    map.put("status", 1);
+                }
+            });
+            var reader = workers.submit(() -> {
+                for (int i = 0; i < 5_000; i++) {
+                    try {
+                        Integer value = map.getRequired("status");
+                        assertEquals(1, value, "present key must never return null");
+                    } catch (IllegalArgumentException missing) {
+                        assertTrue(missing.getMessage().contains("unknown typed Map key"));
+                    }
+                }
+            });
+            writer.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            reader.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test void hostileMapSizeCannotAllocateUnboundedBatch() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("original", 2);
+        java.util.Map<String, Integer> huge = new java.util.AbstractMap<>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public java.util.Set<Entry<String, Integer>> entrySet() {
+                throw new AssertionError("oversized map must not be traversed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(huge));
+        assertEquals(Map.of("original", 2), map.shallowSnapshot());
+    }
+
+    @Test void dishonestSmallReportedSizeCannotBypassBatchQuota() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("original", 2);
+        java.util.Map<String, Integer> dishonest = new java.util.AbstractMap<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Set<Entry<String, Integer>> entrySet() {
+                return new java.util.AbstractSet<>() {
+                    @Override public int size() { return 0; }
+                    @Override public java.util.Iterator<Entry<String, Integer>> iterator() {
+                        return new java.util.Iterator<>() {
+                            private int index;
+                            @Override public boolean hasNext() {
+                                return index <= OresKeyedMap.MAX_ENTRIES;
+                            }
+                            @Override public Entry<String, Integer> next() {
+                                if (!hasNext()) throw new java.util.NoSuchElementException();
+                                return Map.entry("batch-" + index++, 3);
+                            }
+                        };
+                    }
+                };
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(dishonest));
+        assertEquals(Map.of("original", 2), map.shallowSnapshot(),
+                "quota failure must be transactional");
+    }
+
+    @Test void inconsistentHostMapSizeIsRejectedBeforeMutation() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("original", 9);
+        Map<String, Integer> inconsistent = new java.util.AbstractMap<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Set<Entry<String, Integer>> entrySet() {
+                return java.util.Set.of(Map.entry("smuggled", 5));
+            }
+        };
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () -> map.putAll(inconsistent));
+        assertTrue(denied.getMessage().contains("size changed"));
+        assertEquals(Map.of("original", 9), map.shallowSnapshot());
+    }
+
+    @Test void inconsistentHostMapSizeDoesNotInvokeEntryValidator() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+
+        Map<String, Integer> inconsistent = new java.util.AbstractMap<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Set<Entry<String, Integer>> entrySet() {
+                return java.util.Set.of(Map.entry("smuggled", 5));
+            }
+        };
+
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () -> map.putAll(inconsistent));
+        assertTrue(denied.getMessage().contains("size changed"));
+        assertEquals(0, validations.get(),
+                "rejected hostile collection shape must not trigger semantic validator callbacks");
+        assertTrue(map.isEmpty());
+    }
+
+    @Test void aggregateWireKeyBudgetRejectsOversizedKeySetAndRefundsOnRemove() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        String prefix = "x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES - 2);
+        for (int i = 0; i < 63; i++) {
+            map.put(prefix + String.format("%02d", i), i);
+        }
+        assertEquals(63, map.size());
+        assertThrows(IllegalArgumentException.class,
+                () -> map.put(prefix + "63", 63),
+                "64 length-16384 keys exceed the 1 MiB tagged key budget");
+        assertEquals(63, map.size());
+        assertEquals(0, map.remove(prefix + "00"));
+        map.put(prefix + "63", 63);
+        assertEquals(63, map.size(), "removal must refund exactly one key envelope");
+        map.clear();
+        map.put(prefix + "99", 99);
+        assertEquals(1, map.size(), "clear must refund all key bytes");
+    }
+
+    @Test void aggregateKeyBudgetFailsBeforeAnyBatchModification() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("original", 7);
+        String prefix = "z".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES - 2);
+        LinkedHashMap<String, Integer> batch = new LinkedHashMap<>();
+        for (int i = 0; i < 64; i++) {
+            batch.put(prefix + String.format("%02d", i), i);
+        }
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(batch));
+        assertEquals(Map.of("original", 7), map.shallowSnapshot());
+    }
+
+    @Test void exportedViewsCannotMutateTheInternalMapping() {
+        OresKeyedMap<OresSymbol, Integer> map = OresKeyedMap.symbolKeys();
+        map.put(OresSymbol.process("a"), 1);
+        Map<OresSymbol, Integer> snapshot = map.shallowSnapshot();
+        List<Map.Entry<OresSymbol, Integer>> entries = map.entrySnapshot();
+        assertThrows(UnsupportedOperationException.class,
+                () -> snapshot.put(OresSymbol.process("b"), 2));
+        assertThrows(UnsupportedOperationException.class,
+                () -> entries.getFirst().setValue(3));
+        assertThrows(UnsupportedOperationException.class,
+                () -> entries.add(Map.entry(OresSymbol.process("c"), 3)));
+        map.put(OresSymbol.process("b"), 2);
+        assertEquals(1, snapshot.size());
+        assertEquals(1, entries.size());
+        assertEquals(2, map.size());
+    }
+
+    @Test void typedMapHostIdentityNeverDispatchesStoredValueCallbacks() {
+        Object hostile = new Object() {
+            @Override public boolean equals(Object other) {
+                throw new AssertionError("Map host equality must not dispatch stored value equality");
+            }
+            @Override public int hashCode() {
+                throw new AssertionError("Map host hash must not dispatch stored value hashCode");
+            }
+            @Override public String toString() {
+                throw new AssertionError("Map host rendering must not dispatch stored value toString");
+            }
+        };
+
+        OresKeyedMap<String, Object> a =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.ANY);
+        OresKeyedMap<String, Object> b =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.ANY);
+        a.put("x", hostile);
+        b.put("x", hostile);
+
+        assertSame(a, a);
+        assertNotEquals(a, b,
+                "mutable host carriers use identity; guest Map equality is a separate checked operation");
+        assertDoesNotThrow(a::hashCode);
+        assertEquals("OresKeyedMap<opaque>", a.toString());
+    }
+
+    @Test void hostileHostBatchCannotMutateDestinationDuringSizeOrIteration() {
+        OresKeyedMap<String, Integer> target = OresKeyedMap.stringKeys();
+        target.put("original", 11);
+        Map<String, Integer> sizeCallback = new java.util.AbstractMap<>() {
+            @Override public int size() {
+                target.put("injected", 99);
+                return 1;
+            }
+            @Override public java.util.Set<Map.Entry<String, Integer>> entrySet() {
+                return java.util.Set.of(Map.entry("accepted", 1));
+            }
+        };
+        assertThrows(IllegalStateException.class, () -> target.putAll(sizeCallback));
+        assertEquals(Map.of("original", 11), target.shallowSnapshot(),
+                "reentrant Map.size() changed destination despite failed batch");
+        target.put("after-size", 12);
+        target.remove("after-size");
+
+        Map<String, Integer> iteratorCallback = new java.util.AbstractMap<>() {
+            @Override public int size() { return 1; }
+            @Override public java.util.Set<Map.Entry<String, Integer>> entrySet() {
+                return new java.util.AbstractSet<>() {
+                    @Override public int size() { return 1; }
+                    @Override public java.util.Iterator<Map.Entry<String, Integer>> iterator() {
+                        return new java.util.Iterator<>() {
+                            private boolean next = true;
+                            @Override public boolean hasNext() { return next; }
+                            @Override public Map.Entry<String, Integer> next() {
+                                if (!next) throw new java.util.NoSuchElementException();
+                                next = false;
+                                target.clear();
+                                return Map.entry("accepted", 2);
+                            }
+                        };
+                    }
+                };
+            }
+        };
+        assertThrows(IllegalStateException.class, () -> target.putAll(iteratorCallback));
+        assertEquals(Map.of("original", 11), target.shallowSnapshot(),
+                "host iterator cleared destination during failed batch");
+        target.putAll(Map.of("valid", 3));
+        assertEquals(Map.of("original", 11, "valid", 3), target.shallowSnapshot(),
+                "failed bulk admission left mutation fence engaged");
+    }
+
+    @Test void validBulkCommitUsesDetachedPublishedSnapshot() {
+        OresKeyedMap<String, Integer> target = OresKeyedMap.stringKeys();
+        target.put("a", 1);
+        var before = target.shallowSnapshot();
+        target.putAll(Map.of("a", 2, "b", 3));
+        assertEquals(Map.of("a", 1), before);
+        assertEquals(Map.of("a", 2, "b", 3), target.shallowSnapshot());
+        assertEquals(2, target.size());
+    }
+
+    @Test void distinctTypedMapInstancesRemainHostIdentityDistinctAcrossDomains() {
+        OresKeyedMap<Object, Integer> mixed =
+                OresKeyedMap.stringOrSymbolKeys(OresKeyedMap.ValueDomain.INT);
+        OresKeyedMap<String, Integer> strings =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        OresKeyedMap<String, Object> dynamic =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.ANY);
+        mixed.put("x", 1);
+        strings.put("x", 1);
+        dynamic.put("x", 1);
+
+        assertNotEquals(mixed, strings);
+        assertNotEquals(strings, dynamic);
+    }
+
+    @Test void invalidBatchDomainDoesNotInvokeEntryValidator() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Object> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+
+        LinkedHashMap<String, Object> batch = new LinkedHashMap<>();
+        batch.put("good", 1L);
+        batch.put("bad", "not-an-int");
+
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(batch));
+        assertEquals(0, validations.get(),
+                "a batch rejected by the pure value-domain pass must not invoke policy validators");
+        assertTrue(map.isEmpty());
+    }
+
+    @Test void capacityRejectedPutDoesNotInvokeEntryValidator() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+
+        for (int i = 0; i < OresKeyedMap.MAX_ENTRIES; i++) {
+            map.put("k" + i, i);
+        }
+        validations.set(0);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> map.put("overflow", 1));
+        assertEquals(0, validations.get(),
+                "capacity rejection must happen before policy validation");
+        assertEquals(OresKeyedMap.MAX_ENTRIES, map.size());
+    }
+
+    @Test void aggregateKeyBudgetRejectedBatchDoesNotInvokeEntryValidator() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+
+        String prefix = "q".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES - 2);
+        LinkedHashMap<String, Integer> batch = new LinkedHashMap<>();
+        for (int i = 0; i < 64; i++) {
+            batch.put(prefix + String.format("%02d", i), i);
+        }
+
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(batch));
+        assertEquals(0, validations.get(),
+                "aggregate key quota rejection must happen before policy validation");
+        assertTrue(map.isEmpty());
+    }
+
+
+    @Test void takeFailsBeforeMutationIfInternalKeyBudgetAccountingIsCorrupt() throws Exception {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.put("kept", 7);
+
+        java.lang.reflect.Field bytes =
+                OresKeyedMap.class.getDeclaredField("storedKeyWireBytes");
+        bytes.setAccessible(true);
+        bytes.setLong(map, 0L);
+
+        IllegalStateException denied =
+                assertThrows(IllegalStateException.class, () -> map.take("kept"));
+        assertTrue(denied.getMessage().contains("underflow"), denied.getMessage());
+        assertEquals(7, map.getRequired("kept"),
+                "accounting corruption must fail before removing the live entry");
+        assertEquals(1, map.size());
+    }
+
+
+    @Test void emptyBatchIsConstantTimeNoOpAndReleasesMutationFence() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+        map.put("kept", 1);
+        validations.set(0);
+
+        map.putAll(Map.of());
+
+        assertEquals(0, validations.get());
+        assertEquals(1, map.getRequired("kept"));
+        map.put("after", 2);
+        assertEquals(1, validations.get(),
+                "early-return path must release the bulk mutation fence");
+        assertEquals(2, map.size());
+    }
+
+
+    @Test void entryValidatorPolicySurfaceIsRuntimePackagePrivate() throws Exception {
+        Class<?> validator = Class.forName(
+                "dev.oreslang.runtime.OresKeyedMap$EntryValidator");
+        assertFalse(java.lang.reflect.Modifier.isPublic(validator.getModifiers()),
+                "arbitrary external hosts must not be able to install Map policy callbacks");
+
+        for (String factory : List.of("stringKeys", "symbolKeys", "stringOrSymbolKeys")) {
+            var method = OresKeyedMap.class.getDeclaredMethod(
+                    factory, OresKeyedMap.ValueDomain.class, validator);
+            assertFalse(java.lang.reflect.Modifier.isPublic(method.getModifiers()),
+                    factory + " validator overload must remain runtime-package private");
+        }
+
+        assertTrue(java.lang.reflect.Modifier.isPublic(
+                OresKeyedMap.class
+                        .getDeclaredMethod("stringKeys", OresKeyedMap.ValueDomain.class)
+                        .getModifiers()));
+        assertTrue(java.lang.reflect.Modifier.isPublic(
+                OresKeyedMap.class
+                        .getDeclaredMethod("symbolKeys", OresKeyedMap.ValueDomain.class)
+                        .getModifiers()));
+        assertTrue(java.lang.reflect.Modifier.isPublic(
+                OresKeyedMap.class
+                        .getDeclaredMethod("stringOrSymbolKeys", OresKeyedMap.ValueDomain.class)
+                        .getModifiers()));
+    }
+
+
+}

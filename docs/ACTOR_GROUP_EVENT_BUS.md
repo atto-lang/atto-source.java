@@ -31,6 +31,70 @@ reads/writes, and releases unread payload reservations before membership is forg
 Group close drains subscriptions and the Mailman outbox. A Mailman callback already
 in progress may finish, but its context cannot send after group close.
 
+## Managed workers and spawn readiness
+
+A cooperation group is not an implicit supervisor. Membership in a group grants
+access to its event bus, **not** lifecycle control over other members. A separate,
+explicit managed-worker registry holds strong `ActorRef` references under the
+group owner's/host supervisor's authority.
+
+Two source forms intentionally differ only in *when their reference becomes
+available*:
+
+```ores
+val worker = spawn WorkerActor();          // ActorRef<WorkerActor>, no start barrier
+val initialized = await spawn WorkerActor(); // ActorRef<WorkerActor>, on_start completed
+await worker.get_ready();                   // Future<void> startup barrier
+await worker.get_done();                    // Future<void> finalization barrier
+```
+
+`await spawn` must not wait for termination and must not discard the ActorRef.
+It fails when startup fails and does not permit observing uninitialized actor
+fields. The compiler lowers the implicit readiness wait as a suspension, never
+blocks a carrier thread, and returns the *same* reference upon resumption.
+Cancellation of readiness/done observer futures does not cancel an actor.
+
+### Host/runtime API (current Java substrate)
+
+- `group.spawnWorker(kind, policy, factory)` creates a structured child (if
+  called inside an actor) and registers it before any ready/mailbox scheduling.
+- `group.spawnReadyWorker(kind, policy, factory)` returns a non-cancellable
+  `Future<ActorRef<T>>`, completed on actor readiness.
+- `group.manageWorker(ref)` opts in an existing live same-runtime reference;
+  from actor code only the group creator can manage descendants it already
+  owns. It does **not** join the worker to the event bus.
+- `group.workers()`, `workerCount()`, `workersReady()`, and
+  `workersDone()` provide read-only *snapshots* of live managed workers.
+  Snapshot barriers do not wait for workers registered later.
+- `group.stopWorkers()` and `cancelWorkers()` require manager authority;
+  group close revokes admission and structurally cancels explicitly managed
+  workers, not unrelated cooperating members. On termination, the registry
+  evicts the finalized reference.
+
+All of these are runtime/embedding APIs today; exposing a first-class
+source-level `ActorGroup<T>` constructor and method dispatch requires explicit
+language typing, capability checks and native parity tests. Group registry
+limits are bounded by the creating actor's policy/dispatcher budget.
+Group worker refs are not transferable as ordinary data-only actor messages.
+
+### LLVM parity gate
+
+The current `oreslang-source.llvm` compiler does not yet admit actor
+declarations, `spawn`, async continuation frames or `ActorGroup`. It MUST
+reject both forms without emitting LLVM IR until it can establish all of:
+
+1. one actor identity/generation and typed `ActorRef` result for both forms;
+2. a scheduler-compatible `ready` barrier resuming after successful `on_start`;
+3. race-free worker registration before the worker can terminate, bounded
+   retention and finalization eviction;
+4. creator/supervisor-only lifecycle authority, independent group membership;
+5. cancellation, stale-ready, failure, group-close, cross-runtime, and
+   wrong-generation tests, with no carrier blocking or use-after-free.
+
+Native host-only lifecycle registries or C++ carrier test APIs do **not** prove
+source-compiler feature parity; Java/LLVM differential conformance must run on
+the exact tree once LLVM actors are supported.
+
 ## Mailbox and Mailman routing
 
 Use ActorRef.send for addressed commands and replies. It enters the target actor's
@@ -131,54 +195,22 @@ without granting actors shared mutable state.
 The accounting is intentionally conservative and represents OresVM policy, not
 a claim about exact JVM object layout.
 
-## Isolation boundary and per-subscriber copied delivery (PR #519)
+## Isolation boundary in this first implementation
 
-SHARED actors continue to subscribe to the one-immutable-snapshot fanout. Their
-events share the same immutable graph and its aggregate-runtime reservation.
+The zero-copy subscriber path currently accepts SHARED actors only.
 
-PRIVATE and UNTRUSTED subscribers may now subscribe: publication constructs
-an **independent deeply copied event graph for each isolated subscriber**
-rather than forwarding the SHARED payload graph, and charges each copy to
-that destination actor's private-memory slice and the runtime aggregate cap.
-The copy's lease is released exactly once on read, coalesce, cancellation,
-subscription close, actor termination, or group close. RELIABLE publications
-prepare every isolated copy before starting subscriber delivery so failed
-preflight allocations do not create an avoidable partial broadcast.
+Private/isolated actors may join a group, publish data-only events, read
+runtime-owned scalar reductions, and receive ActorGroup capabilities through
+ordinary actor transport, but they may not subscribe to the zero-copy event bus
+yet. Their existing isolation contract requires a per-subscriber isolated-copy
+delivery backend with private-memory reservations; sharing the same frozen JVM
+object directly would weaken that contract.
 
-Only data-only values are eligible. Actor references, group join capabilities,
-shared memory, mutexes, native resources, FDs and arbitrary host objects
-are forbidden as events. UNTRUSTED inbound validation applies to each copied
-payload.
+Until that backend lands, private/isolated actors should receive values through
+ordinary actor mailboxes.
 
-**Security limitation:** The existing JVM ActorMemorySlice + independent Java
-object graph provides logical isolation and accounting, **not** a separate
-OS process, hardware address-space boundary or validated hostile-code
-sandbox. A future physically isolated worker backend must serialize the event
-over a bounded transport, and retain exactly these per-recipient lifetime and
-quota guarantees. Do not expose the same host Event or Channel object to
-untrusted guest code.
-
-## ActorGroup scope and membership boundaries (PR #519)
-
-`ActorGroupScope.TREE` is anchored to the highest actor ancestor in the
-creating actor's *actual* supervisor ancestry. Its join capability alone is
-not sufficient to admit an actor from another root tree. The creator's death
-still closes the group.
-
-`ActorGroupScope.VM` is a host/supervisor-created, one-runtime-local group,
-suitable for explicitly authorized cross-tree cooperation.
-
-`ActorGroupScope.CLUSTER` is **fail-closed** and throws UnsupportedOperationException.
-No cross-node membership, delivery, ordering, persistence or partition
-guarantees exist yet. Introducing CLUSTER requires authenticated node identities,
-fencing generations, bounded transport, membership reconciliation and explicit
-at-most-once/at-least-once/exactly-once boundaries.
-
-The zero-argument runtime `createActorGroup()` retains backward compatibility:
-inside an actor it defaults to TREE, and for host/supervisor creation it
-defaults to VM. Actor-group scopes are runtime Java APIs in this draft; there
-is not yet source-language `ActorGroup.new(scope: ...)` lowering.
-
+This restriction is fail-closed and enforced by ActorEventBus.subscribe(), not
+only by source-level checking.
 
 ## Performance contract
 

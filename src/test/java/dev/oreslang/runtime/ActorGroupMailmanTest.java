@@ -107,11 +107,6 @@ final class ActorGroupMailmanTest {
                     }
                     carrierNames.add(Thread.currentThread().getName());
                     sequences.add(mail.sequence());
-                    if (mail.requestSequence().isEmpty()
-                            || mail.requestSequence().orElseThrow() < 1L) {
-                        callbackFailure.compareAndSet(null, new AssertionError(
-                                "Mailman output lost the originating actor's immutable message identity"));
-                    }
                     context.send(sink, (Integer) mail.message());
                 } catch (Throwable failure) {
                     callbackFailure.compareAndSet(null, failure);

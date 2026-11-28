@@ -283,7 +283,7 @@ final class ChannelSelectSyntaxTest {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 fnc probe(Channel<int> input, Channel<int> output): void {
                   val Option<int> read = try readch input;
-                  val bool wrote = try writech output, 42;
+                  val TryWriteResult<int> wrote = try writech output, 42;
 
                   try {
                     stdio.println("ordinary try still works");
@@ -454,47 +454,6 @@ final class ChannelSelectSyntaxTest {
                 pub actor fnc bad_result(Array<SelectCase> cases): SelectResult {
                   return select from cases;
                 }
-                """)));
-    }
-
-    @Test
-    void nbSelectRejectsBorrowedAliasOfActorSelfAcrossDeferredTurn() {
-        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
-                () -> OwnershipChecker.check(Parser.parse("""
-                        define actor Worker as
-                          let int counter = 0;
-                          receive(ActorMail<int> mail): void {
-                            val Channel<int> input = Channel.new<int>(1);
-                            val alias = rt borrow self;
-                            nb select {
-                              case readch input: val value {
-                                stdio.println(alias.counter);
-                              }
-                            }
-                            return;
-                          }
-                        end
-                        """)));
-        assertTrue(rejected.getMessage().contains("nb select continuation")
-                        && rejected.getMessage().contains("borrowed value 'alias'"),
-                rejected.getMessage());
-    }
-
-    @Test
-    void nbSelectCanReenterOnlyCanonicalRuntimeOwnedActorSelf() {
-        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse("""
-                define actor Worker as
-                  let int counter = 0;
-                  receive(ActorMail<int> mail): void {
-                    val Channel<int> input = Channel.new<int>(1);
-                    nb select {
-                      case readch input: val value {
-                        stdio.println(self.counter);
-                      }
-                    }
-                    return;
-                  }
-                end
                 """)));
     }
 

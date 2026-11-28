@@ -1,0 +1,28 @@
+// Freestanding deterministic polynomial byte fold, NOT cryptographic hashing.
+// Stateful values are [0, 1000000007); byte inputs are [0,255].
+// Invalid inputs return -1. Not a full Hash.hash_value() for arbitrary types.
+// No host hashing, signed overflow, wrapped arithmetic, shift or modulo.
+define module hash as
+  pub fnc initial_state(): int { return 17; }
+  pub fnc step_byte(int state, int octet): int {
+    if state < 0 || state >= 1000000007; do return -1; fi
+    if octet < 0 || octet > 255; do return -1; fi
+    let int candidate = state * 31 + octet;
+    // 31 iterations suffice for the max state and byte; int64-safe.
+    for (let int i = 0; i < 31; i = i + 1) {
+      if candidate >= 1000000007; do
+        candidate = candidate - 1000000007;
+      fi
+    }
+    return candidate;
+  }
+  pub fnc two_bytes(int first, int second): int {
+    let int head = step_byte(initial_state(), first);
+    if head < 0; do return -1; fi
+    return step_byte(head, second);
+  }
+  pub fnc from_bool(bool value): int {
+    if value; do return step_byte(initial_state(), 1); fi
+    return step_byte(initial_state(), 0);
+  }
+end

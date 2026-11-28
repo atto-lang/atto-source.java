@@ -2,695 +2,70 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 final class ChannelRuntimeTest {
+
     @Test
-    void mixedPriorityPrefersReadyChannelToAlreadyCompletedFuture() {
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
-        assertTrue(channel.tryWrite(7));
-        OresFuture<String> observed = OresFuture.completed("future");
-        var result = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.read(channel), ChannelRuntime.await(observed))
-                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join();
-        assertEquals(ChannelRuntime.SelectOperation.READ, result.operation());
-        assertEquals(7, result.value());
-        assertEquals(0, result.index());
-        assertEquals("future", observed.join());
+    void closeReleasesPendingWriterWithoutPublishingRejectedPayload() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1, 2);
+        assertTrue(channel.tryWrite(11));
+        OresFuture<Void> pending = channel.writeAsync(22);
+        assertFalse(pending.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        channel.close();
+        assertThrows(RuntimeException.class, pending::join);
+        assertEquals(0, channel.pendingRegistrations(),
+                "shutdown must release the pending write registration");
+        assertEquals(11, channel.tryRead().orElseThrow(),
+                "the previously admitted payload must remain ordered");
+        assertEquals(0, channel.size(),
+                "the rejected write must never appear after close");
+        assertThrows(RuntimeException.class, () -> channel.tryWrite(33),
+                "closed channels fail immediately; they do not queue new writes");
+        channel.close(); // repeated close does not republish the rejected payload
+        assertEquals(0, channel.pendingRegistrations());
     }
 
     @Test
-    void pendingFutureCompletesMixedSelectAndDetachesLosingChannel() {
-        var producer = new OresFuture<Integer>();
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
-        OresFuture<ChannelRuntime.SelectResult> selected = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.read(channel), ChannelRuntime.await(producer))
-                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        assertFalse(selected.isDone());
-        assertEquals(1, producer.pendingRuntimeWaiterCount());
-        assertTrue(producer.completeFromRuntime(42));
-
-        var winner = selected.join();
-        assertEquals(ChannelRuntime.SelectOperation.AWAIT, winner.operation());
-        assertEquals(1, winner.index());
-        assertEquals(42, winner.value());
-        assertEquals(0, producer.pendingRuntimeWaiterCount());
-        assertTrue(channel.tryWrite(13));
-        assertEquals(13, channel.tryRead().orElseThrow());
+    void pendingReaderCancellationRestoresFullRegistrationBudget() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1, 1);
+        OresFuture<Integer> first = channel.readAsync();
+        assertFalse(first.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(first.cancel(false));
+        assertEquals(0, channel.pendingRegistrations(),
+                "a cancelled reader may not hold its registration quota");
+        OresFuture<Integer> next = channel.readAsync();
+        assertFalse(next.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(channel.tryWrite(42));
+        assertEquals(42, next.join());
+        assertEquals(0, channel.pendingRegistrations());
     }
 
     @Test
-    void cancellingMixedSelectionPreservesSharedFutureAndChannelValue() {
-        var producer = new OresFuture<Integer>();
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
-        var selected = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.read(channel), ChannelRuntime.await(producer))
-                .selectAsync();
-        assertEquals(1, producer.pendingRuntimeWaiterCount());
-        assertTrue(selected.cancel(false));
-        assertEquals(0, producer.pendingRuntimeWaiterCount());
-        assertFalse(producer.isCancelled());
-        assertTrue(channel.tryWrite(19));
-        assertEquals(19, channel.tryRead().orElseThrow());
-        assertTrue(producer.completeFromRuntime(23));
-        assertThrows(CancellationException.class, selected::join);
-    }
-
-    @Test
-    void failedAwaitedFuturePreservesOriginalErrorAndDoesNotConsumeChannel() {
-        var cause = new IllegalStateException("upstream failed");
-        OresFuture<Integer> failed = OresFuture.failed(cause);
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
-        var selected = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.await(failed), ChannelRuntime.read(channel))
-                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        var terminal = assertThrows(java.util.concurrent.CompletionException.class,
-                selected::join);
-        org.junit.jupiter.api.Assertions.assertSame(cause, terminal.getCause());
-        assertTrue(channel.tryWrite(72));
-        assertEquals(72, channel.tryRead().orElseThrow());
-    }
-
-    @Test
-    void cancellationSignalIsAnExplicitCaseNotAuthorityToCancelProducer() {
-        var signal = new OresFuture<Void>();
-        var producer = new OresFuture<Integer>();
-        var selected = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.await(producer), ChannelRuntime.cancelled(signal))
-                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        assertTrue(signal.cancel(false));
-        var result = selected.join();
-        assertEquals(ChannelRuntime.SelectOperation.CANCELLED, result.operation());
-        assertEquals(1, result.index());
-        assertFalse(producer.isDone());
-        assertEquals(0, producer.pendingRuntimeWaiterCount());
-    }
-
-    @Test
-    void timeoutWinsWithoutLaterConsumingChannel() throws Exception {
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
-        var selected = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.read(channel),
-                ChannelRuntime.timeout(2, java.util.concurrent.TimeUnit.MILLISECONDS))
-                .selectAsync();
-        var result = selected.get(5, java.util.concurrent.TimeUnit.SECONDS);
-        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT, result.operation());
-        assertEquals(1, result.index());
-        assertTrue(channel.tryWrite(37));
-        assertEquals(37, channel.tryRead().orElseThrow());
-    }
-
-    @Test
-    void immediateTimeoutIsReadyButFutureDeadlineDoesNotBlockTrySelect() {
-        var unready = new OresFuture<Integer>();
-        var nonBlocking = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.await(unready),
-                ChannelRuntime.timeout(1, java.util.concurrent.TimeUnit.HOURS));
-        assertTrue(nonBlocking.trySelect().isEmpty());
-        assertEquals(0, unready.pendingRuntimeWaiterCount());
-        var immediate = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.await(unready),
-                ChannelRuntime.timeout(0, java.util.concurrent.TimeUnit.NANOSECONDS));
-        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT,
-                immediate.trySelect().orElseThrow().operation());
-        assertFalse(unready.isCancelled());
-    }
-
-    @Test
-    void mixedSelectionFairCursorRotatesAcrossReadyFutureAndChannel() {
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(2);
-        OresFuture<Integer> producer = OresFuture.completed(50);
-        ChannelRuntime.SelectSet reusable = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.await(producer), ChannelRuntime.read(channel));
-        assertTrue(channel.tryWrite(10));
-        assertEquals(ChannelRuntime.SelectOperation.AWAIT,
-                reusable.selectAsync().join().operation());
-        assertEquals(ChannelRuntime.SelectOperation.READ,
-                reusable.selectAsync().join().operation());
-        assertEquals(0, channel.size());
-    }
-
-    @Test
-    void observableTakeOneUnsubscribesAfterFirstEmission() throws Exception {
-        var requested = new java.util.concurrent.atomic.AtomicInteger();
-        var unsubscribed = new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.Flow.Publisher<Integer> source = subscriber ->
-                subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
-                    @Override public void request(long n) {
-                        requested.incrementAndGet();
-                        subscriber.onNext(31);
-                        subscriber.onNext(99); // Ignore any unexpected second emission.
-                        subscriber.onComplete();
-                    }
-                    @Override public void cancel() { unsubscribed.countDown(); }
-                });
-        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(source))
-                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        var winner = selected.get(5, java.util.concurrent.TimeUnit.SECONDS);
-        assertEquals(ChannelRuntime.SelectOperation.OBSERVE, winner.operation());
-        assertEquals(31, winner.value());
-        assertEquals(1, requested.get());
-        assertTrue(unsubscribed.await(5, java.util.concurrent.TimeUnit.SECONDS));
-    }
-
-    @Test
-    void losingObservableSubscriptionIsCancelledWithoutStealingChannelValue()
-            throws Exception {
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
-        var subscribed = new java.util.concurrent.CountDownLatch(1);
-        var unsubscribed = new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.Flow.Publisher<Integer> never = subscriber -> {
-            subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
-                @Override public void request(long n) { subscribed.countDown(); }
-                @Override public void cancel() { unsubscribed.countDown(); }
-            });
-        };
-        var selected = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.observeOnce(never), ChannelRuntime.read(channel))
-                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
-        assertTrue(subscribed.await(5, java.util.concurrent.TimeUnit.SECONDS));
-        assertTrue(channel.tryWrite(12));
-        var winner = selected.get(5, java.util.concurrent.TimeUnit.SECONDS);
-        assertEquals(ChannelRuntime.SelectOperation.READ, winner.operation());
-        assertEquals(12, winner.value());
-        assertTrue(unsubscribed.await(5, java.util.concurrent.TimeUnit.SECONDS),
-                "losing reactive case must unsubscribe");
-    }
-
-    @Test
-    void cancellingSelectUnsubscribesObservableWithoutRunningAnyGuestCase()
-            throws Exception {
-        var subscribed = new java.util.concurrent.CountDownLatch(1);
-        var unsubscribed = new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.Flow.Publisher<Integer> never = subscriber -> {
-            subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
-                @Override public void request(long n) { subscribed.countDown(); }
-                @Override public void cancel() { unsubscribed.countDown(); }
-            });
-        };
-        var sharedFuture = new OresFuture<Integer>();
-        var selected = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.observeOnce(never), ChannelRuntime.await(sharedFuture))
-                .selectAsync();
-        assertTrue(subscribed.await(5, java.util.concurrent.TimeUnit.SECONDS));
-        assertTrue(selected.cancel(false));
-        assertThrows(CancellationException.class, selected::join);
-        assertTrue(unsubscribed.await(5, java.util.concurrent.TimeUnit.SECONDS));
-        assertEquals(0, sharedFuture.pendingRuntimeWaiterCount());
-        assertFalse(sharedFuture.isCancelled());
-    }
-
-    @Test
-    void readyChannelPreventsUnnecessaryObservableSubscription() throws Exception {
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
-        assertTrue(channel.tryWrite(5));
-        var starts = new java.util.concurrent.atomic.AtomicInteger();
-        java.util.concurrent.Flow.Publisher<Integer> publisher =
-                subscriber -> starts.incrementAndGet();
-        var winner = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.read(channel), ChannelRuntime.observeOnce(publisher))
-                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY)
-                .get(5, java.util.concurrent.TimeUnit.SECONDS);
-        assertEquals(ChannelRuntime.SelectOperation.READ, winner.operation());
-        assertEquals(0, starts.get(),
-                "already decided select must not subscribe to the losing Publisher");
-    }
-
-    @Test
-    void throwingHostSubscriptionCancelDoesNotBreakWinnerOrSubsequentSelections()
-            throws Exception {
-        var cancellationAttempted = new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.Flow.Publisher<Integer> malicious = subscriber ->
-                subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
-                    @Override public void request(long n) { subscriber.onNext(21); }
-                    @Override public void cancel() {
-                        cancellationAttempted.countDown();
-                        throw new IllegalStateException("foreign cancel hook threw");
-                    }
-                });
-        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(malicious))
-                .selectAsync();
-        assertEquals(21, selected.get(5, java.util.concurrent.TimeUnit.SECONDS).value());
-        assertTrue(cancellationAttempted.await(5, java.util.concurrent.TimeUnit.SECONDS));
-        ChannelRuntime.Channel<Integer> next = new ChannelRuntime.Channel<>(1);
-        assertTrue(next.tryWrite(42));
-        assertEquals(42, ChannelRuntime.SelectSet.of(ChannelRuntime.read(next))
-                .selectAsync().join().value());
-    }
-
-    @Test
-    void duplicateOnSubscribeNeverReplacesOriginalSubscription() throws Exception {
-        var firstCancelled = new java.util.concurrent.CountDownLatch(1);
-        var extraCancelled = new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.Flow.Publisher<Integer> malformed = subscriber -> {
-            subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
-                @Override public void request(long n) { }
-                @Override public void cancel() { firstCancelled.countDown(); }
-            });
-            subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
-                @Override public void request(long n) { throw new AssertionError("must not request"); }
-                @Override public void cancel() { extraCancelled.countDown(); }
-            });
-        };
-        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(malformed))
-                .selectAsync();
-        assertTrue(extraCancelled.await(5, java.util.concurrent.TimeUnit.SECONDS));
-        assertTrue(selected.cancel(false));
-        assertTrue(firstCancelled.await(5, java.util.concurrent.TimeUnit.SECONDS));
-    }
-
-    @Test
-    void duplicateIdenticalOnSubscribeDoesNotCancelTheActiveSubscription()
-            throws Exception {
-        var subscriberRef = new java.util.concurrent.atomic.AtomicReference<
-                java.util.concurrent.Flow.Subscriber<? super Integer>>();
-        var duplicateDelivered = new java.util.concurrent.CountDownLatch(1);
-        var cancelled = new java.util.concurrent.CountDownLatch(1);
-        var cancelledCount = new java.util.concurrent.atomic.AtomicInteger();
-        java.util.concurrent.Flow.Publisher<Integer> malformed = subscriber -> {
-            subscriberRef.set(subscriber);
-            var subscription = new java.util.concurrent.Flow.Subscription() {
-                @Override public void request(long n) { }
-                @Override public void cancel() {
-                    cancelledCount.incrementAndGet();
-                    cancelled.countDown();
-                }
-            };
-            subscriber.onSubscribe(subscription);
-            subscriber.onSubscribe(subscription); // Same object, not a new subscription.
-            duplicateDelivered.countDown();
-        };
-        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(malformed))
-                .selectAsync();
-        assertTrue(duplicateDelivered.await(5, java.util.concurrent.TimeUnit.SECONDS));
-        assertEquals(0, cancelledCount.get(),
-                "the duplicate must not cancel the still-active subscription");
-        subscriberRef.get().onNext(74);
-        assertEquals(74, selected.get(5, java.util.concurrent.TimeUnit.SECONDS).value());
-        assertTrue(cancelled.await(5, java.util.concurrent.TimeUnit.SECONDS));
-        assertEquals(1, cancelledCount.get());
-    }
-
-    @Test
-    void asynchronousNullSubscriptionFailsSelectInsteadOfStrandingWaiters()
-            throws Exception {
-        java.util.concurrent.Flow.Publisher<Integer> malformed = subscriber ->
-                Thread.ofVirtual().start(() -> subscriber.onSubscribe(null));
-        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(malformed))
-                .selectAsync();
-        var error = assertThrows(java.util.concurrent.ExecutionException.class,
-                () -> selected.get(5, java.util.concurrent.TimeUnit.SECONDS));
-        assertTrue(error.getCause() instanceof NullPointerException);
-        assertTrue(error.getCause().getMessage().contains("null subscription"));
-    }
-
-    @Test
-    void observableEmptyCompletionFailsSelectRatherThanHanging() throws Exception {
-        java.util.concurrent.Flow.Publisher<Integer> empty = subscriber ->
-                subscriber.onSubscribe(new java.util.concurrent.Flow.Subscription() {
-                    @Override public void request(long n) { subscriber.onComplete(); }
-                    @Override public void cancel() { }
-                });
-        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.observeOnce(empty))
-                .selectAsync();
-        var failure = assertThrows(java.util.concurrent.ExecutionException.class,
-                () -> selected.get(5, java.util.concurrent.TimeUnit.SECONDS));
-        assertTrue(failure.getCause() instanceof java.util.NoSuchElementException);
-    }
-
-    @Test
-    void mixedFutureAndChannelRaceNeverConsumesLosingChannelValue() throws Exception {
-        try (var producers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
-            for (int attempt = 0; attempt < 200; attempt++) {
-                ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
-                OresFuture<Integer> future = new OresFuture<>();
-                var selected = ChannelRuntime.SelectSet.of(
-                        ChannelRuntime.read(channel), ChannelRuntime.await(future),
-                        ChannelRuntime.timeout(2, java.util.concurrent.TimeUnit.SECONDS))
-                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
-                var start = new java.util.concurrent.CountDownLatch(1);
-                var produceChannel = producers.submit(() -> {
-                    start.await();
-                    channel.writeAsync(11).join();
-                    return true;
-                });
-                var produceFuture = producers.submit(() -> {
-                    start.await();
-                    future.completeFromRuntime(22);
-                    return true;
-                });
-                start.countDown();
-                var winner = selected.get(5, java.util.concurrent.TimeUnit.SECONDS);
-                assertTrue(produceChannel.get(5, java.util.concurrent.TimeUnit.SECONDS));
-                assertTrue(produceFuture.get(5, java.util.concurrent.TimeUnit.SECONDS));
-                assertEquals(0, future.pendingRuntimeWaiterCount());
-                assertEquals(22, future.join());
-                if (winner.operation() == ChannelRuntime.SelectOperation.READ) {
-                    assertEquals(11, winner.value());
-                    assertTrue(channel.tryRead().isEmpty());
-                } else if (winner.operation() == ChannelRuntime.SelectOperation.AWAIT) {
-                    assertEquals(22, winner.value());
-                    assertEquals(11, channel.tryRead().orElseThrow());
-                } else {
-                    throw new AssertionError("unexpected winner " + winner.operation());
-                }
-            }
-        }
-    }
-
-    @Test
-    void cancelBeforeDeadlineRemovesFutureObserverWithoutCancellingProducer() {
-        OresFuture<Integer> producer = new OresFuture<>();
-        var selected = ChannelRuntime.SelectSet.of(
-                ChannelRuntime.await(producer),
-                ChannelRuntime.timeout(30, java.util.concurrent.TimeUnit.SECONDS))
-                .selectAsync();
-        assertEquals(1, producer.pendingRuntimeWaiterCount());
-        assertTrue(selected.cancel(false));
-        assertEquals(0, producer.pendingRuntimeWaiterCount());
-        assertFalse(producer.isCancelled());
-        assertThrows(CancellationException.class, selected::join);
-    }
-
-    @Test
-    void affineWriteDescriptorCannotPublishTheSameMutablePayloadTwice() {
-        ChannelRuntime.Channel<List<Integer>> channel = new ChannelRuntime.Channel<>(2);
-        List<Integer> owned = new java.util.ArrayList<>(List.of(1, 2));
-        ChannelRuntime.WriteCase<List<Integer>> oneShot =
-                ChannelRuntime.write(channel, owned);
-        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(oneShot);
-
-        assertEquals(ChannelRuntime.SelectOperation.WRITE,
-                plan.selectAsync().join().operation());
-        var duplicate = plan.selectAsync();
-        var failed = assertThrows(java.util.concurrent.CompletionException.class,
-                duplicate::join);
-        assertTrue(failed.getCause().getMessage().contains("already transferred"));
-        assertEquals(1, channel.size());
-        org.junit.jupiter.api.Assertions.assertSame(owned, channel.tryRead().orElseThrow());
-
-        // Publishing a new descriptor revision must not reset the already
-        // transferred token on the old WriteCase instance.
-        plan.replaceCases(List.of(oneShot));
-        assertThrows(java.util.concurrent.CompletionException.class,
-                () -> plan.selectAsync().join());
-        plan.replaceCase(0, ChannelRuntime.write(channel,
-                new java.util.ArrayList<>(List.of(3))));
-        assertEquals(ChannelRuntime.SelectOperation.WRITE,
-                plan.selectAsync().join().operation());
-        assertEquals(List.of(3), channel.tryRead().orElseThrow());
-    }
-
-    @Test
-    void concurrentSelectionsCannotCommitOneAffineWriteCaseTwice() throws Exception {
-        ChannelRuntime.Channel<java.util.List<Integer>> channel =
-                new ChannelRuntime.Channel<>(2);
-        java.util.List<Integer> payload = new java.util.ArrayList<>(List.of(1));
-        ChannelRuntime.WriteCase<java.util.List<Integer>> shared =
-                ChannelRuntime.write(channel, payload);
-        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(shared);
-        var start = new java.util.concurrent.CountDownLatch(1);
-        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
-            var first = pool.submit(() -> {
-                start.await();
-                try {
-                    plan.selectAsync().join();
-                    return true;
-                } catch (java.util.concurrent.CompletionException rejected) {
-                    return false;
-                }
-            });
-            var second = pool.submit(() -> {
-                start.await();
-                try {
-                    plan.selectAsync().join();
-                    return true;
-                } catch (java.util.concurrent.CompletionException rejected) {
-                    return false;
-                }
-            });
-            start.countDown();
-            boolean a = first.get(5, java.util.concurrent.TimeUnit.SECONDS);
-            boolean b = second.get(5, java.util.concurrent.TimeUnit.SECONDS);
-            assertTrue(a ^ b, "one and only one registration may commit the payload");
-        }
-        assertEquals(1, channel.size());
-        org.junit.jupiter.api.Assertions.assertSame(payload, channel.tryRead().orElseThrow());
-    }
-
-    @Test
-    void independentPlansCannotConcurrentlyTransferTheSameAffineDescriptor() throws Exception {
-        // Each plan has a distinct registration domain. The ownership claim
-        // must belong to the shared descriptor, not the plan or SelectSet.
-        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
-            for (int trial = 0; trial < 100; trial++) {
-                ChannelRuntime.Channel<List<Integer>> channel =
-                        new ChannelRuntime.Channel<>(2);
-                List<Integer> payload =
-                        new java.util.ArrayList<>(List.of(trial));
-                var descriptor = ChannelRuntime.write(channel, payload);
-                var firstPlan = ChannelRuntime.SelectPlan.of(descriptor);
-                var secondPlan = ChannelRuntime.SelectPlan.of(descriptor);
-                var start = new java.util.concurrent.CountDownLatch(1);
-
-                var first = pool.submit(() -> {
-                    start.await();
-                    try {
-                        firstPlan.selectAsync().join();
-                        return true;
-                    } catch (java.util.concurrent.CompletionException rejected) {
-                        return false;
-                    }
-                });
-                var second = pool.submit(() -> {
-                    start.await();
-                    try {
-                        secondPlan.selectAsync().join();
-                        return true;
-                    } catch (java.util.concurrent.CompletionException rejected) {
-                        return false;
-                    }
-                });
-                start.countDown();
-                boolean a = first.get(5, java.util.concurrent.TimeUnit.SECONDS);
-                boolean b = second.get(5, java.util.concurrent.TimeUnit.SECONDS);
-                assertTrue(a ^ b, "only one independent plan may commit trial " + trial);
-                assertEquals(1, channel.size());
-                org.junit.jupiter.api.Assertions.assertSame(
-                        payload, channel.tryRead().orElseThrow());
-            }
-        }
-    }
-
-    @Test
-    void independentWriteDescriptorsCannotTransferTheSameMutableObject() {
-        ChannelRuntime.Channel<List<Integer>> channel = new ChannelRuntime.Channel<>(3);
-        List<Integer> shared = new java.util.ArrayList<>(List.of(5));
-        var first = ChannelRuntime.write(channel, shared);
-        var alias = ChannelRuntime.write(channel, shared);
-        assertEquals(ChannelRuntime.SelectOperation.WRITE,
-                ChannelRuntime.SelectSet.of(first).selectAsync().join().operation());
-        var rejected = assertThrows(java.util.concurrent.CompletionException.class,
-                () -> ChannelRuntime.SelectSet.of(alias).selectAsync().join());
-        assertTrue(rejected.getCause().getMessage().contains("already transferred"));
-        assertEquals(1, channel.size());
-        org.junit.jupiter.api.Assertions.assertSame(shared, channel.tryRead().orElseThrow());
-
-        // A fresh object whose contents compare equal is a distinct owner.
-        List<Integer> independent = new java.util.ArrayList<>(List.of(5));
-        assertEquals(ChannelRuntime.SelectOperation.WRITE,
-                ChannelRuntime.SelectSet.of(ChannelRuntime.write(channel, independent))
-                        .selectAsync().join().operation());
-        org.junit.jupiter.api.Assertions.assertSame(independent, channel.tryRead().orElseThrow());
-    }
-
-    @Test
-    void independentDescriptorsRacingAcrossChannelsCannotDuplicateOneMutablePayload()
-            throws Exception {
-        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
-            for (int trial = 0; trial < 50; trial++) {
-                var first = new ChannelRuntime.Channel<List<Integer>>(1);
-                var second = new ChannelRuntime.Channel<List<Integer>>(1);
-                var shared = new java.util.ArrayList<>(List.of(trial));
-                var firstCase = ChannelRuntime.write(first, shared);
-                var secondCase = ChannelRuntime.write(second, shared);
-                var ready = new java.util.concurrent.CountDownLatch(1);
-                var a = pool.submit(() -> {
-                    ready.await();
-                    try {
-                        ChannelRuntime.SelectSet.of(firstCase).selectAsync().join();
-                        return true;
-                    } catch (java.util.concurrent.CompletionException rejected) {
-                        return false;
-                    }
-                });
-                var b = pool.submit(() -> {
-                    ready.await();
-                    try {
-                        ChannelRuntime.SelectSet.of(secondCase).selectAsync().join();
-                        return true;
-                    } catch (java.util.concurrent.CompletionException rejected) {
-                        return false;
-                    }
-                });
-                ready.countDown();
-                boolean aWon = a.get(5, java.util.concurrent.TimeUnit.SECONDS);
-                boolean bWon = b.get(5, java.util.concurrent.TimeUnit.SECONDS);
-                assertTrue(aWon ^ bWon, "aliased payload published twice at trial " + trial);
-                assertEquals(1, first.size() + second.size());
-                org.junit.jupiter.api.Assertions.assertSame(shared,
-                        (aWon ? first : second).tryRead().orElseThrow());
-            }
-        }
-    }
-
-    @Test
-    void subclassedArbitraryPrecisionNumbersAreNotTreatedAsCopyScalars() {
-        class MutableBigDecimal extends java.math.BigDecimal {
-            int mutableState;
-            MutableBigDecimal() { super("123"); }
-        }
-        class MutableBigInteger extends java.math.BigInteger {
-            int mutableState;
-            MutableBigInteger() { super("123"); }
-        }
-        for (Number value : List.of(new MutableBigDecimal(), new MutableBigInteger())) {
-            ChannelRuntime.Channel<Number> channel = new ChannelRuntime.Channel<>(2);
-            var descriptor = ChannelRuntime.write(channel, value);
-            ChannelRuntime.SelectSet.of(descriptor).selectAsync().join();
-            assertThrows(java.util.concurrent.CompletionException.class,
-                    () -> ChannelRuntime.SelectSet.of(descriptor).selectAsync().join());
-            assertEquals(1, channel.size());
-        }
-
-        // Exact immutable JDK values remain reusable, preserving Copy semantics.
-        ChannelRuntime.Channel<Number> ordinary = new ChannelRuntime.Channel<>(4);
-        for (Number number : List.<Number>of(
-                new java.math.BigDecimal("123"), new java.math.BigInteger("123"))) {
-            var descriptor = ChannelRuntime.write(ordinary, number);
-            ChannelRuntime.SelectSet.of(descriptor).selectAsync().join();
-            ChannelRuntime.SelectSet.of(descriptor).selectAsync().join();
-        }
-        assertEquals(4, ordinary.size());
-    }
-
-    @Test
-    void scalarWriteCaseCanBeReusedBecauseItsPayloadIsCopySafe() {
-        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(2);
-        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
-                ChannelRuntime.write(channel, 17));
-        assertEquals(ChannelRuntime.SelectOperation.WRITE,
-                plan.selectAsync().join().operation());
-        assertEquals(ChannelRuntime.SelectOperation.WRITE,
-                plan.selectAsync().join().operation());
-        assertEquals(17, channel.tryRead().orElseThrow());
-        assertEquals(17, channel.tryRead().orElseThrow());
-    }
-
-    @Test
-    void losingAffineWriteCaseCanStillWinASeparateLaterSelection() {
-        ChannelRuntime.Channel<List<Integer>> channel = new ChannelRuntime.Channel<>(0);
-        var owned = new java.util.ArrayList<>(List.of(7));
-        var descriptor = ChannelRuntime.write(channel, owned);
-        var set = ChannelRuntime.SelectSet.of(descriptor,
-                ChannelRuntime.timeout(0, java.util.concurrent.TimeUnit.NANOSECONDS));
-        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT, set.selectAsync().join().operation());
-
-        OresFuture<List<Integer>> receiver = channel.readAsync();
-        assertEquals(ChannelRuntime.SelectOperation.WRITE, set.selectAsync().join().operation());
-        org.junit.jupiter.api.Assertions.assertSame(owned, receiver.join());
-        assertThrows(java.util.concurrent.CompletionException.class,
-                () -> set.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join());
-    }
-
-    @Test
-    void selectPlanMutationDoesNotRetargetAlreadyRegisteredReaders() {
-        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
-        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
-        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
-                ChannelRuntime.read(first));
-        OresFuture<ChannelRuntime.SelectResult> older = plan.selectAsync();
-        assertEquals(0L, plan.revision());
-        assertFalse(older.isDone());
-
-        plan.replaceCase(0, ChannelRuntime.read(second));
-        assertEquals(1L, plan.revision());
-        assertEquals(1, plan.cases().size());
-        OresFuture<ChannelRuntime.SelectResult> newer = plan.selectAsync();
-        assertFalse(newer.isDone());
-
-        assertTrue(second.tryWrite(2));
-        assertEquals(2, newer.join().value());
-        assertFalse(older.isDone(), "old selection must still watch the original channel");
-        assertTrue(first.tryWrite(1));
-        assertEquals(1, older.join().value());
-    }
-
-    @Test
-    void selectPlanCanAddRemoveAndReplaceCasesWithoutLeakingPreviousGenerations() {
-        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
-        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
-        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
-                ChannelRuntime.read(first));
-        plan.addCase(ChannelRuntime.read(second));
-        assertEquals(1L, plan.revision());
-        assertEquals(2, plan.cases().size());
-        assertTrue(second.tryWrite(9));
-        assertEquals(1, plan.trySelect().orElseThrow().index());
-
-        plan.removeCase(0);
-        assertEquals(2L, plan.revision());
-        assertEquals(1, plan.cases().size());
-        plan.replaceCases(List.of(ChannelRuntime.timeout(
-                0, java.util.concurrent.TimeUnit.NANOSECONDS)));
-        assertEquals(3L, plan.revision());
-        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT,
-                plan.trySelect().orElseThrow().operation());
-
-        assertThrows(IllegalArgumentException.class, () -> plan.removeCase(0));
-        assertEquals(3L, plan.revision(),
-                "rejected empty-plan change must leave the original snapshot intact");
-    }
-
-    @Test
-    void invalidDuplicateDefaultPlanRevisionRollsBackAtomically() {
-        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
-                ChannelRuntime.defaultCase());
-        assertThrows(IllegalArgumentException.class,
-                () -> plan.addCase(ChannelRuntime.defaultCase()));
-        assertEquals(0L, plan.revision());
-        assertEquals(1, plan.cases().size());
-        assertEquals(ChannelRuntime.SelectOperation.DEFAULT,
-                plan.trySelect().orElseThrow().operation());
-    }
-
-    @Test
-    void concurrentPlanUpdatesAreLosslessAndGenerationMonotonic() throws Exception {
-        ChannelRuntime.SelectPlan plan = ChannelRuntime.SelectPlan.of(
-                ChannelRuntime.timeout(0, java.util.concurrent.TimeUnit.NANOSECONDS));
-        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(4)) {
-            java.util.List<java.util.concurrent.Future<?>> edits =
-                    new java.util.ArrayList<>();
-            for (int thread = 0; thread < 4; thread++) {
-                edits.add(workers.submit(() -> {
-                    for (int n = 0; n < 40; n++) {
-                        plan.addCase(ChannelRuntime.timeout(
-                                0, java.util.concurrent.TimeUnit.NANOSECONDS));
-                    }
-                }));
-            }
-            for (var edit : edits) edit.get(5, java.util.concurrent.TimeUnit.SECONDS);
-        }
-        assertEquals(160L, plan.revision());
-        assertEquals(161, plan.cases().size());
-        assertEquals(ChannelRuntime.SelectOperation.TIMEOUT,
-                plan.trySelect().orElseThrow().operation());
+    void failedRendezvousSendDoesNotQueueOrBlock() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0, 1);
+        assertFalse(channel.tryWrite(7),
+                "zero-capacity channel must reject an unmatched immediate send");
+        assertEquals(0, channel.pendingRegistrations());
+        OresFuture<Integer> waiting = channel.readAsync();
+        assertFalse(waiting.isDone());
+        assertTrue(channel.tryWrite(8),
+                "a matched immediate send must rendezvous without parking");
+        assertEquals(8, waiting.join());
+        assertEquals(0, channel.pendingRegistrations());
     }
 
     @Test
@@ -1043,4 +418,419 @@ final class ChannelRuntimeTest {
         assertThrows(RuntimeException.class, read::join);
         assertThrows(RuntimeException.class, selected::join);
     }
+    @Test
+    void canonicalChannelSelectableIsDescriptorOnlyAndPreservesLosingValues() {
+        ChannelRuntime.Channel<Integer> left = new ChannelRuntime.Channel<>(2);
+        ChannelRuntime.Channel<Integer> right = new ChannelRuntime.Channel<>(2);
+        assertTrue(left.tryWrite(11));
+        assertTrue(right.tryWrite(22));
+
+        ChannelRuntime.ChannelReadSelectable<Integer> leftSource =
+                ChannelRuntime.selectableRead(left.output());
+        ChannelRuntime.ChannelReadSelectable<Integer> rightSource =
+                ChannelRuntime.selectableRead(right);
+
+        // Producing read descriptors never registers a waiter or consumes data.
+        assertTrue(leftSource.selectNext() instanceof ChannelRuntime.ReadCase<?>);
+        assertEquals(1, left.size());
+        assertEquals(1, right.size());
+
+        ChannelRuntime.SelectResult result = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(leftSource, rightSource))
+                .trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow();
+        assertEquals(0, result.index());
+        assertEquals(11, result.value());
+        assertTrue(left.tryRead().isEmpty(), "winner consumed exactly once");
+        assertEquals(22, right.tryRead().orElseThrow(),
+                "losing next-event source must preserve its buffered value");
+    }
+
+    @Test
+    void canonicalSelectableRejectsNullReadCapability() {
+        assertThrows(NullPointerException.class, () ->
+                ChannelRuntime.selectableRead((ChannelRuntime.ReadChannel<Integer>) null));
+        assertThrows(NullPointerException.class, () ->
+                ChannelRuntime.selectableRead((ChannelRuntime.Channel<Integer>) null));
+    }
+
+    @Test
+    void selectableNextEventRejectsWritesAndDefaultsBeforeAnyCommit() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(2);
+        assertTrue(channel.tryWrite(41));
+
+        // A previously described read must not be committed merely because a
+        // later adapter attempts to smuggle producer-side I/O into a select.
+        assertThrows(IllegalArgumentException.class, () ->
+                ChannelRuntime.SelectSet.fromSelectables(List.of(
+                        () -> ChannelRuntime.read(channel),
+                        () -> ChannelRuntime.write(channel, 99))));
+        assertThrows(IllegalArgumentException.class, () ->
+                ChannelRuntime.SelectSet.fromSelectables(List.of(
+                        ChannelRuntime::defaultCase)));
+        assertEquals(41, channel.tryRead().orElseThrow());
+        assertTrue(channel.tryRead().isEmpty());
+
+        assertTrue(channel.tryWrite(42));
+        ChannelRuntime.SelectResult chosen = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(() -> ChannelRuntime.read(channel)))
+                .trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow();
+        assertEquals(ChannelRuntime.SelectOperation.READ, chosen.operation());
+        assertEquals(42, chosen.value());
+        assertTrue(channel.tryRead().isEmpty());
+    }
+
+
+    @Test
+    void canonicalSelectableAsyncPriorityConsumesExactlyOneWinningEvent() {
+        ChannelRuntime.Channel<Integer> left = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> right = new ChannelRuntime.Channel<>(1);
+        assertTrue(left.tryWrite(11));
+        assertTrue(right.tryWrite(22));
+
+        ChannelRuntime.SelectResult winner = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(
+                        ChannelRuntime.selectableRead(left.output()),
+                        ChannelRuntime.selectableRead(right)))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY)
+                .join();
+        assertEquals(0, winner.index());
+        assertEquals(11, winner.value());
+        assertTrue(left.tryRead().isEmpty(), "winning event consumed only once");
+        assertEquals(22, right.tryRead().orElseThrow(),
+                "async arbitration must preserve the losing event");
+    }
+
+    @Test
+    void canonicalSelectableAsyncWaitsForNextEventWithoutEagerConsumption() {
+        ChannelRuntime.Channel<String> left = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<String> right = new ChannelRuntime.Channel<>(1);
+
+        ChannelRuntime.SelectSet set = ChannelRuntime.SelectSet.fromSelectables(
+                List.of(ChannelRuntime.selectableRead(left),
+                        ChannelRuntime.selectableRead(right.output())));
+        OresFuture<ChannelRuntime.SelectResult> pending =
+                set.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(pending.isDone(), "descriptor construction cannot consume or complete");
+        assertTrue(right.tryWrite("ready"));
+        ChannelRuntime.SelectResult winner = pending.join();
+        assertEquals(1, winner.index());
+        assertEquals("ready", winner.value());
+        assertTrue(left.tryRead().isEmpty(), "loser remains unmodified");
+        assertTrue(right.tryRead().isEmpty(), "winner consumes once");
+    }
+
+    @Test
+    void cancellingCanonicalSelectableAsyncPreservesLaterNextEvent() {
+        ChannelRuntime.Channel<String> source = new ChannelRuntime.Channel<>(1);
+        OresFuture<ChannelRuntime.SelectResult> selected = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(ChannelRuntime.selectableRead(source.output())))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(selected.isDone());
+        assertTrue(selected.cancel(false));
+        assertThrows(CancellationException.class, selected::join);
+
+        assertTrue(source.tryWrite("retained"));
+        assertEquals("retained", source.tryRead().orElseThrow(),
+                "cancelled selectable must detach its waiter without stealing data");
+    }
+
+    @Test
+    void canonicalSelectableAcceptsFutureNextEventWithoutReadOrWrite() {
+        java.util.concurrent.CompletableFuture<Integer> hostCompletion =
+                new java.util.concurrent.CompletableFuture<>();
+        OresFuture<Integer> completion = OresFuture.from(hostCompletion);
+        OresFuture<ChannelRuntime.SelectResult> selected = ChannelRuntime.SelectSet
+                .fromSelectables(List.of(() -> ChannelRuntime.await(completion)))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(selected.isDone());
+        assertTrue(hostCompletion.complete(73));
+        assertEquals(73, selected.join().value());
+    }
+
+    @Test
+    void publicSelectDescriptorsExposeOnlyDirectionalCapabilities() throws Exception {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.ReadChannel<Integer> output = channel.output();
+        ChannelRuntime.WriteChannel<Integer> input = channel.input();
+
+        assertSame(output, channel.output());
+        assertSame(input, channel.input());
+        assertSame(output, ChannelRuntime.read(channel).channel());
+        assertSame(input, ChannelRuntime.write(channel, 29).channel());
+        assertSame(output, new ChannelRuntime.ReadCase<>(channel).channel());
+        assertSame(input, new ChannelRuntime.WriteCase<>(channel, 29).channel());
+
+        assertEquals(
+                ChannelRuntime.ReadChannel.class,
+                ChannelRuntime.ReadCase.class.getMethod("channel").getReturnType());
+        assertEquals(
+                ChannelRuntime.WriteChannel.class,
+                ChannelRuntime.WriteCase.class.getMethod("channel").getReturnType());
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.ReadChannel.class.getMethod("backingChannel"));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.WriteChannel.class.getMethod("backingChannel"));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.ReadChannel.class.getMethod("tryWrite", Object.class));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.WriteChannel.class.getMethod("tryRead"));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.ReadChannel.class.getMethod("close"));
+        assertThrows(
+                NoSuchMethodException.class,
+                () -> ChannelRuntime.WriteChannel.class.getMethod("close"));
+
+        assertTrue(channel.tryWrite(17));
+        ChannelRuntime.SelectResult selectedRead = ChannelRuntime.SelectSet
+                .of(ChannelRuntime.read(output))
+                .trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow();
+        assertEquals(ChannelRuntime.SelectOperation.READ, selectedRead.operation());
+        assertEquals(17, selectedRead.value());
+
+        ChannelRuntime.SelectResult selectedWrite = ChannelRuntime.SelectSet
+                .of(ChannelRuntime.write(input, 29))
+                .trySelect(ChannelRuntime.SelectPolicy.PRIORITY)
+                .orElseThrow();
+        assertEquals(ChannelRuntime.SelectOperation.WRITE, selectedWrite.operation());
+        assertEquals(29, output.tryRead().orElseThrow());
+    }
+
+    @Test
+    void priorityWriteSelectPublishesOnlyTheWinningPayload() {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
+        ChannelRuntime.SelectSet set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.write(first, 11),
+                ChannelRuntime.write(second, 22));
+
+        ChannelRuntime.SelectResult result =
+                set.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join();
+
+        assertEquals(0, result.index());
+        assertEquals(ChannelRuntime.SelectOperation.WRITE, result.operation());
+        assertEquals(11, first.tryRead().orElseThrow());
+        assertTrue(second.tryRead().isEmpty(),
+                "a losing write arm must never publish its payload");
+        assertEquals(0, first.pendingRegistrations());
+        assertEquals(0, second.pendingRegistrations());
+    }
+
+    @Test
+    void cancellingMultiWriteSelectPublishesNoLosingPayloads() {
+        ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(0);
+        ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(0);
+        OresFuture<ChannelRuntime.SelectResult> selected =
+                ChannelRuntime.SelectSet.of(
+                        ChannelRuntime.write(first, 11),
+                        ChannelRuntime.write(second, 22))
+                        .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+
+        assertEquals(1, first.pendingRegistrations());
+        assertEquals(1, second.pendingRegistrations());
+        assertTrue(selected.cancel(false));
+        assertThrows(CancellationException.class, selected::join);
+        assertEquals(0, first.pendingRegistrations());
+        assertEquals(0, second.pendingRegistrations());
+        assertTrue(first.tryRead().isEmpty());
+        assertTrue(second.tryRead().isEmpty());
+    }
+
+    @Test
+    void competingReadersAllowExactlyOneWinnerForOneWrite() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);
+        OresFuture<ChannelRuntime.SelectResult> first =
+                ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        OresFuture<ChannelRuntime.SelectResult> second =
+                ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+        assertTrue(channel.tryWrite(31));
+        int completed = (first.isDone() ? 1 : 0) + (second.isDone() ? 1 : 0);
+        assertEquals(1, completed, "one rendezvous write may commit only one selection");
+
+        OresFuture<ChannelRuntime.SelectResult> winner = first.isDone() ? first : second;
+        OresFuture<ChannelRuntime.SelectResult> loser = first.isDone() ? second : first;
+        assertEquals(31, winner.join().value());
+        assertFalse(loser.isDone());
+        assertTrue(loser.cancel(false));
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void cancellationVersusReadWinnerPreservesExactlyOneOutcome() throws Exception {
+        for (int round = 0; round < 64; round++) {
+            ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+            OresFuture<ChannelRuntime.SelectResult> selected =
+                    ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                            .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            CountDownLatch race = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            Thread canceller = Thread.startVirtualThread(() -> {
+                try {
+                    if (!race.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("cancel race gate timed out");
+                    }
+                    selected.cancel(false);
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                }
+            });
+            Thread writer = Thread.startVirtualThread(() -> {
+                try {
+                    if (!race.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("write race gate timed out");
+                    }
+                    assertTrue(channel.tryWrite(41));
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                }
+            });
+
+            race.countDown();
+            canceller.join(5_000);
+            writer.join(5_000);
+            assertFalse(canceller.isAlive(), "canceller stalled: " + round);
+            assertFalse(writer.isAlive(), "writer stalled: " + round);
+            if (failure.get() != null) {
+                throw new AssertionError("cancel/read race failed: " + round, failure.get());
+            }
+
+            if (selected.isCancelled()) {
+                assertThrows(CancellationException.class, selected::join);
+                assertEquals(41, channel.tryRead().orElseThrow(),
+                        "cancel winner must preserve the later message");
+            } else {
+                assertEquals(41, selected.join().value(),
+                        "read winner must receive the raced message");
+                assertTrue(channel.tryRead().isEmpty(),
+                        "a committed read may consume the message only once");
+            }
+            assertEquals(0, channel.pendingRegistrations(),
+                    "race retained a channel registration: " + round);
+        }
+    }
+
+    @Test
+    void mixedPendingFutureReadAndCancellationConserveMessageAndRetireWaiters() throws Exception {
+        for (int round = 0; round < 128; round++) {
+            var channel = new ChannelRuntime.Channel<Integer>(1, 2);
+            var completion = new java.util.concurrent.CompletableFuture<Integer>();
+            var pending = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.read(channel), ChannelRuntime.await(OresFuture.from(completion)))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            assertFalse(pending.isDone());
+            assertEquals(1, channel.pendingRegistrations());
+            var gate = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            java.util.List<Runnable> operations = List.of(
+                    () -> pending.cancel(false),
+                    () -> assertTrue(channel.tryWrite(41)),
+                    () -> assertTrue(completion.complete(73)));
+            var racers = new java.util.ArrayList<Thread>();
+            for (Runnable operation : operations) {
+                racers.add(Thread.startVirtualThread(() -> {
+                    try {
+                        assertTrue(gate.await(2, TimeUnit.SECONDS));
+                        operation.run();
+                    } catch (Throwable e) {
+                        failure.compareAndSet(null, e);
+                    }
+                }));
+            }
+            gate.countDown();
+            for (Thread racer : racers) {
+                racer.join(5_000);
+                assertFalse(racer.isAlive(), "mixed select race stalled");
+            }
+            if (failure.get() != null) throw new AssertionError("mixed race", failure.get());
+            assertTrue(pending.isDone());
+            assertEquals(73, completion.join(), "independent Future completion must survive");
+            if (pending.isCancelled()) {
+                assertThrows(CancellationException.class, pending::join);
+                assertEquals(41, channel.tryRead().orElseThrow());
+            } else {
+                var winner = pending.join();
+                assertTrue(winner.index() == 0 || winner.index() == 1);
+                if (winner.index() == 0) {
+                    assertEquals(41, winner.value());
+                    assertTrue(channel.tryRead().isEmpty());
+                } else {
+                    assertEquals(73, winner.value());
+                    assertEquals(41, channel.tryRead().orElseThrow());
+                }
+                assertFalse(pending.cancel(false), "committed result must not cancel");
+            }
+            assertEquals(0, channel.pendingRegistrations());
+            assertTrue(channel.tryWrite(99), "registration capacity must remain usable");
+            assertEquals(99, channel.tryRead().orElseThrow());
+        }
+    }
+
+    @Test
+    void cancellationVersusWriteWinnerNeverPublishesAfterCancellation() throws Exception {
+        for (int round = 0; round < 64; round++) {
+            ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);
+            OresFuture<ChannelRuntime.SelectResult> selected =
+                    ChannelRuntime.SelectSet.of(ChannelRuntime.write(channel, 73))
+                            .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            CountDownLatch race = new CountDownLatch(1);
+            AtomicReference<java.util.Optional<Integer>> received = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            Thread canceller = Thread.startVirtualThread(() -> {
+                try {
+                    if (!race.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("cancel race gate timed out");
+                    }
+                    selected.cancel(false);
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                }
+            });
+            Thread reader = Thread.startVirtualThread(() -> {
+                try {
+                    if (!race.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("read race gate timed out");
+                    }
+                    received.set(channel.tryRead());
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                }
+            });
+
+            race.countDown();
+            canceller.join(5_000);
+            reader.join(5_000);
+            assertFalse(canceller.isAlive(), "canceller stalled: " + round);
+            assertFalse(reader.isAlive(), "reader stalled: " + round);
+            if (failure.get() != null) {
+                throw new AssertionError("cancel/write race failed: " + round, failure.get());
+            }
+
+            if (selected.isCancelled()) {
+                assertThrows(CancellationException.class, selected::join);
+                assertTrue(received.get().isEmpty(),
+                        "cancel winner must not publish the write payload");
+            } else {
+                assertEquals(ChannelRuntime.SelectOperation.WRITE,
+                        selected.join().operation());
+                assertEquals(73, received.get().orElseThrow(),
+                        "write winner must publish exactly one payload");
+            }
+            assertEquals(0, channel.pendingRegistrations(),
+                    "race retained a channel registration: " + round);
+        }
+    }
+
+
 }

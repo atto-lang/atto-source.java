@@ -1,0 +1,9 @@
+define class Box as
+    pub let int value = 0;
+end
+
+pub routine main(): void {
+    const point = record{x: new Box(), y: 2};
+    const next = rt copy point with {y => 3};
+    return;
+}

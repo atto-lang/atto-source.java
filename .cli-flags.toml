@@ -1,0 +1,36 @@
+# flags-2-env canonical configuration; see github.com/flags-2-env/flags-2-env.
+# flags-2-env reads .cli-flags.toml (not .cli-args.toml).
+[flags.core-perf]
+env = "ORES_CORE_PERF"
+aliases = ["core-perf"]
+type = "bool"
+default = "false"
+help = "Record bounded, allocation-free core timing phases; dump JSONL to stderr on exit."
+
+[flags.core-debug]
+env = "ORES_CORE_DEBUG"
+aliases = ["core-debug"]
+type = "bool"
+default = "false"
+help = "Record bounded core-only numeric diagnostic events; dump JSONL to stderr on exit."
+
+[flags.core-log-level]
+env = "ORES_CORE_LOG_LEVEL"
+aliases = ["core-log-level"]
+type = "string"
+default = "off"
+help = "Core-only fixed-ID diagnostics: off|error|warn|info|debug|trace. Never controls oreslang-otel."
+
+[flags.control-workers]
+env = "ORES_CONTROL_WORKERS"
+aliases = ["control-workers"]
+type = "int"
+default = "2"
+help = "CONTROL workers prestarted at boot (1-64). 2 is the default boot thread budget; 1 is minimal mode."
+
+[flags.actor-carriers-max]
+env = "ORES_ACTOR_CARRIERS_MAX"
+aliases = ["actor-carriers-max"]
+type = "string"
+default = "auto"
+help = "CPU budget actor pools are sized from (1-1024, or auto = effective CPUs). Carriers still start lazily."

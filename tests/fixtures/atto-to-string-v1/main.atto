@@ -1,0 +1,7 @@
+pub fnc main(): void {
+    val int value = -42;
+    val bool ready = true;
+    val String label = "é😀中";
+    stdio.stdout.write(`i:${value.to_string()} f:${to_string(false)} s:${label.to_string()}`);
+    return;
+}
