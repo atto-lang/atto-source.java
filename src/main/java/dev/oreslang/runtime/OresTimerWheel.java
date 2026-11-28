@@ -211,9 +211,13 @@ public final class OresTimerWheel<T> {
     }
 
     private void place(int i) {
-        long d = deadline[i];
-        if (d <= nowNanos) { append(i, DUE); return; }
-        long e = d / tickNanos;
+        if (deadline[i] <= nowNanos) append(i, DUE);
+        else placeByTick(i);
+    }
+
+    // Cascading uses the current wheel tick, never the final delayed poll time.
+    private void placeByTick(int i) {
+        long e = deadline[i] / tickNanos;
         if (e <= currentTick) { append(i, CURRENT); return; }
         int level = (63 - Long.numberOfLeadingZeros(e ^ currentTick)) / SLOT_BITS;
         if (level >= LEVELS) { append(i, OVERFLOW); return; }
@@ -273,24 +277,26 @@ public final class OresTimerWheel<T> {
         if (now < nowNanos) now = nowNanos;
         long target = now / tickNanos;
         nowNanos = now;
-        if (target > currentTick) drainCurrent(true);
         for (;;) {
             long t = nextEventTick();
             if (t == NONE || t > target) break;
+            drainCurrent(true);
             currentTick = t;
             int level = eventLevel;
             int list = level < 0 ? OVERFLOW
                     : level * SLOTS + (int) ((t >>> (level * SLOT_BITS)) & (SLOTS - 1));
             int first = take(list);
-            // Re-place relative to the new current tick: level-0 entries become
-            // due (or CURRENT within the target tick); higher levels cascade.
+            // Traverse expiry ticks in order even after a delayed poll.
             while (first != NIL) {
                 int i = first;
                 first = next[i];
-                place(i);
+                placeByTick(i);
             }
         }
-        if (target > currentTick) currentTick = target;
+        if (target > currentTick) {
+            drainCurrent(true);
+            currentTick = target;
+        }
         drainCurrent(false);
     }
 
