@@ -280,4 +280,102 @@ final class ActorContinuationLedgerTest {
         assertEquals(1_000_000, drops.get());
         assertEquals(1_000_000L, ledger.snapshot().lastSequence());
     }
+
+    @Test
+    void codeLeaseReleaseKeepsAdmissionCreditUntilPhysicalExit() throws Exception {
+        for (int mode = 0; mode < 3; mode++) {
+            var ledger = new ActorContinuationLedger(1);
+            var entered = new CountDownLatch(1);
+            var finish = new CountDownLatch(1);
+            var callbacks = new AtomicInteger();
+            var releases = new AtomicInteger();
+            var failure = new AtomicReference<Throwable>();
+            var receipt = ledger.admit(ActorContinuationLedger.Lane.ORDINARY,
+                    callbacks::incrementAndGet, () -> {
+                        releases.incrementAndGet();
+                        entered.countDown();
+                        if (!finish.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("release stranded");
+                    });
+            if (mode == 2) ledger.sealOrdinary();
+            final boolean discard = mode == 1;
+            Thread worker = Thread.ofPlatform().start(() -> {
+                try {
+                    if (discard) receipt.close(); else receipt.run();
+                } catch (Throwable error) { failure.set(error); }
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertEquals(1, ledger.snapshot().running());
+                assertEquals(0, ledger.snapshot().queued());
+                assertThrows(IllegalStateException.class, () ->
+                        ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}));
+                receipt.close();
+                assertEquals(1, releases.get());
+                assertThrows(IllegalStateException.class, receipt::run);
+            } finally {
+                finish.countDown();
+                worker.join(5_000);
+            }
+            assertFalse(worker.isAlive());
+            assertNull(failure.get());
+            assertEquals(0, ledger.snapshot().running());
+            assertEquals(mode == 0 ? 1 : 0, callbacks.get());
+            assertEquals(1, releases.get());
+            ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}).close();
+        }
+    }
+
+    @Test
+    void failedExternalReleaseQuarantinesCreditAndNeverRetries() {
+        for (int mode = 0; mode < 3; mode++) {
+            var ledger = new ActorContinuationLedger(3);
+            var releases = new AtomicInteger();
+            var calls = new AtomicInteger();
+            var cleanupCalls = new AtomicInteger();
+            var releaseFailure = new IllegalStateException("ambiguous code pin close");
+            var guestFailure = new IllegalArgumentException("guest failed");
+            final boolean failGuest = mode == 0;
+            var receipt = ledger.admit(ActorContinuationLedger.Lane.ORDINARY,
+                    () -> { if (failGuest) throw guestFailure; },
+                    () -> { releases.incrementAndGet(); throw releaseFailure; });
+            var ordinary = ledger.admit(ActorContinuationLedger.Lane.ORDINARY,
+                    calls::incrementAndGet);
+            var cleanup = ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK,
+                    cleanupCalls::incrementAndGet);
+            if (mode == 2) ledger.sealOrdinary();
+            if (mode == 0) {
+                assertSame(guestFailure, assertThrows(IllegalArgumentException.class, receipt::run));
+                assertArrayEquals(new Throwable[] {releaseFailure}, guestFailure.getSuppressed());
+            } else if (mode == 1) {
+                assertSame(releaseFailure, assertThrows(IllegalStateException.class, receipt::close));
+            } else {
+                assertSame(releaseFailure, assertThrows(IllegalStateException.class, receipt::run));
+            }
+            assertTrue(ledger.hasReleaseFailure());
+            assertEquals(1, ledger.snapshot().running());
+            receipt.close();
+            assertEquals(1, releases.get());
+            assertThrows(IllegalStateException.class, receipt::run);
+            assertThrows(IllegalStateException.class, () ->
+                    ledger.admit(ActorContinuationLedger.Lane.ORDINARY, () -> {}));
+            assertThrows(IllegalStateException.class, () ->
+                    ledger.admit(ActorContinuationLedger.Lane.SOURCE_TASK, () -> {}));
+            ordinary.run();
+            cleanup.run();
+            assertEquals(0, calls.get());
+            assertEquals(1, cleanupCalls.get());
+            assertEquals(0, ledger.snapshot().queued());
+            assertEquals(1, ledger.snapshot().running());
+            ledger.sealAll();
+            assertEquals(1, ledger.snapshot().running());
+        }
+    }
+
+    @Test
+    void sixtyFourIndependentOwnersSettleWithoutCrossOwnerCreditRefund() throws Exception {
+        SettlementProbe.main(new String[0]);
+    }
+
+
 }
