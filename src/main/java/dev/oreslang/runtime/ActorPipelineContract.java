@@ -56,6 +56,38 @@ public final class ActorPipelineContract {
         }
     }
 
+    /**
+     * Restricted interoperable integer-pipeline admission, matching the first
+     * executable Wasm actor-pipe subset and the native guest plan. The broader
+     * host {@link #validate(List)} contract deliberately remains independent:
+     * already-supervised host graphs may use other nominal payloads and sizes.
+     *
+     * This does NOT allocate actor-owned heaps, publish a graph or certify
+     * source-to-native guest execution. ActorRef incarnation and ingress
+     * capabilities must be checked separately by the compiler/runtime.
+     */
+    public static List<Connection> validateIntegerGuestV1(List<Stage> stages) {
+        Objects.requireNonNull(stages, "stages");
+        if (stages.size() < 2 || stages.size() > 16)
+            throw new IllegalArgumentException(
+                    "integer actor pipe guest requires between 2 and 16 stages");
+        List<Connection> links = validate(stages);
+        for (Connection link : links) {
+            if (!"int".equals(link.payloadType()))
+                throw new IllegalArgumentException(
+                        "integer actor pipe guest requires int-to-int edges");
+        }
+        // A duplex root still consumes typed external ActorMail<int> and
+        // its final writable/duplex sink may not become an unlinked emitter.
+        if (stages.get(0).role() == Role.DUPLEX
+                && !"int".equals(stages.get(0).inboundType()))
+            throw new IllegalArgumentException("integer actor pipe guest ingress must be int");
+        Stage last = stages.get(stages.size() - 1);
+        if (last.role() == Role.DUPLEX && !"int".equals(last.outboundType()))
+            throw new IllegalArgumentException("integer actor pipe guest sink output must be int");
+        return links;
+    }
+
     /** This enforces pipeline construction admission, not message delivery. */
     public static List<Connection> validate(List<Stage> stages) {
         Objects.requireNonNull(stages, "stages");

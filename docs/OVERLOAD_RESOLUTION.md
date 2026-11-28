@@ -1,5 +1,7 @@
 # Callable overload resolution — current contract and next type-directed phase
 
+> **2026-10-17 amendment:** See [ENUM_VARIANT_OVERLOAD_EXTENSION.md](ENUM_VARIANT_OVERLOAD_EXTENSION.md) for a later proposed **static case-type specialization** phase (`Foo.A <: Foo`). The preexisting case prohibition below describes the older nominal-enum-only target; it is not the latest variant proposal. Runtime and linked Java/LLVM source admission remain unchanged until executable end-to-end parity is proven.
+
 Status: **name/arity dispatch executable on Java; same-arity nominal enum
 selection is a staged extension, not generally executable.** Relevant implementation and test
 coverage: `TypeChecker`, `OwnershipChecker`, `CallableSelector`,

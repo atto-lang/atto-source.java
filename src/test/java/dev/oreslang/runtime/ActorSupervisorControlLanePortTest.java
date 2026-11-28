@@ -10,9 +10,8 @@ import org.junit.jupiter.api.Timeout;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Direct tests for the staged v2 lossless CONTROL reservation ledger.
- * These tests do NOT assert that the live ActorRuntime routes child failure
- * callbacks through this ledger yet.
+ * Direct tests for the live runtime ledger; integration tests separately
+ * exercise the parent dispatcher and root fallback.
  */
 @Timeout(15)
 final class ActorSupervisorControlLanePortTest {
@@ -239,4 +238,20 @@ final class ActorSupervisorControlLanePortTest {
         assertEquals(0, lane.snapshot().reserved());
     }
 
+    @Test
+    void failedReceiptConstructionPreservesPendingNotice() {
+        var lane = new ActorSupervisorControlLane(1);
+        var child = ActorRuntime.ActorId.create();
+        lane.reserve(child, 1);
+        assertTrue(lane.publish(notice(child, 1, 1)));
+        var before = lane.snapshot();
+        assertThrows(IllegalStateException.class, () -> lane.pollMapped(delivery -> {
+            throw new IllegalStateException("receipt construction failed");
+        }));
+        assertEquals(before, lane.snapshot());
+        var delivery = lane.poll().orElseThrow();
+        assertEquals(child, delivery.notice().actor());
+        lane.ack(delivery);
+    }
 }
+

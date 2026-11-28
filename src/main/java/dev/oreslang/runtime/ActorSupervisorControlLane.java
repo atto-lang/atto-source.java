@@ -45,7 +45,6 @@ final class ActorSupervisorControlLane {
         }
     }
 
-    /** Serializes two-lane handovers before acquiring either lane monitor. */
     private static final Object TRANSFER_COORDINATOR = new Object();
 
     private final int capacity;
@@ -78,7 +77,7 @@ final class ActorSupervisorControlLane {
             throw new IllegalStateException("duplicate actor CONTROL reservation");
         }
         if (slots.size() == capacity) {
-            reservationRejected++;
+            reservationRejected = saturatingIncrement(reservationRejected);
             throw new RejectedExecutionException(
                     "actor supervisor CONTROL slots exhausted; drain terminal events");
         }
@@ -89,12 +88,12 @@ final class ActorSupervisorControlLane {
         Objects.requireNonNull(notice, "notice");
         Slot slot = required(notice.actor(), notice.generation());
         if (slot.notice != null) {
-            duplicatePublishRejected++;
+            duplicatePublishRejected = saturatingIncrement(duplicatePublishRejected);
             return false;
         }
         slot.notice = notice;
         enqueue(slot);
-        published++;
+        published = saturatingIncrement(published);
         return true;
     }
 
@@ -121,7 +120,12 @@ final class ActorSupervisorControlLane {
         }
     }
 
-    synchronized Optional<Delivery> poll() {
+    Optional<Delivery> poll() {
+        return pollMapped(delivery -> delivery);
+    }
+
+    // Trusted internal receipt factory only. Construct outward receipt before dequeue.
+    synchronized <T> Optional<T> pollMapped(java.util.function.Function<Delivery, T> receipt) {
         if (inFlight != 0) {
             throw new IllegalStateException("overlapping supervisor CONTROL admissions");
         }
@@ -133,7 +137,7 @@ final class ActorSupervisorControlLane {
         // Allocate both the opaque delivery lease and its Optional wrapper
         // before removing the notice from the queue. An allocation failure
         // must leave the original CONTROL notice reachable and retryable.
-        Optional<Delivery> ready = Optional.of(new Delivery(this, slot, ticket));
+        Optional<T> ready = Optional.of(receipt.apply(new Delivery(this, slot, ticket)));
         nextDeliveryTicket = ticket;
         head = slot.next;
         if (head == null) tail = null;
@@ -153,7 +157,7 @@ final class ActorSupervisorControlLane {
         slot.deliveryTicket = 0L;
         slot.notice = null;
         inFlight = 0;
-        acknowledged++;
+        acknowledged = saturatingIncrement(acknowledged);
     }
 
     synchronized void retry(Delivery delivery) {
@@ -161,7 +165,7 @@ final class ActorSupervisorControlLane {
         slot.inFlight = false;
         slot.deliveryTicket = 0L;
         inFlight = 0;
-        retried++;
+        retried = saturatingIncrement(retried);
         enqueue(slot);
     }
 
@@ -189,71 +193,74 @@ final class ActorSupervisorControlLane {
     /**
      * Transfer every published event to pre-reserved root slots. Unpublished
      * reservations stay local because their child generations are still alive.
-     * Failed target publication leaves the source slot untouched.
+     * Validate the entire batch before any publication or source mutation.
+     * Runtime calls this only from a child lane to its VM root fallback; the
+     * root never transfers back into a child. Both monitors are held through
+     * validation and commit so root poll/ack cannot observe a partial batch.
      */
     void transferPublishedTo(ActorSupervisorControlLane root) {
         Objects.requireNonNull(root, "root");
         if (root == this) {
             throw new IllegalArgumentException("cannot transfer CONTROL to its own lane");
         }
-
-        // Never nest lane monitors without acquiring the shared transfer lock:
-        // two concurrent opposite-direction transfers would otherwise ABBA
-        // deadlock while publishing into each other's destination.
         synchronized (TRANSFER_COORDINATOR) {
             synchronized (this) {
-                synchronized (root) {
-                    // A single missing/stale/occupied destination reservation
-                    // must reject the *entire* handover before its first
-                    // publication. Partial migration could otherwise lose the
-                    // parent's ability to account for already-transferred
-                    // failures after a later root admission rejection.
-                    for (Slot slot : slots.values()) {
-                        if (slot.notice == null) continue;
-                        Slot reserved = root.required(slot.child, slot.generation);
-                        if (reserved.notice != null || reserved.queued || reserved.inFlight) {
-                            throw new IllegalStateException(
-                                    "root CONTROL reservation already contains a notice for "
-                                            + slot.child);
-                        }
-                    }
+                transferLocked(root);
+            }
+        }
+    }
 
-                    // A published in-flight notice is still owned until the
-                    // destination has accepted the exact generation. The
-                    // parent may have at most one such lease.
-                    for (var iterator = slots.values().iterator(); iterator.hasNext();) {
-                        Slot slot = iterator.next();
-                        if (!slot.inFlight) continue;
-                        if (!root.publish(slot.notice)) {
-                            throw new IllegalStateException(
-                                    "duplicate root CONTROL publication for " + slot.child);
-                        }
+    private void transferLocked(ActorSupervisorControlLane root) {
+        if (inFlight == 0 && head == null) return;
+        synchronized (root) {
+            if (inFlight != 0) {
+                for (Slot slot : slots.values()) {
+                    if (slot.inFlight) {
+                        validateTarget(root, slot);
+                        break;
+                    }
+                }
+            }
+            for (Slot slot = head; slot != null; slot = slot.next) {
+                validateTarget(root, slot);
+            }
+
+            if (inFlight != 0) {
+                for (var iterator = slots.values().iterator(); iterator.hasNext();) {
+                    Slot slot = iterator.next();
+                    if (slot.inFlight) {
+                        root.publish(slot.notice);
                         iterator.remove();
                         slot.inFlight = false;
                         slot.deliveryTicket = 0L;
+                        slot.notice = null;
                         inFlight = 0;
-                        transferred++;
+                        transferred = saturatingIncrement(transferred);
                         break;
                     }
-
-                    // Preserve the parent's FIFO terminal notice order when
-                    // moving queued events into the pre-reserved root queue.
-                    while (head != null) {
-                        Slot slot = head;
-                        if (!root.publish(slot.notice)) {
-                            throw new IllegalStateException(
-                                    "duplicate root CONTROL publication for " + slot.child);
-                        }
-                        head = slot.next;
-                        slot.next = null;
-                        slot.queued = false;
-                        pending--;
-                        slots.remove(slot.child);
-                        transferred++;
-                    }
-                    tail = null;
                 }
             }
+
+            while (head != null) {
+                Slot slot = head;
+                root.publish(slot.notice);
+                head = slot.next;
+                slot.next = null;
+                slot.queued = false;
+                pending--;
+                slots.remove(slot.child);
+                slot.notice = null;
+                transferred = saturatingIncrement(transferred);
+            }
+            tail = null;
+        }
+    }
+
+    private static void validateTarget(ActorSupervisorControlLane root, Slot source) {
+        Slot reserved = root.required(source.child, source.generation);
+        if (reserved.notice != null || reserved.queued || reserved.inFlight) {
+            throw new IllegalStateException(
+                    "duplicate root CONTROL publication for " + source.child);
         }
     }
 
@@ -286,6 +293,10 @@ final class ActorSupervisorControlLane {
                     "unknown or stale CONTROL actor generation " + id + "#" + generation);
         }
         return slot;
+    }
+
+    private static long saturatingIncrement(long value) {
+        return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
     }
 
     private void enqueue(Slot slot) {

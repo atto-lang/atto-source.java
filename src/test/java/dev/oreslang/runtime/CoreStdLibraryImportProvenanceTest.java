@@ -54,7 +54,8 @@ final class CoreStdLibraryImportProvenanceTest {
         assertTrue(CoreLibrarySources.isReservedOresLibraryImport("ores.std"));
 
         assertFalse(CoreLibrarySources.isReservedOresLibraryImport("./ores.core/math"));
-        assertFalse(CoreLibrarySources.isReservedOresLibraryImport("alloc/vector"));
+        // atto-spec core-alloc-std-libraries-v1: the alloc layer root is reserved too.
+        assertTrue(CoreLibrarySources.isReservedOresLibraryImport("alloc/vector"));
         assertFalse(CoreLibrarySources.isReservedOresLibraryImport("actor/runtime"));
         assertFalse(CoreLibrarySources.isReservedOresLibraryImport("otp/supervisor"));
 

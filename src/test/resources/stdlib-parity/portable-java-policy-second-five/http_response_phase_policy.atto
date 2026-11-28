@@ -1,0 +1,14 @@
+import module http_response_phase_policy from "std/http_response_phase_policy.atto";
+pub routine main(): void {
+  stdio.println(http_response_phase_policy.may_begin(true, false, false));
+  stdio.println(http_response_phase_policy.may_begin(true, false, true));
+  stdio.println(http_response_phase_policy.may_begin(false, false, false));
+  stdio.println(http_response_phase_policy.may_record_sent(true, false));
+  stdio.println(http_response_phase_policy.may_record_sent(true, true));
+  stdio.println(http_response_phase_policy.may_send_error(false, false, false));
+  stdio.println(http_response_phase_policy.may_send_error(false, true, false));
+  stdio.println(http_response_phase_policy.may_send_error(false, false, true));
+  stdio.println(http_response_phase_policy.may_finish(false));
+  stdio.println(http_response_phase_policy.may_finish(true));
+  return;
+}

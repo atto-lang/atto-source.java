@@ -74,7 +74,8 @@ final class ActorGroupManagedWorkerTest {
             ExecutionException failure = assertThrows(
                     ExecutionException.class,
                     () -> worker.readyRef().get(5, TimeUnit.SECONDS));
-            assertEquals("start failed", failure.getCause().getMessage());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failure.getCause());
+            assertEquals("start failed", worker.failure().orElseThrow().getMessage());
             assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(0, group.workerCount());
         }

@@ -1,0 +1,26 @@
+name: Checked u64 JVM scalar candidate
+on:
+  pull_request:
+    paths:
+      - 'tools/CheckedU64.java'
+      - 'tests/checked-u64-java.test.mjs'
+      - 'tests/checked-u64-division.test.mjs'
+      - 'contracts/atto-xo-checked-u64-debit-v1/**'
+      - '.github/workflows/checked-u64-jvm.yml'
+permissions:
+  contents: read
+jobs:
+  checked-guests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: |
+          java -version
+          javac -version
+          node --version
+          node --test tests/checked-u64-java.test.mjs
+          ATTO_U64_JAVA_DIV_REQUIRED=1 ATTO_U64_JAVA_SOURCE="$PWD/tools/CheckedU64.java" node --test tests/checked-u64-division.test.mjs

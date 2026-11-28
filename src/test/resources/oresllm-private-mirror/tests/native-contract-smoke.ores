@@ -1,0 +1,13 @@
+import class TransformerConfig from '../src/llm_models';
+import fnc valid_transformer_config from '../src/llm_models';
+
+pub routine main(): void {
+  val TransformerConfig tiny = new TransformerConfig(1024, 128, 256, 8, 4);
+  val TransformerConfig bad_heads = new TransformerConfig(1024, 128, 257, 8, 4);
+  val TransformerConfig bad_layers = new TransformerConfig(1024, 128, 256, 8, 0);
+  if !valid_transformer_config(rt borrow tiny); do rt fail("rejects tiny Transformer"); fi
+  if valid_transformer_config(rt borrow bad_heads); do rt fail("accepts uneven heads"); fi
+  if valid_transformer_config(rt borrow bad_layers); do rt fail("accepts empty layer stack"); fi
+  stdio.stdout.println("ORES-MODEL-CONTRACT-OK");
+  return;
+}

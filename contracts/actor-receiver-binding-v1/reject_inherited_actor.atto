@@ -1,0 +1,5 @@
+define module workers as
+  pub define actor Parent as end
+  pub define actor Worker extends Parent as end
+  define pub mtd get_count(Worker w)(): int { return 42; }
+end
