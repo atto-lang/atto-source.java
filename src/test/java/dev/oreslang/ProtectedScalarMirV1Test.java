@@ -156,6 +156,22 @@ final class ProtectedScalarMirV1Test {
         }
     }
 
+    @Test void exactSelfQualificationNormalizesWithoutGrantingForeignAuthority() {
+        var baseline = ProtectedScalarMirV1.lower(COUNTER);
+        for (String intrinsic : java.util.List.of("handle_state(critical-write ", "state_w(", "handle_state_w(")) {
+            String source = COUNTER.replace("handle_state(critical-write ", "self." + intrinsic);
+            assertEquals(baseline, ProtectedScalarMirV1.lower(source));
+        }
+        var virtual = ProtectedScalarMirV1.lower(CART);
+        assertEquals(virtual, ProtectedScalarMirV1.lower(CART.replace("handle_state(", "self.handle_state(")));
+        for (String qualifier : java.util.List.of("other.", "\"self\".", "#self.")) {
+            assertRejected(COUNTER.replace("handle_state(", qualifier + "handle_state("));
+        }
+        for (String field : java.util.List.of("state_w", "state_ro", "_")) {
+            assertRejected(COUNTER.replace("int count:", "int " + field + ":").replace("s.count", "s." + field));
+        }
+    }
+
     private static void assertRejected(String source) {
         assertThrows(IllegalArgumentException.class, () -> ProtectedScalarMirV1.lower(source));
     }

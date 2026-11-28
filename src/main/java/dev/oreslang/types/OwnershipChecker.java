@@ -640,8 +640,8 @@ public final class OwnershipChecker {
     }
 
     /**
-     * Bounded initial NLL slice: a newly created, named, direct whole-owner
-     * loan with no possible subsequent use cannot have escaped or been
+     * Bounded initial NLL slice: a newly created direct whole-owner loan or
+     * shared scalar-field loan with no possible subsequent use cannot have escaped or been
      * transferred by its binder. This is not general last-use inference.
      * Unknown syntax, calls, control flow, closures and cleanup retain the
      * lexical lease. Never release a loan inherited from an outer scope.
@@ -656,7 +656,11 @@ public final class OwnershipChecker {
                 && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
             operand = unary.operand();
         } else return;
-        if (!(operand instanceof Ast.NameExpr name)) return;
+        // Only a single stable field on a named local owner is eligible.
+        // No indexes, chains, computed receivers, or mutable field loans.
+        boolean projected = operand instanceof Ast.MemberExpr;
+        Ast.Expr base = projected ? ((Ast.MemberExpr) operand).receiver() : operand;
+        if (!(base instanceof Ast.NameExpr name)) return;
         VarState loan = scope.locals.get(binding.name());
         VarState owner = scope.lookup(name.name());
         if (loan == null || owner == null || loan == owner
@@ -665,6 +669,14 @@ public final class OwnershipChecker {
                 || loan.aliasSource != null || loan.borrowSource != owner || !loan.borrowLease
                 || loan.moved || loan.rebindable
                 || (loan.kind != ValueKind.IMM_BORROW && loan.kind != ValueKind.MUT_BORROW)) return;
+        if (projected) {
+            if (loan.kind != ValueKind.IMM_BORROW || !loan.type.isBorrow()) return;
+            Ast.TypeRef target = loan.type.borrowedTarget();
+            if (!target.arguments().isEmpty()
+                    || !(target.name().equals("int") || target.name().equals("bool"))
+                    || hasLocalTypeAliasNamed(target.name())
+                    || findClass(target.name()) != null) return;
+        }
         for (int i = next; i < body.size(); i++) {
             if (!loanAbsentFromStatement(body.get(i), binding.name(), fuel, 0)) return;
         }
@@ -694,11 +706,19 @@ public final class OwnershipChecker {
         // Java val is const mut. A proven primitive COPY result has no
         // referent to alias, so its syntactic referent flag is irrelevant.
         // Keep the fixed-slot, provenance and primitive checks below.
-        if (read.declaredType() != null
-                || read.inferredTypeName() != null
-                || !(read.initializer() instanceof Ast.MemberExpr field)
-                || !(field.receiver() instanceof Ast.NameExpr name)
-                || !name.name().equals(prior.name())) return false;
+        if (read.declaredType() != null || read.inferredTypeName() != null) return false;
+        Ast.Expr receiver;
+        boolean snapshot = false;
+        if (read.initializer() instanceof Ast.MemberExpr field) {
+            receiver = field.receiver();
+        } else if (read.initializer() instanceof Ast.RuntimeCallExpr rt
+                && rt.operation().equals("copy") && rt.arguments().size() == 1) {
+            // A checked copy of a primitive loan produces detached data.
+            // Do not infer through arbitrary calls or class copies.
+            receiver = rt.arguments().getFirst();
+            snapshot = true;
+        } else return false;
+        if (!(receiver instanceof Ast.NameExpr name) || !name.name().equals(prior.name())) return false;
         VarState result = scope.locals.get(read.name());
         VarState loan = scope.locals.get(prior.name());
         if (result == null || loan == null || result == loan
@@ -707,6 +727,8 @@ public final class OwnershipChecker {
                 || result.borrowLease || result.aliasSource != null
                 || loan.moved || !loan.borrowLease
                 || !isPrimitiveCopyType(result.type)) return false;
+        if (snapshot && (!loan.type.isBorrow()
+                || !result.type.equals(loan.type.borrowedTarget()))) return false;
         // Narrow to built-in integer and bool value reads; other primitive
         // or nominal kinds may require a distinct representation proof.
         return (result.type.name().equals("int") || result.type.name().equals("bool"))
@@ -1791,21 +1813,27 @@ public final class OwnershipChecker {
                 }
                 case "copy", "copy!!" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
-                    // Main permits an explicit copy from an implicit immutable self receiver
-                    // (certified immutable fields); a nested borrow inside the copied type
-                    // is still never duplicated.
-                    if (containsBorrowType(source.type)) {
-                        throw error(E_LIFETIME, "rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
-                    }
                     CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
                     if (projected != null && projected.noCopy()) {
                         throw error(E_COPY_FORBIDDEN, "rt copy of @NoCopy field '" + projected.origin() + "'");
                     }
-                    if (source.type != null && source.type.isBorrow()
-                            && isPrimitiveCopyType(source.type.borrowedTarget())) {
-                        // Read the loan but return independent immutable data.
-                        // The source binding keeps its existing loan/lifetime.
-                        yield new ValueInfo(source.type.borrowedTarget(), ValueKind.COPY, null);
+                    // A direct, proven primitive snapshot does not duplicate a
+                    // capability. Keep the loan itself alive until the separate
+                    // last-use proof releases it. Never admit a nominal alias
+                    // merely because it has a primitive-looking name.
+                    if (runtime.operation().equals("copy")
+                            && source.type != null && source.type.isBorrow()
+                            && source.borrowSource != null) {
+                        Ast.TypeRef target = source.type.borrowedTarget();
+                        if (isPrimitiveCopyType(target)
+                                && !hasLocalTypeAliasNamed(target.name())
+                                && findClass(target.name()) == null
+                                && !containsBorrowType(target)) {
+                            yield new ValueInfo(target, ValueKind.COPY, null);
+                        }
+                    }
+                    if (containsBorrowType(source.type)) {
+                        throw error(E_LIFETIME, "rt copy cannot duplicate a borrowed capability without explicit lifetime proof");
                     }
                     Ast.ClassDecl sourceClass = source.type == null ? null : findClass(source.type.name());
                     if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "NoCopy")) {
@@ -2089,6 +2117,13 @@ public final class OwnershipChecker {
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
                     }
                     rejectBorrowedProjectionConsumption(member.receiver(), receiverValue, fieldKind, consuming, scope);
+                    // A nominal field read does not invalidate its slot. Until
+                    // partial moves are proven, do not manufacture a second
+                    // owner from a consuming read of a move-only field.
+                    if (consuming && fieldKind == ValueKind.MOVE_ONLY) {
+                        throw error(E_MOVE_UNPROVEN, "cannot consume move-only class field '"
+                                + member.member() + "' without path-aware partial-move tracking; borrow or replace it");
+                    }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
                 if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())
