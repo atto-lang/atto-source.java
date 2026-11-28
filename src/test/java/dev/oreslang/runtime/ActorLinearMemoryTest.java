@@ -21,6 +21,33 @@ final class ActorLinearMemoryTest {
     }
 
     @Test
+    void compactActorAddressesFollowCanonicalOffsetNotGuestPageNumber() {
+        AtomicLong charged = new AtomicLong();
+        int page = ActorLinearMemory.PAGE_BYTES;
+        try (ActorNativeArena arena = arena(3L * page + 8192, charged)) {
+            ActorLinearMemory linear = arena.linearMemory(1, 2);
+            long first = linear.actorOffset(0);
+            int firstWord = ActorCompressed32Reference.encode(first);
+            assertEquals(first, ActorCompressed32Reference.decode(firstWord));
+            // Allocate a separate slab in the same actor address authority
+            // between two linear pages: page-number * PAGE_BYTES is not the
+            // canonical actor address.
+            arena.fields(java.util.List.of("value"), new Object()).put("value", 17L);
+            assertEquals(1, linear.grow(1));
+            long second = linear.actorOffset(page);
+            int secondWord = ActorCompressed32Reference.encode(second);
+            assertTrue(second > first + page,
+                    "slab and linear pages need not be adjacent in actor-relative space");
+            assertEquals(second, ActorCompressed32Reference.decode(secondWord));
+            linear.writeLong(page, 123L);
+            assertEquals(123L, linear.readLong(page));
+            assertNotEquals(firstWord, secondWord);
+        }
+        assertEquals(0, charged.get());
+    }
+
+
+    @Test
     void growthIsAtomicBoundedZeroFilledAndPreservesOffsets() {
         AtomicLong charged = new AtomicLong();
         int page = ActorLinearMemory.PAGE_BYTES;

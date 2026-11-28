@@ -418,6 +418,33 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void identicalCompactWordsInDifferentActorHeapsGrantNoCrossActorAuthority() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena first = arena(8192, charged);
+             ActorNativeArena second = arena(8192, charged)) {
+            Map<String, Object> firstObject = first.fields(List.of("child"), marker);
+            Map<String, Object> secondObject = second.fields(List.of("child"), marker);
+            int firstWord = ActorCompressed32Reference.encode(
+                    ((ActorNativeArena.NativeValue) firstObject).nativeOffset());
+            int secondWord = ActorCompressed32Reference.encode(
+                    ((ActorNativeArena.NativeValue) secondObject).nativeOffset());
+            assertEquals(firstWord, secondWord,
+                    "compressed words are actor-relative, not globally unique capabilities");
+            assertThrows(SecurityException.class,
+                    () -> firstObject.put("child", secondObject));
+            assertThrows(SecurityException.class,
+                    () -> secondObject.put("child", firstObject));
+            firstObject.put("child", firstObject);
+            secondObject.put("child", secondObject);
+            assertSame(firstObject, firstObject.get("child"));
+            assertSame(secondObject, secondObject.get("child"));
+        }
+        assertEquals(0, charged.get());
+    }
+
+
+    @Test
     void referencesStayInTheirArenaAndCyclesDoNotPreventReclamation() {
         AtomicLong charged = new AtomicLong();
         ActorNativeArena first = arena(8192, charged);

@@ -1218,8 +1218,9 @@ public final class ActorNativeArena implements AutoCloseable {
         if (tag == DOUBLE) return Double.longBitsToDouble(bits);
         if (tag == CHARACTER) return (char) bits;
         if (tag == REFERENCE) {
-            NativeValue value = referencesByOffset.get(bits);
-            if (value == null || value.nativeArena() != this || value.nativeOffset() != bits) {
+            NativeValue value = referencesByOffset.get(ActorCompressed32Reference.decodeStored(bits));
+            if (value == null || value.nativeArena() != this
+                    || value.nativeOffset() != ActorCompressed32Reference.decodeStored(bits)) {
                 throw new SecurityException("stale or moved actor resource reference");
             }
             return value;
@@ -1296,9 +1297,11 @@ public final class ActorNativeArena implements AutoCloseable {
             if (occupant != null && occupant != v) {
                 throw new SecurityException("duplicate actor-relative native address");
             }
+            // Encode before publishing either registry entry, so an out-of-range
+            // actor-relative address can never leave a half-published alias.
+            bits = Integer.toUnsignedLong(ActorCompressed32Reference.encode(address));
             referenceOffsets.putIfAbsent(v, address);
             referencesByOffset.putIfAbsent(address, v);
-            bits = address;
         } else {
             throw new IllegalArgumentException("actor field requires native value lowering for "
                     + value.getClass().getName() + "; managed guest payload fallback is disabled");
@@ -1331,13 +1334,14 @@ public final class ActorNativeArena implements AutoCloseable {
                 tag == REFERENCE && (oldTag != REFERENCE || oldBits != bits);
         boolean newCapabilityReference =
                 tag == CAPABILITY && (oldTag != CAPABILITY || oldBits != bits);
-        if (newNativeReference) referenceRefCounts.merge(bits, 1, Math::addExact);
+        if (newNativeReference) referenceRefCounts.merge(
+                ActorCompressed32Reference.decodeStored(bits), 1, Math::addExact);
         if (newCapabilityReference) capabilityRefCounts.merge(bits, 1, Math::addExact);
         write(slot, 8, bits);
         write(slot, 16, length);
         write(slot, 0, tag);
         if (oldTag == REFERENCE && (tag != REFERENCE || oldBits != bits)) {
-            releaseNativeReference(oldBits);
+            releaseNativeReference(ActorCompressed32Reference.decodeStored(oldBits));
         }
         if (oldTag == CAPABILITY && (tag != CAPABILITY || oldBits != bits)) {
             releaseCapabilityReference(oldBits);
