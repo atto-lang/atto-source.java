@@ -8085,7 +8085,7 @@ public final class OresEvalRootNode extends RootNode {
                             "Option.unwrap_all runtime value violates checked nesting depth");
                 }
                 if (!layer.present()) {
-                    throw new OresPanic("called Option::unwrap_all() on a None value");
+                    throw new ActorFailure.Panic("called Option::unwrap_all() on a None value");
                 }
                 current = layer.value();
             }
