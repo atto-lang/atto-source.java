@@ -2221,6 +2221,10 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.TypeTestExpr test) {
             requireRuntimeReifiableType(test.targetType(), "is");
+            requireKnownRuntimeTarget(
+                    test.targetType(),
+                    new LinkedHashSet<>(),
+                    "is");
             Type source = deref(typeOf(test.value(), env, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
             if (!typesMayOverlap(source, target)) {
@@ -2234,7 +2238,12 @@ public final class TypeChecker {
             return Primitive.BOOL;
         }
         if (expr instanceof Ast.CastExpr cast) {
-            requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
+            String castOperator = cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as";
+            requireRuntimeReifiableType(cast.targetType(), castOperator);
+            requireKnownRuntimeTarget(
+                    cast.targetType(),
+                    new LinkedHashSet<>(),
+                    castOperator);
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
             if (!typesMayOverlap(source, target)) {
@@ -2282,14 +2291,29 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            Type left = typeOf(binary.left(), env, generics, self);
-            if (binary.operator().equals("&&") || binary.operator().equals("||")) {
+            Type left = binary.operator().equals("&&")
+                    ? typeOfCondition(binary.left(), env, generics, self)
+                    : typeOf(binary.left(), env, generics, self);
+            if (binary.operator().equals("&&")) {
+                requireAssignable(left, Primitive.BOOL, "logical operand");
+                Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
+                Env rightEnv = new Env(env);
+                defineConditionBindings(binary.left(), rightEnv, env, generics, self);
+                Type right = typeOfCondition(binary.right(), rightEnv, generics, self);
+                requireAssignable(right, Primitive.BOOL, "logical operand");
+                // RHS is short-circuited, so it cannot establish definite
+                // initialization for subsequent code. Refinement bindings are
+                // lexical to the successful left edge / RHS evaluation.
+                env.restoreInitialization(afterLeft);
+                return Primitive.BOOL;
+            }
+            if (binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
                 Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
                 Type right = typeOf(binary.right(), env, generics, self);
                 requireAssignable(right, Primitive.BOOL, "logical operand");
-                // RHS is short-circuited, so it cannot establish definite
-                // initialization for subsequent code.
+                // No negative refinement lattice exists yet, so || evaluates
+                // its RHS without positive bindings from the left operand.
                 env.restoreInitialization(afterLeft);
                 return Primitive.BOOL;
             }
@@ -4241,7 +4265,46 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * A runtime shape test proves fields, not write permission. Opaque input
+     * may originally be a readonly struct, including inside a union.
+     */
+    private boolean hasOpaqueCapabilityProvenance(Type type) {
+        if (type == Types.Any.INSTANCE || type == Types.UnknownValue.INSTANCE
+                || type == Unknown.INSTANCE || type instanceof Generic) return true;
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(this::hasOpaqueCapabilityProvenance);
+        }
+        return false;
+    }
+
+    /** Recover data shape without manufacturing mutable record capabilities. */
+    private Type readonlyRecoveredShape(Type type) {
+        if (type instanceof Record record) {
+            Map<String, Type> fields = new LinkedHashMap<>();
+            for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                fields.put(field.getKey(), readonlyRecoveredShape(field.getValue()));
+            }
+            return new Record(fields, true);
+        }
+        if (type instanceof ListType list) return new ListType(readonlyRecoveredShape(list.element()));
+        if (type instanceof Tuple tuple) {
+            return new Tuple(tuple.elements().stream().map(this::readonlyRecoveredShape).toList(), tuple.kind());
+        }
+        if (type instanceof Union union) {
+            return Types.unionOf(union.options().stream().map(this::readonlyRecoveredShape).toList());
+        }
+        if (type instanceof Named named) {
+            return new Named(named.name(),
+                    named.arguments().stream().map(this::readonlyRecoveredShape).toList());
+        }
+        return type;
+    }
+
     private Type overlayReadonlyCapabilities(Type actual, Type expected) {
+        if (hasOpaqueCapabilityProvenance(deref(actual))) {
+            return readonlyRecoveredShape(expected);
+        }
         if (actual instanceof Borrow actualBorrow && expected instanceof Borrow expectedBorrow) {
             return new Borrow(
                     overlayReadonlyCapabilities(actualBorrow.target(), expectedBorrow.target()),
@@ -5307,6 +5370,9 @@ public final class TypeChecker {
             Type resolvedTarget = deref(resolve(structural.target(), generics, self));
             Record targetShape = structuralPatternShape(
                     structural.target(), resolvedTarget, generics);
+            requireRuntimeStructuralShapeReifiable(
+                    targetShape,
+                    "structural pattern " + structural.target());
             if (!structuralPatternMayMatch(subject, targetShape)) {
                 throw new IllegalArgumentException(
                         "unreachable structural pattern: " + subject
@@ -5320,7 +5386,11 @@ public final class TypeChecker {
                 // capability, including readonly members inside an explicit
                 // struct. A named structural contract needs the same shape
                 // overlay when the subject is a record.
-                if (subject instanceof Record) bindingType = targetShape;
+                if (subject instanceof Record || hasOpaqueCapabilityProvenance(subject)) {
+                    // A named structural contract on erased input is a checked
+                    // data view, not an unrestricted nominal write capability.
+                    bindingType = targetShape;
+                }
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
             }
@@ -5436,8 +5506,86 @@ public final class TypeChecker {
         return record;
     }
 
+    private void requireRuntimeStructuralShapeReifiable(Type type, String where) {
+        type = deref(type);
+        if (type instanceof Function) {
+            // Named structural contracts encode methods in their Record shape,
+            // but the runtime validates those methods by exact source signature
+            // in structuralInterfaceMatches rather than oresTypeMatches.
+            return;
+        }
+        if (type == Unknown.INSTANCE
+                || type == Types.Any.INSTANCE
+                || type == Types.UnknownValue.INSTANCE
+                || type instanceof Generic
+                || type instanceof SelfType) {
+            throw new IllegalArgumentException(
+                    where + " contains a data-member type without a concrete runtime predicate: " + type);
+        }
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+                throw new IllegalArgumentException(
+                        where + " contains non-value runtime field type " + primitive);
+            }
+            return;
+        }
+        if (type instanceof StringLiteral) {
+            throw new IllegalArgumentException(
+                    where + " contains a literal-only field type without a dedicated runtime predicate");
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                requireRuntimeStructuralShapeReifiable(option, where);
+            }
+            return;
+        }
+        if (type instanceof Types.Not not) {
+            requireRuntimeStructuralShapeReifiable(not.excluded(), where);
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                requireRuntimeStructuralShapeReifiable(element, where);
+            }
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) {
+                requireRuntimeStructuralShapeReifiable(member, where);
+            }
+            return;
+        }
+        if (type instanceof ListType) {
+            throw new IllegalArgumentException(
+                    where + " contains List/Array element type arguments that are erased at runtime; "
+                            + "use a nominal wrapper or a constructor/explicit validation path");
+        }
+        if (type instanceof Named named) {
+            if (!named.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        where + " contains parameterized runtime type '" + named
+                                + "' whose generic arguments are not reified");
+            }
+            if (named.name().equals("$builtin$Symbol")
+                    || findClass(named.name()) != null
+                    || findInterface(named.name()) != null) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    where + " contains nominal type '" + named.name()
+                            + "' without a known runtime identity");
+        }
+        throw new IllegalArgumentException(
+                where + " contains unsupported runtime field predicate " + type);
+    }
+
     private boolean structuralPatternMayMatch(Type subject, Record targetShape) {
-        if (subject == Unknown.INSTANCE || subject instanceof Generic) return true;
+        // Opaque tops disclose no fields statically, but a checked structural
+        // pattern may validate them at runtime and recover a readonly view.
+        // Do not confuse this with implicit Any/unknown member access.
+        if (subject == Unknown.INSTANCE || subject == Types.Any.INSTANCE
+                || subject == Types.UnknownValue.INSTANCE
+                || subject instanceof Generic) return true;
         if (subject instanceof Union union) {
             return union.options().stream()
                     .anyMatch(option -> structuralPatternMayMatch(option, targetShape));
@@ -5830,11 +5978,14 @@ public final class TypeChecker {
             }
             return true;
         }
-        // Runtime List/Array and Option/Result tests currently erase element
-        // parameters. Reified generic payload predicates are not assumed.
-        if (source instanceof ListType && target instanceof ListType) return true;
+        // Runtime List/Array and generic nominal carriers erase type arguments.
+        // They can overlap, but erased payload arguments can never prove full
+        // runtime coverage/subsumption without an attached descriptor.
+        if (source instanceof ListType && target instanceof ListType) return false;
         if (source instanceof Named left && target instanceof Named right) {
-            if (left.name().equals(right.name())) return true;
+            if (left.name().equals(right.name())) {
+                return left.arguments().isEmpty() && right.arguments().isEmpty();
+            }
             // A proven nominal subtype is also a runtime subtype; unrelated
             // nominal values cannot be certified from structural assignability.
             if (findClass(left.name()) != null && (findClass(right.name()) != null
@@ -5858,6 +6009,10 @@ public final class TypeChecker {
                 || a instanceof Generic || b instanceof Generic) return true;
         if (a instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(option, b));
         if (b instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(a, option));
+        // A value can match !T unless every possible runtime representation
+        // is covered by T. Never infer disjointness from assignment widening.
+        if (a instanceof Not excluded) return !runtimeValueTypeCovered(b, excluded.excluded(), 0);
+        if (b instanceof Not excluded) return !runtimeValueTypeCovered(a, excluded.excluded(), 0);
 
         if (a instanceof StringLiteral && (b instanceof StringLiteral || b == Primitive.STRING)) return true;
         if (b instanceof StringLiteral && (a instanceof StringLiteral || a == Primitive.STRING)) return true;
@@ -5901,13 +6056,20 @@ public final class TypeChecker {
      * aliases cannot silently become a predicate that always returns false.
      */
     private void requireKnownRuntimePatternTarget(Ast.TypeRef ref, Set<String> aliases) {
+        requireKnownRuntimeTarget(ref, aliases, "type pattern");
+    }
+
+    private void requireKnownRuntimeTarget(
+            Ast.TypeRef ref,
+            Set<String> aliases,
+            String operator) {
         if (ref.isComplement()) {
-            requireKnownRuntimePatternTarget(ref.complementedType(), aliases);
+            requireKnownRuntimeTarget(ref.complementedType(), aliases, operator);
             return;
         }
         if (ref.isUnion()) {
             for (Ast.TypeRef member : ref.arguments()) {
-                requireKnownRuntimePatternTarget(member, aliases);
+                requireKnownRuntimeTarget(member, aliases, operator);
             }
             return;
         }
@@ -5924,18 +6086,19 @@ public final class TypeChecker {
         Ast.TypeAliasDecl alias = findTypeAlias(name);
         if (alias != null && alias.genericParameters().isEmpty()) {
             if (!aliases.add(name)) {
-                throw new IllegalArgumentException("cyclic type alias in runtime pattern '" + name + "'");
+                throw new IllegalArgumentException(
+                        "cyclic type alias in runtime " + operator + " target '" + name + "'");
             }
             try {
-                requireRuntimeReifiableType(alias.target(), "type pattern alias");
-                requireKnownRuntimePatternTarget(alias.target(), aliases);
+                requireRuntimeReifiableType(alias.target(), operator + " alias");
+                requireKnownRuntimeTarget(alias.target(), aliases, operator);
             } finally {
                 aliases.remove(name);
             }
             return;
         }
         throw new IllegalArgumentException(
-                "type pattern '" + name + "' has no known runtime identity; "
+                operator + " target '" + name + "' has no known runtime identity; "
                         + "declare/import a reifiable nominal type or use a supported scalar");
     }
 
@@ -7242,6 +7405,14 @@ public final class TypeChecker {
             Ast.MethodDecl method) {
         if (pattern instanceof Ast.TypePattern typed) {
             rejectStaticClassGenericReference(typed.type(), classGenerics, klass, method);
+        } else if (pattern instanceof Ast.StructuralPattern structural) {
+            rejectStaticClassGenericReference(
+                    structural.target(), classGenerics, klass, method);
+        } else if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern nested : tuple.elements()) {
+                rejectStaticClassGenericReferences(
+                        nested, classGenerics, klass, method);
+            }
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
             for (Ast.Pattern nested : constructor.arguments()) {
                 rejectStaticClassGenericReferences(nested, classGenerics, klass, method);

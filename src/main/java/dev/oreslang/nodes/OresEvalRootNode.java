@@ -2935,123 +2935,24 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * Statement-flow adapter for the canonical suspendable condition
+         * evaluator below. Keep one implementation of && short-circuiting,
+         * refinement bindings, duplicate detection and failure propagation.
+         */
         private void evalSuspendableCondition(
                 SourceTask task,
                 Ast.Expr condition,
                 Env env,
                 java.util.function.BiConsumer<SourceTask, ConditionResult> continuation) {
-            if (condition instanceof Ast.BinaryExpr binary
-                    && binary.operator().equals("&&")) {
-                evalSuspendableCondition(
-                        task,
-                        binary.left(),
-                        env,
-                        (t, left) -> {
-                            if (!left.matched()) {
-                                continuation.accept(t, left);
-                                return;
-                            }
-                            evalSuspendableCondition(
-                                    t,
-                                    binary.right(),
-                                    env,
-                                    (t2, right) ->
-                                            continuation.accept(
-                                                    t2,
-                                                    mergeConditionBindings(
-                                                            left,
-                                                            right)));
-                        });
-                return;
-            }
-
-            if (condition instanceof Ast.TypeTestExpr test) {
-                evalSuspendableExpr(
-                        task,
-                        test.value(),
-                        env,
-                        (t, value, failure) -> {
-                            if (failure != null) {
-                                throw sourceFailure(failure);
-                            }
-                            boolean matched =
-                                    oresTypeMatches(
-                                            value,
-                                            test.targetType());
-                            if (matched && test.binding() != null) {
-                                continuation.accept(
-                                        t,
-                                        new ConditionResult(
-                                                true,
-                                                Map.of(
-                                                        test.binding(),
-                                                        value)));
-                            } else {
-                                continuation.accept(
-                                        t,
-                                        matched
-                                                ? ConditionResult.match()
-                                                : ConditionResult.noMatch());
-                            }
-                        });
-                return;
-            }
-
-            if (condition instanceof Ast.PatternTestExpr test) {
-                evalSuspendableExpr(
-                        task,
-                        test.value(),
-                        env,
-                        (t, value, failure) -> {
-                            if (failure != null) {
-                                throw sourceFailure(failure);
-                            }
-                            LinkedHashMap<String, Object> bindings =
-                                    new LinkedHashMap<>();
-                            boolean matched =
-                                    patternMatches(
-                                            test.pattern(),
-                                            value,
-                                            bindings);
-                            continuation.accept(
-                                    t,
-                                    matched
-                                            ? new ConditionResult(
-                                                    true,
-                                                    Map.copyOf(bindings))
-                                            : ConditionResult.noMatch());
-                        });
-                return;
-            }
-
-            evalSuspendableExpr(
+            evalSuspendableCondition(
                     task,
                     condition,
                     env,
                     (t, value, failure) -> {
-                        if (failure != null) {
-                            throw sourceFailure(failure);
-                        }
-                        continuation.accept(
-                                t,
-                                truth(value)
-                                        ? ConditionResult.match()
-                                        : ConditionResult.noMatch());
+                        if (failure != null) throw sourceFailure(failure);
+                        continuation.accept(t, (ConditionResult) value);
                     });
-        }
-
-        private ConditionResult mergeConditionBindings(
-                ConditionResult left,
-                ConditionResult right) {
-            if (!left.matched() || !right.matched()) {
-                return ConditionResult.noMatch();
-            }
-            LinkedHashMap<String, Object> bindings =
-                    new LinkedHashMap<>(left.bindings());
-            bindings.putAll(right.bindings());
-            return new ConditionResult(
-                    true,
-                    Map.copyOf(bindings));
         }
 
         private void evalSuspendableExpr(
@@ -3233,22 +3134,40 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (expr instanceof Ast.BinaryExpr binary) {
                     if (binary.operator().equals("&&")) {
-                        evalSuspendableExpr(
+                        // A plain boolean expression needs left-edge bindings
+                        // only while evaluating its RHS. It must not export the
+                        // merged proof environment beyond the expression.
+                        evalSuspendableCondition(
                                 task,
                                 binary.left(),
                                 env,
-                                (t, left, failure) -> {
-                                    if (failure != null) {
-                                        continuation.accept(t, null, failure);
-                                    } else if (!truth(left)) {
-                                        continuation.accept(t, false, null);
-                                    } else {
-                                        evalSuspendableExpr(
-                                                t,
-                                                binary.right(),
-                                                env,
-                                                continuation);
+                                (t, leftValue, leftFailure) -> {
+                                    if (leftFailure != null) {
+                                        continuation.accept(t, null, leftFailure);
+                                        return;
                                     }
+                                    ConditionResult left = (ConditionResult) leftValue;
+                                    if (!left.matched()) {
+                                        continuation.accept(t, false, null);
+                                        return;
+                                    }
+                                    Env rightEnv = new Env(env);
+                                    left.bindings().forEach((name, bound) ->
+                                            rightEnv.define(name, bound, Ast.BindingKind.VAL));
+                                    evalSuspendableCondition(
+                                            t,
+                                            binary.right(),
+                                            rightEnv,
+                                            (t2, rightValue, rightFailure) -> {
+                                                if (rightFailure != null) {
+                                                    continuation.accept(t2, null, rightFailure);
+                                                    return;
+                                                }
+                                                continuation.accept(
+                                                        t2,
+                                                        ((ConditionResult) rightValue).matched(),
+                                                        null);
+                                            });
                                 });
                         return;
                     }
@@ -5240,7 +5159,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "the static pattern proof and runtime type metadata disagree");
                     }
                     selected = arm;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = frozenConditionBindings(bindings);
                 }
 
                 if (selected == null && fallback != null) {
@@ -5249,7 +5168,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException("match fallback did not accept the unmatched subject");
                     }
                     selected = fallback;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = frozenConditionBindings(bindings);
                 }
 
                 if (selected == null) {
@@ -5998,6 +5917,7 @@ public final class OresEvalRootNode extends RootNode {
                     || !namespace.name().equals("Integer")
                     || !member.member().equals("is_int")) return false;
             return env.lookup("Integer") == Env.MISSING
+                    && !hasLexicalModuleBinding(env, "Integer")
                     && !modules.containsKey("Integer")
                     && findClass("Integer") == null
                     && !hasFunctionFamily("Integer")
@@ -6006,6 +5926,20 @@ public final class OresEvalRootNode extends RootNode {
                     && !hostClasses.containsKey("Integer")
                     && !hostFunctions.containsKey("Integer")
                     && !hostSymbols.containsKey("Integer");
+        }
+
+        private boolean hasLexicalModuleBinding(Env env, String name) {
+            String moduleName = env.lexicalModule();
+            if (moduleName == null) return false;
+            Ast.ModuleDecl module = modules.get(moduleName);
+            if (module == null) return false;
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FieldDecl field
+                        && field.name().equals(name)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private boolean isDoubleIntrinsicCall(Ast.CallExpr call, Env env) {
@@ -6370,8 +6304,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.BinaryExpr binary) {
                 if (binary.operator().equals("&&")) {
-                    Object left = eval(binary.left(), env);
-                    return truth(left) && truth(eval(binary.right(), env));
+                    // Bindings introduced by the left predicate are visible
+                    // only while evaluating the RHS of this boolean expression.
+                    ConditionResult left = evalCondition(binary.left(), env);
+                    if (!left.matched()) return false;
+                    Env rightEnv = new Env(env);
+                    left.bindings().forEach((name, bound) ->
+                            rightEnv.define(name, bound, Ast.BindingKind.VAL));
+                    return evalCondition(binary.right(), rightEnv).matched();
                 }
                 if (binary.operator().equals("||")) {
                     Object left = eval(binary.left(), env);
@@ -8212,9 +8152,7 @@ public final class OresEvalRootNode extends RootNode {
                                         LinkedHashMap<String, Object> merged =
                                                 new LinkedHashMap<>(left.bindings());
                                         for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
-                                            Object previous = merged.putIfAbsent(
-                                                    entry.getKey(), entry.getValue());
-                                            if (previous != null && previous != entry.getValue()) {
+                                            if (merged.containsKey(entry.getKey())) {
                                                 continuation.accept(
                                                         t2,
                                                         null,
@@ -8224,10 +8162,11 @@ public final class OresEvalRootNode extends RootNode {
                                                                         + "' more than once"));
                                                 return;
                                             }
+                                            merged.put(entry.getKey(), entry.getValue());
                                         }
                                         continuation.accept(
                                                 t2,
-                                                new ConditionResult(true, Map.copyOf(merged)),
+                                                new ConditionResult(true, frozenConditionBindings(merged)),
                                                 null);
                                     });
                         });
@@ -8253,7 +8192,7 @@ public final class OresEvalRootNode extends RootNode {
                                             ? ConditionResult.match()
                                             : new ConditionResult(
                                                     true,
-                                                    Map.of(test.binding(), value)),
+                                                    java.util.Collections.singletonMap(test.binding(), value)),
                                     null);
                         });
                 return;
@@ -8272,7 +8211,7 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(
                                     t,
                                     patternMatches(test.pattern(), value, bindings)
-                                            ? new ConditionResult(true, Map.copyOf(bindings))
+                                            ? new ConditionResult(true, frozenConditionBindings(bindings))
                                             : ConditionResult.noMatch(),
                                     null);
                         });
@@ -8293,6 +8232,15 @@ public final class OresEvalRootNode extends RootNode {
                                     failure));
         }
 
+        /**
+         * Runtime patterns may legitimately bind null. Map.of/Map.copyOf reject
+         * null entries and must not turn a successful type/pattern test into an
+         * accidental host NullPointerException.
+         */
+        private Map<String, Object> frozenConditionBindings(Map<String, Object> values) {
+            return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(values));
+        }
+
         private ConditionResult evalCondition(Ast.Expr condition, Env env) {
             if (condition instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
                 ConditionResult left = evalCondition(binary.left(), env);
@@ -8304,24 +8252,25 @@ public final class OresEvalRootNode extends RootNode {
                 if (!right.matched()) return ConditionResult.noMatch();
                 LinkedHashMap<String, Object> merged = new LinkedHashMap<>(left.bindings());
                 for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
-                    Object previous = merged.putIfAbsent(entry.getKey(), entry.getValue());
-                    if (previous != null && previous != entry.getValue()) {
-                        throw new IllegalStateException("condition pattern binds '" + entry.getKey() + "' more than once");
+                    if (merged.containsKey(entry.getKey())) {
+                        throw new IllegalStateException(
+                                "condition pattern binds '" + entry.getKey() + "' more than once");
                     }
+                    merged.put(entry.getKey(), entry.getValue());
                 }
-                return new ConditionResult(true, Map.copyOf(merged));
+                return new ConditionResult(true, frozenConditionBindings(merged));
             }
             if (condition instanceof Ast.TypeTestExpr test) {
                 Object value = eval(test.value(), env);
                 if (!oresTypeMatches(value, test.targetType())) return ConditionResult.noMatch();
                 if (test.binding() == null) return ConditionResult.match();
-                return new ConditionResult(true, Map.of(test.binding(), value));
+                return new ConditionResult(true, java.util.Collections.singletonMap(test.binding(), value));
             }
             if (condition instanceof Ast.PatternTestExpr test) {
                 Object value = eval(test.value(), env);
                 LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
                 return patternMatches(test.pattern(), value, bindings)
-                        ? new ConditionResult(true, Map.copyOf(bindings))
+                        ? new ConditionResult(true, frozenConditionBindings(bindings))
                         : ConditionResult.noMatch();
             }
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
@@ -8330,9 +8279,10 @@ public final class OresEvalRootNode extends RootNode {
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
-                if (bindings.putIfAbsent(binding.name(), value) != null) {
+                if (bindings.containsKey(binding.name())) {
                     throw new IllegalStateException("pattern binds '" + binding.name() + "' more than once");
                 }
+                bindings.put(binding.name(), value);
                 return true;
             }
             if (pattern instanceof Ast.LiteralPattern literal) {
@@ -8340,17 +8290,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.TypePattern typed) {
                 if (!oresTypeMatches(value, typed.type())) return false;
-                if (typed.binding() != null && bindings.putIfAbsent(typed.binding(), value) != null) {
-                    throw new IllegalStateException("pattern binds '" + typed.binding() + "' more than once");
+                if (typed.binding() != null) {
+                    if (bindings.containsKey(typed.binding())) {
+                        throw new IllegalStateException("pattern binds '" + typed.binding() + "' more than once");
+                    }
+                    bindings.put(typed.binding(), value);
                 }
                 return true;
             }
             if (pattern instanceof Ast.StructuralPattern structural) {
                 if (!structuralPatternMatches(value, structural.target())) return false;
-                if (structural.binding() != null
-                        && bindings.putIfAbsent(structural.binding(), value) != null) {
-                    throw new IllegalStateException(
-                            "pattern binds '" + structural.binding() + "' more than once");
+                if (structural.binding() != null) {
+                    if (bindings.containsKey(structural.binding())) {
+                        throw new IllegalStateException(
+                                "pattern binds '" + structural.binding() + "' more than once");
+                    }
+                    bindings.put(structural.binding(), value);
                 }
                 return true;
             }
@@ -8556,6 +8511,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (target.isRecordType()) {
                 return structuralRecordMatches(value, target);
+            }
+            // Generic arguments on nominal/container carriers are not reified
+            // by the current JVM runtime representation. Admission should have
+            // rejected these targets already; fail closed here as a second
+            // independent safety boundary.
+            if (target.inferArguments() || !target.arguments().isEmpty()) {
+                return false;
             }
             String name = target.name();
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")

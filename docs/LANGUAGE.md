@@ -708,6 +708,22 @@ Neither grants unchecked member access, invocation, arithmetic, transport, or
 ownership erasure. Legacy source spellings `Any` and `Unknown` remain
 compatibility aliases while code migrates to the lowercase keywords.
 
+A `matches structural` condition may *validate* the visible data shape of
+an `any` or `unknown` value. The successful edge receives a **readonly**
+structural view, including readonly nested records; it never recovers writable
+authority erased by the opaque boundary:
+
+```ores
+pub fnc read_amount(any value): int {
+  return value matches structural { amount: int } checked
+      ? checked.amount : 0;
+}
+```
+
+An unchecked `value.amount` is still invalid. Structural records are not
+runtime-reifiable `as`/`is type` targets; use `matches structural` for a
+checked shape predicate. A failed structural check yields no bindings.
+
 For runtime integer admission, use the trusted built-in predicate:
 
 ```ores
@@ -718,8 +734,16 @@ pub fnc normalize(any value): int {
 
 The compiler recognizes the built-in `Integer.is_int` by provenance, not by
 ordinary method-name matching. A user module, function, class, import, or local
-binding named `Integer` cannot forge the narrowing fact. Mutable bindings are
-not narrowed because reassignment can invalidate the proof.
+binding named `Integer` cannot forge the narrowing fact. Mutable/rebindable
+bindings are not narrowed because reassignment can invalidate the proof.
+
+Positive condition refinements are edge-scoped. In `guard && rhs`, bindings
+and narrowed stable locals proved by `guard` are available while checking and
+evaluating `rhs`; the proof does not escape the boolean expression by itself.
+The true branch of `condition ? yes : no` and of `if` receives the same
+successful-edge refinements. The false edge, `guard || rhs`, and `!guard`
+receive no positive refinement until a separate negative-refinement lattice is
+defined.
 
 `Integer.is_int` tests the compiler's current reifiable integer scalar domain
 (`Primitive.INT`), not the exact source spelling that produced the value.
@@ -737,6 +761,19 @@ The runtime predicate implementation uses ordinary Oreslang runtime value tags
 (or their backend-equivalent representation) and does not require reflective
 class loading or a JIT, so the contract is compatible with closed-world AOT
 lowering.
+
+Runtime tests and checked casts are fail-closed with respect to erased generic
+arguments. A target such as `List<int>`, `Option<int>`, or an alias that
+expands to such a parameterized carrier is not a valid `is type` / `as`
+target until the backend carries a reified generic descriptor. Merely observing
+the runtime carrier (`List`, `Option`, etc.) is not proof of its element or
+payload type. Unknown nominal names likewise cannot become runtime predicates.
+
+The same rule applies inside structural runtime patterns: a data member whose
+type relies on erased generic arguments cannot establish a structural view.
+Use a nominal reifiable wrapper, a constructor pattern such as `Some(...)` /
+`Ok(...)`, or explicit element/payload validation. Runtime evaluation also
+rejects parameterized erased targets independently, as defense in depth.
 
 ## Option, Result, and null
 

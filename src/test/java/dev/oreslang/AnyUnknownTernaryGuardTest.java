@@ -27,6 +27,39 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void opaqueKeywordsParseInEveryOrdinaryTypePositionButNotAsLexicalNames() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub val any moduleValue = 1;
+
+                define class Holder as
+                  pub val unknown payload = 1;
+                end
+
+                fnc transform(any input): unknown {
+                  val List<any> values = [input];
+                  val unknown hidden = input;
+                  for (any cursor = input; false; cursor = input) {
+                    return hidden;
+                  }
+                  return hidden;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): void {
+                  val int any = 1;
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(): void {
+                  val int unknown = 1;
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void unguardedAnyCannotFlowToConcreteType() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
@@ -168,6 +201,93 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void provenCopyRefinementMayBeCopiedWithoutConsumingOpaqueRoot() throws Exception {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc twice(int left, int right): int {
+                  return left + right;
+                }
+
+                pub fnc use(any value): int {
+                  if Integer.is_int(value) then
+                    val int first = value;
+                    val int second = value;
+                    return twice(first, second);
+                  fi
+                  return 0;
+                }
+                """)));
+
+        String output = run("""
+                fnc twice(int left, int right): int {
+                  return left + right;
+                }
+
+                fnc use(any value): int {
+                  if Integer.is_int(value) then
+                    val int first = value;
+                    val int second = value;
+                    return twice(first, second);
+                  fi
+                  return 0;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(use(4));
+                  stdio.stdout.write(use("x"));
+                  return;
+                }
+                """);
+
+        assertEquals("80", output);
+    }
+
+    @Test
+    void moveOnlyRefinementThroughOpaqueTopRemainsRooted() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                        end
+
+                        fnc consume(Box box): int {
+                          return 1;
+                        }
+
+                        pub fnc bad(any value): any {
+                          val int selected =
+                              value is type Box box ? consume(box) : 0;
+                          return value;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("moved value"), failure::getMessage);
+    }
+
+    @Test
+    void opaqueTopValuesRemainMoveOnlyAfterTypeErasure() {
+        IllegalArgumentException anyMove = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): void {
+                          val any first = value;
+                          val any second = value;
+                          return;
+                        }
+                        """)));
+        assertTrue(anyMove.getMessage().contains("moved value"), anyMove::getMessage);
+
+        IllegalArgumentException unknownMove = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(unknown value): void {
+                          val unknown first = value;
+                          val unknown second = value;
+                          return;
+                        }
+                        """)));
+        assertTrue(unknownMove.getMessage().contains("moved value"), unknownMove::getMessage);
+    }
+
+    @Test
     void opaqueValuesHaveNoUncheckedMembers() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
@@ -193,6 +313,40 @@ final class AnyUnknownTernaryGuardTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         pub fnc bad(Channel<List<unknown>> values): void {
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void opaqueHidingIsOneWayAndCannotEraseLoansOrCapabilities() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc hideInt(int value): any {
+                  return value;
+                }
+
+                pub fnc hideVerified(any value): unknown {
+                  return value;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(&int value): any {
+                          return value;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(Channel<int> channel): any {
+                          return channel;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub async fnc bad(List<any> values): void {
                           return;
                         }
                         """)));
@@ -303,6 +457,19 @@ final class AnyUnknownTernaryGuardTest {
                           return Integer.is_int(candidate) ? candidate : 0;
                         }
                         """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any mut candidate): int {
+                          return Integer.is_int(candidate) ? candidate : 0;
+                        }
+                        """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc good(any candidate): int {
+                  return Integer.is_int(candidate) ? candidate : 0;
+                }
+                """)));
     }
 
     @Test
@@ -369,6 +536,478 @@ final class AnyUnknownTernaryGuardTest {
 
                         pub fnc bad(any v): int {
                           return Integer.is_int(v) ? v : 0;
+                        }
+                        """)));
+    }
+
+    @Test
+    void generalAndExpressionRefinesOnlyItsRhs() throws Exception {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc guarded(any v): bool {
+                  return Integer.is_int(v) && v > 0;
+                }
+
+                pub fnc explicit(any v): bool {
+                  return v is type int narrowed && narrowed > 0;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any v): int {
+                          val bool ok = Integer.is_int(v) && v > 0;
+                          return v;
+                        }
+                        """)));
+
+        String output = run("""
+                fnc explicit(any v): bool {
+                  return v is type int narrowed && narrowed > 0;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(explicit(4));
+                  stdio.stdout.write(explicit("x"));
+                  return;
+                }
+                """);
+
+        assertEquals("truefalse", output);
+    }
+
+    @Test
+    void suspendableIfAndTernaryPreserveTrueEdgeBindings() throws Exception {
+        String output = run("""
+                async fnc seed(): int {
+                  return 4;
+                }
+
+                async fnc plusOne(int value): int {
+                  return value + 1;
+                }
+
+                async fnc positive(int value): bool {
+                  return value > 0;
+                }
+
+                async fnc choose(): int {
+                  val int base = await seed();
+                  val any opaque = base;
+                  val int viaTernary =
+                      opaque is type int narrowed
+                        ? await plusOne(narrowed)
+                        : 0;
+                  if opaque is type int checked && await positive(checked) then
+                    return viaTernary + checked;
+                  else
+                    return 0;
+                  fi
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(await choose());
+                  return;
+                }
+                """);
+
+        assertEquals("9", output);
+    }
+
+    @Test
+    void chainedAndCarriesProofsOnlyAcrossSuccessfulRhsEdges() throws Exception {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc bounded(any value): bool {
+                  return value is type int n && n > 0 && n < 10;
+                }
+                """)));
+
+        String output = run("""
+                fnc bounded(any value): bool {
+                  return value is type int n && n > 0 && n < 10;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(bounded(4));
+                  stdio.stdout.write(bounded(14));
+                  stdio.stdout.write(bounded("x"));
+                  return;
+                }
+                """);
+
+        assertEquals("truefalsefalse", output);
+    }
+
+    @Test
+    void duplicateConditionAliasesAreRejectedStatically() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any left, any right): int {
+                          return (left is type int n && right is type int n) ? n : 0;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("duplicate binding"), failure::getMessage);
+    }
+
+    @Test
+    void integerIntrinsicValidatesArityAndTypeArgumentSurface() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any v): bool {
+                          return Integer.is_int();
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any v): bool {
+                          return Integer.is_int(v, v);
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any v): bool {
+                          return Integer.is_int<int>(v);
+                        }
+                        """)));
+    }
+
+    @Test
+    void integerIntrinsicEvaluatesItsOperandExactlyOnce() throws Exception {
+        String output = run("""
+                fnc probe(): int {
+                  stdio.stdout.write("P");
+                  return 7;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(Integer.is_int(probe()) ? 1 : 0);
+                  return;
+                }
+                """);
+
+        assertEquals("P1", output);
+    }
+
+    @Test
+    void ternaryTypeAliasMovePoisonsOriginalOnPossibleTrueBranch() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Animal as
+                end
+
+                define class Dog extends Animal as
+                end
+
+                fnc consumeAnimal(Animal animal): int { return 1; }
+
+                pub fnc good(Animal animal): int {
+                  val int selected = animal is type Dog dog ? 1 : 0;
+                  return selected + consumeAnimal(animal);
+                }
+                """)));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Animal as
+                        end
+
+                        define class Dog extends Animal as
+                        end
+
+                        fnc consumeDog(Dog dog): int { return 1; }
+                        fnc consumeAnimal(Animal animal): int { return 2; }
+
+                        pub fnc bad(Animal animal): int {
+                          val int selected =
+                              animal is type Dog dog ? consumeDog(dog) : 0;
+                          return selected + consumeAnimal(animal);
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("moved value"), failure::getMessage);
+    }
+
+    @Test
+    void opaqueTopCannotCollapseCapabilityBearingTernaryToAny() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(bool choose, any value, Channel<int> channel): any {
+                          return choose ? value : channel;
+                        }
+                        """)));
+    }
+
+    @Test
+    void opaqueTopCannotRegainMutableStructuralAuthority() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): int {
+                          match value over
+                            on structural { amount: int } record -> {
+                              record.amount = 2;
+                              return record.amount;
+                            }
+                            on _ -> { return 0; }
+                          end
+                        }
+                        """)));
+
+        // Validation is allowed: it grants a readonly shape, never unchecked
+        // access or the right to mutate data hidden behind unknown.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc safe(unknown value): int {
+                  match value over
+                    on structural { amount: int } record -> {
+                      return record.amount;
+                    }
+                    on _ -> { return 0; }
+                  end
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(unknown value): int {
+                          return value.amount;
+                        }
+                        """)));
+    }
+
+    @Test
+    void opaqueStructuralRecoveryIsReadonlyInStandaloneOwnershipAnalysis() {
+        // OwnershipChecker must enforce readonly shape recovery on its own;
+        // it may be invoked independently by backends and incremental tools.
+        var illegalNestedWrite = Parser.parse("""
+                pub fnc bad(any value): void {
+                  if value matches structural { inner: { amount: int } } view then
+                    view.inner.amount = 99;
+                  fi
+                  return;
+                }
+                """);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(illegalNestedWrite));
+
+        var illegalRootWrite = Parser.parse("""
+                pub fnc bad(unknown value): void {
+                  if value matches structural { amount: int } view then
+                    view.amount = 99;
+                  fi
+                  return;
+                }
+                """);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(illegalRootWrite));
+    }
+
+    @Test
+    void opaqueStructuralRecoveryStillAllowsReadOnlyDataUse() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc safe(any value): int {
+                  return value matches structural { amount: int } view
+                      ? view.amount : 0;
+                }
+                """)));
+    }
+
+    @Test
+    void runtimeValidatedOpaqueStructuralViewReadsWithoutRegrantingMutation() throws Exception {
+        String output = run("""
+                fnc checked(any input): int {
+                  val unknown hidden = input;
+                  return hidden matches structural { amount: int } view
+                      ? view.amount : 0;
+                }
+
+                pub fnc main(): void {
+                  const value = infer struct{amount: 8};
+                  stdio.stdout.write(checked(value));
+                  stdio.stdout.write(checked("not a record"));
+                  return;
+                }
+                """);
+        assertEquals("80", output);
+    }
+
+    @Test
+    void opaqueStructuralCastsAndNestedShapeTestsRemainFailClosed() {
+        // Runtime structural type descriptors are not admitted as cast/is
+        // targets yet. Do not mistake type-shape syntax for checked authority.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub fnc bad(any source): int {
+                  val rec = source as { amount: int };
+                  return rec.amount;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub fnc bad(unknown source): int {
+                  val rec = source as { inner: { amount: int } };
+                  return rec.inner.amount;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub fnc bad(any source): bool {
+                  return source is type { amount: int };
+                }
+                """)));
+    }
+
+    @Test
+    void complementRuntimeTypesUseCoverageNotNumericWidening() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc notInteger(string value): bool {
+                  return value is type !int;
+                }
+                """)));
+
+        IllegalArgumentException impossible = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc impossible(int value): bool {
+                          return value is type !int;
+                        }
+                        """)));
+        assertTrue(impossible.getMessage().contains("impossible type test"), impossible::getMessage);
+    }
+
+    @Test
+    void nullablePatternBindingsDoNotThrowHostMapExceptions() throws Exception {
+        String output = run("""
+                pub fnc main(): void {
+                  stdio.stdout.write(null is type !int first ? 1 : 0);
+                  stdio.stdout.write(null matches is !int second ? 1 : 0);
+                  return;
+                }
+                """);
+        assertEquals("11", output);
+    }
+
+    @Test
+    void moduleBindingsNamedIntegerShadowTheTrustedIntrinsic() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub val int Integer = 1;
+
+                        pub fnc bad(any value): int {
+                          return Integer.is_int(value) ? value : 0;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          pub val int Integer = 1;
+
+                          pub fnc bad(any value): int {
+                            return Integer.is_int(value) ? value : 0;
+                          }
+                        end
+                        """)));
+    }
+
+    @Test
+    void integerIntrinsicCannotBeExtractedOrRecoveredThroughShadowing() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Integer as
+                        end
+
+                        pub fnc bad(any v): int {
+                          return Integer.is_int(v) ? v : 0;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any v): int {
+                          val any Integer = v;
+                          return Integer.is_int(v) ? v : 0;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(): void {
+                          val predicate = Integer.is_int;
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void runtimeTestsRejectErasedGenericAliasesAndUnknownNominals() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type IntList = List<int>;
+
+                        pub fnc bad(any value): bool {
+                          return value is type IntList;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type IntOption = Option<int>;
+
+                        pub fnc bad(any value): IntOption {
+                          return value as IntOption;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): bool {
+                          return value is type MissingRuntimeType;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): MissingRuntimeType {
+                          return value as MissingRuntimeType;
+                        }
+                        """)));
+    }
+
+    @Test
+    void runtimeTestsAllowAliasToActuallyReifiableScalar() throws Exception {
+        String output = run("""
+                type Count = int;
+
+                fnc isCount(any value): bool {
+                  return value is type Count;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(isCount(4));
+                  stdio.stdout.write(isCount("x"));
+                  return;
+                }
+                """);
+
+        assertEquals("truefalse", output);
+    }
+
+    @Test
+    void opaqueTypesAreNotRuntimeTypeOrCastTargets() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): bool {
+                          return value is type unknown;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(int value): any {
+                          return value as any;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(int value): unknown {
+                          return value as unknown;
                         }
                         """)));
     }

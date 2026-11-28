@@ -407,6 +407,45 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void staticFunctionsCannotCaptureClassGenericsThroughNestedPatterns() {
+        IllegalArgumentException structural = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Bad<T> as
+                          pub static fnc leak(any value): int {
+                            match value over
+                              on structural { item: T } shaped -> {
+                                return 1;
+                              }
+                              on _ -> { return 0; }
+                            end
+                          }
+                        end
+                        """)));
+        assertTrue(
+                structural.getMessage().contains("cannot reference enclosing class generic"),
+                structural::getMessage);
+
+        IllegalArgumentException tuple = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Bad<T> as
+                          pub static fnc leak(any left, any right): int {
+                            match (left, right) over
+                              on (T captured, _) -> {
+                                return 1;
+                              }
+                              on (_, _) -> { return 0; }
+                            end
+                          }
+                        end
+                        """)));
+        assertTrue(
+                tuple.getMessage().contains("cannot reference enclosing class generic"),
+                tuple::getMessage);
+    }
+
+    @Test
     void inferredConstructorsBindClassGenericsIncludingInheritedFields() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
