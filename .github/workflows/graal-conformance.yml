@@ -49,7 +49,7 @@ jobs:
       - name: Validate Java compiler admission
         run: python3 contracts/v1/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --report target/conformance-graal.json
       - name: Validate Java borrow and semantic diagnostic cases
-        run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --revision "${{ github.sha }}" --report target/semantics-graal.json
+        run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --run-command 'python3 contracts/v1/java_probe.py {source} --execute' --revision "${{ github.sha }}" --report target/semantics-graal.json
       - name: Verify real shared actor mailbox trace against the contract
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native -Dtest=ActorTraceContractIntegrationTest test

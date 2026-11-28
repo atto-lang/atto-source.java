@@ -216,8 +216,14 @@ public final class CapabilityChecker {
             Ast.ActorKind kind,
             IsolatePolicy parent) {
         return switch (kind) {
-            case NONE, SHARED -> parent;
+            case NONE -> parent;
+            // Process exit is root-only authority. It must never flow from a
+            // privileged parent process into any actor's static effect graph.
+            // The ProcessFacade also denies it dynamically for actor turns.
+            case SHARED -> parent.withoutCapabilities(
+                    IsolatePolicy.Capability.PROCESS_EXIT);
             case PRIVATE -> parent.withoutCapabilities(
+                    IsolatePolicy.Capability.PROCESS_EXIT,
                     IsolatePolicy.Capability.SHARED_MEMORY,
                     IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
                     IsolatePolicy.Capability.JAVA_INTEROP,
@@ -397,7 +403,7 @@ public final class CapabilityChecker {
                 }
                 return;
             }
-            if (!Set.of("copy", "take", "borrow", "share", "cooperate").contains(runtime.operation())) {
+            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
             }

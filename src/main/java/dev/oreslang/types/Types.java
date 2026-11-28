@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -100,11 +100,101 @@ public final class Types {
 
     public record StringLiteral(String value) implements Type { }
 
+    /** Compile-time singleton boolean; unlike Primitive.BOOL it is not the entire boolean domain. */
+    public record BoolLiteral(boolean value) implements Type { }
+
+    /** The complement of excluded in the universe of Oreslang values. */
+    public record Not(Type excluded) implements Type {
+        public Not { Objects.requireNonNull(excluded, "excluded type"); }
+    }
+
     public enum Unknown implements Type { INSTANCE }
+
+    public static Type notOf(Type type) {
+        Objects.requireNonNull(type, "type");
+        return type instanceof Not not ? not.excluded() : new Not(type);
+    }
+
+    /**
+     * A conservative disjointness proof, never a runtime guess.
+     *
+     * Unknown and generics must not pass a negative type merely because
+     * ordinary dynamic compatibility treats them permissively. Structural
+     * absence is not proof: a narrowed/widened record view may hide fields.
+     */
+    public static boolean areProvablyDisjoint(Type first, Type second) {
+        if (first == Unknown.INSTANCE || second == Unknown.INSTANCE
+                || first instanceof Generic || second instanceof Generic) return false;
+        if (first.equals(second)) return false;
+        if (first instanceof Union union) {
+            return union.options().stream().allMatch(option -> areProvablyDisjoint(option, second));
+        }
+        if (second instanceof Union union) {
+            return union.options().stream().allMatch(option -> areProvablyDisjoint(first, option));
+        }
+        if (first instanceof Not not) {
+            return isAssignable(second, not.excluded()) && !containsUncertainType(second);
+        }
+        if (second instanceof Not not) {
+            return isAssignable(first, not.excluded()) && !containsUncertainType(first);
+        }
+        if (first instanceof BoolLiteral a && second instanceof BoolLiteral b) return a.value() != b.value();
+        if (first instanceof BoolLiteral) return second != Primitive.BOOL
+                && second != Primitive.VOID && second != Primitive.NULL
+                && !(second instanceof Not);
+        if (second instanceof BoolLiteral) return areProvablyDisjoint(second, first);
+        if (first instanceof StringLiteral && second instanceof StringLiteral) return !first.equals(second);
+        if (first instanceof StringLiteral) return second != Primitive.STRING;
+        if (second instanceof StringLiteral) return areProvablyDisjoint(second, first);
+        if (first instanceof Primitive a && second instanceof Primitive b) {
+            // Numeric widening makes primitive numeric domains potentially overlap.
+            return a != b && !(isNumeric(a) && isNumeric(b));
+        }
+        if (first instanceof Record a && second instanceof Record b) {
+            // Only conflicting *known* fields prove disjointness. Missing keys do not.
+            for (var entry : a.members().entrySet()) {
+                Type candidate = b.members().get(entry.getKey());
+                if (candidate != null && areProvablyDisjoint(entry.getValue(), candidate)) return true;
+            }
+            return false;
+        }
+        if (first instanceof Record && second instanceof Primitive
+                || second instanceof Record && first instanceof Primitive) return true;
+        if (first instanceof Named && second instanceof Primitive
+                || second instanceof Named && first instanceof Primitive) return true;
+        if (first instanceof ListType && second instanceof Primitive
+                || second instanceof ListType && first instanceof Primitive) return true;
+        if (first instanceof Tuple && second instanceof Primitive
+                || second instanceof Tuple && first instanceof Primitive) return true;
+        return false; // Not knowing if types overlap is NOT proof of exclusion.
+    }
+
+    private static boolean containsUncertainType(Type type) {
+        if (type == Unknown.INSTANCE || type instanceof Generic) return true;
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof Not not) return containsUncertainType(not.excluded());
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof ListType list) return containsUncertainType(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
+                || containsUncertainType(function.result());
+        if (type instanceof Borrow borrow) return containsUncertainType(borrow.target());
+        if (type instanceof SelfType self) return containsUncertainType(self.bound());
+        return false;
+    }
 
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // Complements must be checked before permissive Unknown/Generic rules.
+        // No compiler pass may turn uncertainty into a negative-type proof.
+        if (to instanceof Not negative) {
+            if (from instanceof Not source) return source.excluded().equals(negative.excluded());
+            return areProvablyDisjoint(from, negative.excluded());
+        }
+        if (from instanceof Not) return to == Unknown.INSTANCE;
+        if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
