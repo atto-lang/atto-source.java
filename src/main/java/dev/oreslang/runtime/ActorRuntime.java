@@ -11561,6 +11561,16 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
                 return;
             }
+            if (continuationLedger.hasReleaseFailure()) {
+                // An ambiguous external release is not physical retirement.
+                // Keep the actor identity and storage fenced, not reclaimed.
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor continuation resource release incomplete; quarantine arena"));
+                lifecycleLock.notifyAll();
+                return;
+            }
+            if (continuationLedger.snapshot().running() != 0) return;
             if (scheduler != null && (!scheduler.actorStopPhysicallyQuiescent()
                     || activeUntrustedSourceTaskCount != 0
                     || activeUntrustedTimedAdmissions != 0)) return;
@@ -11598,6 +11608,30 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
+            // Seal receipts before draining the last admitted cleanup queue.
+            // The existing runtime admissions carry no external code lease;
+            // future image-lease admissions must also arrange release outside
+            // lifecycleLock and a finalization retry after physical completion.
+            continuationLedger.sealAll();
+            sourceTaskMailbox.close();
+            try { drainMailboxReservations(); }
+            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+            catch (Throwable failure) {
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(failure);
+                lifecycleLock.notifyAll();
+                return;
+            }
+            if (!continuationLedger.retirementReady()) {
+                // With admission sealed and all queues drained, any surviving
+                // receipt is a physical cleanup invariant violation. Do not
+                // close guest state, heap, memory slice or execution domain.
+                sourceStopCleanupAborted = true;
+                recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                        "actor continuation receipts not retired; quarantine arena"));
+                lifecycleLock.notifyAll();
+                return;
+            }
             abortUpgradesLocked();
             finalized = true;
             // Only release virtual activation ownership after *all* physical
@@ -11605,13 +11639,6 @@ public final class ActorRuntime implements AutoCloseable {
             // Cleanup failures quarantine the logical identity, not guest data.
             boolean virtualPhysicalCleanupComplete = true;
             sourceScheduler = null;
-            sourceTaskMailbox.close();
-            try { drainMailboxReservations(); }
-            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-            catch (Throwable failure) {
-                virtualPhysicalCleanupComplete = false;
-                recordFinalizationFailure(failure);
-            }
             staticSelectCursors.clear();
             // STOP has already joined physical SourceTask cleanup at this
             // finalization point. Only now retire the outstanding receive
