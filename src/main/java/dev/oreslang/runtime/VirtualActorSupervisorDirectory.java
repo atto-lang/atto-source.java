@@ -379,7 +379,7 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 terminals.put(identity, new TerminalRecord(expected.actor().id(),
                         expected.actor().generation(), expected.actor().kind(),
                         failureClass, cancelled, Instant.now()));
-            } catch (RuntimeException | Error failure) {
+            } catch (RuntimeException | Error accountingFailure) {
                 // Retain the binding as a quarantined record for explicit
                 // reconciliation; never report passivation if accounting failed.
             }
@@ -610,14 +610,6 @@ public final class VirtualActorSupervisorDirectory implements AutoCloseable {
                 // makes an erroneous late execution a no-op in either case.
                 if (phase.compareAndSet(0, 3) || phase.compareAndSet(2, 3))
                     releaseSlot.run();
-            }
-        });
-        return result.minimalCompletionStage();
-        }
-        dispatch.whenCompleteRuntime((ignored, failure) -> {
-            if (failure != null) {
-                result.completeExceptionally(new IllegalStateException("CONTROL_DISPATCH_FAILED"));
-                if (phase.compareAndSet(0, 2)) release.run();
             }
         });
         return result.minimalCompletionStage();
