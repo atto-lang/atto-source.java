@@ -33,7 +33,7 @@ final class IntrinsicContextualSingletonTupleTest {
         assertFalse(initializer("const [int] t=(42)+1;") instanceof Ast.TupleExpr);
     }
     @Test void typedGuestConstructionPreservesScalarAndTupleDistinction() {
-        String source = program("const [int] t=(42); const x=(42); const int projected=t[0]; const int scalar=x; do if projected eq 42 then stdio.out.write(\"42\"); else stdio.out.write(\"bad-tuple\"); fi do if scalar eq 42 then stdio.out.write(\"42\"); else stdio.out.write(\"bad-scalar\"); fi");
+        String source = program("const [int] t=(42); const x=(42); val int projected=t[0]; val int scalar=x; do if projected eq 42 then stdio.out.write(\"42\"); else stdio.out.write(\"bad-tuple\"); fi do if scalar eq 42 then stdio.out.write(\"42\"); else stdio.out.write(\"bad-scalar\"); fi");
         Ast.Program checked = assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(source));
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         assertDoesNotThrow(() -> {
@@ -45,6 +45,19 @@ final class IntrinsicContextualSingletonTupleTest {
             }
         });
         assertEquals("4242",out.toString(StandardCharsets.UTF_8));
+    }
+    @Test void projectionWidthRequiresImmutableLiteralEvidenceNotErasedAnnotation() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(program(
+                "const [int] t=(42); val int x=t[0];")));
+        for (String body : new String[]{
+                "const [int] t=(42); val i32 x=t[0];",
+                "const [i32] t=(42); val i32 x=t[0];",
+                "let [int] t=(42,); val int x=t[0];"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheckStrictAtto(program(body)),body);
+            assertTrue(error.getMessage().contains("ATTO_STRICT_"),error.getMessage());
+        }
     }
     @Test void incompatibleExpectedTypesAndExistingScalarsAreRejected() {
         for (String body : new String[]{
