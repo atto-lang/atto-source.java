@@ -71,13 +71,14 @@ class ActorPhysicalTurnCreditsTest {
                         throw new AssertionError("start barrier timed out");
                     var permit = gate.tryAcquire();
                     attempted.countDown();
-                    if (permit == null) return;
+                    if (permit == null) return null;
                     try (permit) {
                         granted.incrementAndGet();
                         observedPeak.accumulateAndGet(gate.active(), Math::max);
                         if (!release.await(5, TimeUnit.SECONDS))
                             throw new AssertionError("release barrier timed out");
                     }
+                    return null;
                 }));
             }
             assertTrue(ready.await(5, TimeUnit.SECONDS));
