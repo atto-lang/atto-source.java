@@ -1,0 +1,100 @@
+# Focused source-owning repository gate. Never mirror private source to
+# another repository/organization. A zero-step workflow failure is NOT_EXECUTED.
+name: Atto actor code private-state exact-head guest and host
+
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/ActorCodeIsolationAttoGuestTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorSharedCodeImageWhitelistTest.java'
+      - 'src/test/resources/atto/actor-code-isolation/**'
+      - 'src/main/**'
+      - 'scripts/diagnose-private-actions-admission.sh'
+      - 'scripts/test-diagnose-private-actions-admission.sh'
+      - '.github/workflows/actor-code-state-atto-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actor-code-private-state-java:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout immutable exact PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify source identity and clean tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          printf 'ACTOR_CODE_GUEST_SOURCE_HEAD=%s\n' "$(git rev-parse HEAD)"
+          printf 'ACTOR_CODE_GUEST_SOURCE_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+          sha256sum src/test/resources/atto/actor-code-isolation/*.atto
+
+      - name: Test CI admission diagnostic without GitHub API or private-source export
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-diagnose-private-actions-admission.sh
+
+      - name: Provision GraalVM JDK 25
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Execute linked Atto guest and shared-code private-state JVM checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=ActorCodeIsolationAttoGuestTest,ActorSharedCodeImageWhitelistTest \
+            clean test
+
+      - name: Require ten real, unskipped JUnit tests and immutable receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in \
+            dev.oreslang.ActorCodeIsolationAttoGuestTest \
+            dev.oreslang.runtime.ActorSharedCodeImageWhitelistTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report" || { echo "::error::Missing JUnit report: $report"; exit 1; }
+            grep -Eq '<testsuite[[:space:]>]' "$report"
+            grep -Eq 'tests="5"' "$report" || {
+              echo "::error::Expected exactly five JUnit methods in $suite"
+              exit 1
+            }
+            for attr in errors failures skipped; do
+              grep -Eq "${attr}=\"0\"" "$report" || {
+                echo "::error::Nonzero or missing ${attr} for $suite"
+                exit 1
+              }
+            done
+            echo "ACTOR_CODE_GUEST_JUNIT_PASS suite=$suite tests=5"
+            sha256sum "$report"
+          done
+          echo "ACTOR_CODE_GUEST_JUNIT_TOTAL=10"
+
+      - name: Preserve exact-head JUnit receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: actor-code-private-state-junit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/surefire-reports/*ActorCodeIsolationAttoGuestTest*
+            target/surefire-reports/*ActorSharedCodeImageWhitelistTest*
+          if-no-files-found: warn

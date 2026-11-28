@@ -102,6 +102,7 @@ public final class AnnotationExpander {
     }
 
     private static Ast.ModuleDecl expandModule(Ast.ModuleDecl module) {
+        ScalarJsonDeriver.rejectOutsideField(module.annotations());
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
         if (hasCopyPolicy(module.annotations())) {
             throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on module " + module.name());
@@ -110,6 +111,10 @@ public final class AnnotationExpander {
             if (declaration instanceof Ast.ClassDecl klass) {
                 declarations.add(expandClass(klass));
             } else {
+                if (declaration instanceof Ast.FieldDecl field)
+                    ScalarJsonDeriver.rejectOutsideField(field.annotations());
+                if (declaration instanceof Ast.FunctionDecl function)
+                    ScalarJsonDeriver.rejectOutsideField(function.annotations());
                 if (declaration instanceof Ast.FieldDecl field && hasCopyPolicy(field.annotations())) {
                     throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on module binding " + field.name());
                 }
@@ -129,19 +134,27 @@ public final class AnnotationExpander {
     }
 
     private static Ast.ClassDecl expandClass(Ast.ClassDecl klass) {
+        ScalarJsonDeriver.rejectOutsideField(klass.annotations());
+        if (klass.constructor() != null)
+            ScalarJsonDeriver.rejectOutsideField(klass.constructor().annotations());
         if (klass.constructor() != null && hasCopyPolicy(klass.constructor().annotations())) {
             throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on constructor " + klass.name());
         }
         List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
         Map<String, Ast.MethodDecl> signatures = new HashMap<>();
         for (Ast.MethodDecl method : methods) {
+            ScalarJsonDeriver.rejectOutsideField(method.annotations());
             if (hasCopyPolicy(method.annotations())) {
                 throw new IllegalArgumentException("E_COPY_ANNOTATION: copy policy is not valid on method '" + klass.name() + "." + method.name() + "'");
             }
             if (hasAnnotation(method.annotations(), FROM_JSON)) {
                 throw new IllegalArgumentException("@FromJson is only valid on class fields, not method '" + klass.name() + "." + method.name() + "'");
             }
-            signatures.put(signature(method.name(), method.arity()), method);
+            String methodSignature = signature(method.name(), method.arity());
+            if (signatures.putIfAbsent(methodSignature, method) != null) {
+                throw new IllegalArgumentException("duplicate method signature '" + klass.name() + "."
+                        + methodSignature + "' in @FromJson accessor admission");
+            }
         }
 
         Map<String, String> jsonKeys = new LinkedHashMap<>();
@@ -169,8 +182,16 @@ public final class AnnotationExpander {
             }
 
             String suffix = accessorSuffix(field.name());
-            addGeneratedAccessor(klass, methods, signatures, getter(field, jsonKey, "get" + suffix), true);
-            addGeneratedAccessor(klass, methods, signatures, setter(field, jsonKey, "set" + suffix), false);
+            addGeneratedAccessor(klass, methods, signatures, getter(field, jsonKey, "get" + suffix));
+            addGeneratedAccessor(klass, methods, signatures, setter(field, jsonKey, "set" + suffix));
+        }
+
+        Ast.MethodDecl serializer = ScalarJsonDeriver.derive(klass);
+        if (serializer != null) {
+            Ast.MethodDecl existing = signatures.get(signature(serializer.name(), serializer.arity()));
+            if (existing == null) methods.add(serializer);
+            else if (!existing.equals(serializer))
+                throw new IllegalArgumentException("E_TO_JSON: generated to_json/0 collides with existing method");
         }
 
         return new Ast.ClassDecl(
@@ -186,22 +207,22 @@ public final class AnnotationExpander {
                 methods,
                 klass.actorConcurrency(),
                 klass.sealedStateFields(),
-                klass.annotations());
+                klass.annotations(),
+                klass.actorMessageContract());
     }
 
     private static void addGeneratedAccessor(
             Ast.ClassDecl klass,
             List<Ast.MethodDecl> methods,
             Map<String, Ast.MethodDecl> signatures,
-            Ast.MethodDecl generated,
-            boolean getter) {
+            Ast.MethodDecl generated) {
         String key = signature(generated.name(), generated.arity());
         Ast.MethodDecl existing = signatures.get(key);
         if (existing != null) {
-            boolean sameGeneratedKind = getter
-                    ? isGeneratedFromJsonGetter(existing)
-                    : isGeneratedFromJsonSetter(existing);
-            if (sameGeneratedKind) return; // idempotent expansion
+            // A marker alone is not proof of the accessor's target field, JSON
+            // key, type or body. In particular, foo_bar and fooBar can map to
+            // the same accessor signature. Idempotence requires the exact AST.
+            if (existing.equals(generated)) return;
             throw new IllegalArgumentException("@FromJson generated accessor '" + klass.name() + "."
                     + generated.name() + "' collides with an existing method of arity " + generated.arity());
         }

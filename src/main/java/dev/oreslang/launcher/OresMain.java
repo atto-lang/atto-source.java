@@ -84,6 +84,35 @@ public final class OresMain {
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
+        if (args.length > 0 && (args[0].equals("--durable-counter-actor-v1") || args[0].equals("--durable-scalar-codec-v1"))) {
+            boolean scalarCodec=args[0].equals("--durable-scalar-codec-v1");
+            String className=scalarCodec?"AttoDurableScalarV1.java":"AttoDurableCounterV1.java";
+            if(args.length!=4||!args[2].equals("-o")||!args[1].endsWith(".atto")||
+               !Path.of(args[3]).getFileName().toString().equals(className))
+                throw new UsageException("usage: "+args[0]+" input.atto -o "+className);
+            Path input=Path.of(args[1]),output=Path.of(args[3]).toAbsolutePath();
+            if(!Files.isRegularFile(input,java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                throw new UsageException("durable counter requires regular source");
+            if(Files.exists(output,java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                throw new UsageException("durable counter requires fresh output");
+            byte[] bytes;
+            try(var stream=Files.newInputStream(input,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                bytes=stream.readNBytes(16385);
+            }
+            if(bytes.length>16384)throw new UsageException("durable counter source exceeds limit");
+            String source=java.nio.charset.StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+            String generated=scalarCodec?dev.oreslang.compiler.DurableScalarSourceV1.emitJava(source):dev.oreslang.compiler.DurableCounterSourceV1.emitJava(source);
+            // Fresh trusted output directory. Never replace an existing artifact.
+            Path temp=Files.createTempFile(output.getParent(),".atto-durable-",".tmp");
+            try {
+                Files.writeString(temp,generated,java.nio.charset.StandardCharsets.UTF_8);
+                Files.move(temp,output);
+            } finally {Files.deleteIfExists(temp);}
+            return 0;
+        }
+        if (args.length > 0 && args[0].equals("test")) {
+            return ConcurrencyTestCommand.run(java.util.Arrays.copyOfRange(args, 1, args.length));
+        }
         // Explicit on-device LLVM AOT build path. Never interpret "build" as a source file.
         // This is intentionally limited to LLVM's currently supported host subset.
         if (args.length > 0 && args[0].equals("build")) {
@@ -169,7 +198,19 @@ public final class OresMain {
                     if (raw.isEmpty()) throw new IllegalArgumentException("--entry requires a symbol name");
                     buildEntryPoints.add(raw);
                 } else if (arg.startsWith("--mode=")) mode = arg.substring("--mode=".length());
-                else if (arg.startsWith("--platform=")) platform = arg.substring("--platform=".length());
+                else if (arg.startsWith("--platform=")) {
+                    platform = arg.substring("--platform=".length());
+                    // Platform-variant library units (std/path) follow the platform.
+                    if (platform.equals("windows") || platform.equals("macos") || platform.equals("linux"))
+                        System.setProperty("atto.target.os", platform);
+                }
+                else if (arg.startsWith("--target-os=")) {
+                    String os = arg.substring("--target-os=".length());
+                    if (!java.util.Set.of("linux", "macos", "freebsd", "posix", "windows").contains(os))
+                        throw new IllegalArgumentException(
+                                "unknown --target-os (expected linux|macos|freebsd|posix|windows)");
+                    System.setProperty("atto.target.os", os);
+                }
                 else if (arg.startsWith("--allow=")) {
                     String raw = arg.substring("--allow=".length());
                     if (raw.isBlank()) {

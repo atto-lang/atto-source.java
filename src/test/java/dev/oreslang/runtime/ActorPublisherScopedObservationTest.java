@@ -240,6 +240,8 @@ final class ActorPublisherScopedObservationTest {
             assertTrue(producerA.awaitTermination(5, TimeUnit.SECONDS));
             assertFalse(runtime.isLiveActorAddress(address));
             assertTrue(scoped.get().closed());
+            assertEquals(0, scoped.get().pending(),
+                    "publisher STOP must synchronously drain its scoped subscription");
 
             // Other actors are still live here. Their independently owned
             // USER mailbox envelopes may account for shared memory even
@@ -312,6 +314,10 @@ final class ActorPublisherScopedObservationTest {
             observer.send(1);
             assertTrue(done.await(5, TimeUnit.SECONDS));
             assertNull(error.get());
+            // done fires inside the actor callback before its envelope
+            // reservation has necessarily been released. Join processed-mail
+            // accounting before asserting physical shared-memory reclamation.
+            runtime.drain(observer).get(5, TimeUnit.SECONDS);
 
             // Subscription quota credits are refunded inside the receive
             // callback; other independently live actor mailbox envelopes

@@ -1,0 +1,30 @@
+// Bounded admission-budget computation from TaskMapParallel.java.
+// NO child launch, TaskScope ownership, cancellation, quiescence or executor
+// authority. Runtime enforces physical child admission independently.
+define module task_parallel_policy as
+  pub fnc valid_config(int input_count, int concurrency): bool {
+    return input_count >= 0 && input_count <= 65536 &&
+           concurrency >= 1 && concurrency <= 65536;
+  }
+
+  // Returns -1 for invalid counters, otherwise the maximum number of new
+  // children an owning coordinator can TRY to admit during this turn.
+  // Admit only after the runtime observes free, physically retired slots.
+  pub fnc next_admission_budget(int input_count, int concurrency,
+                                int already_admitted, int active_children,
+                                int admitted_this_turn): int {
+    if !valid_config(input_count, concurrency) ||
+       already_admitted < 0 || already_admitted > input_count ||
+       active_children < 0 || active_children > already_admitted ||
+       active_children > concurrency ||
+       admitted_this_turn < 0 || admitted_this_turn > 32; do
+      return -1;
+    fi
+    let int allowed = input_count - already_admitted;
+    val int free_slots = concurrency - active_children;
+    if free_slots < allowed; do allowed = free_slots; fi
+    val int turn_remaining = 32 - admitted_this_turn;
+    if turn_remaining < allowed; do allowed = turn_remaining; fi
+    return allowed;
+  }
+end

@@ -115,25 +115,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         return value;
     }
 
-    /**
-     * Guard the public identity lookup surface before any hash-map access.
-     * Identity is a public record and may not have been issued by resolve().
-     * Canonical issuance normalizes keys; inspection must never normalize an
-     * attacker-supplied candidate into another actor's existing identity.
-     */
-    static void validateLookupIdentity(Identity identity) {
-        Objects.requireNonNull(identity, "identity");
-        requireName(identity.domain(), "domain");
-        requireName(identity.declaration(), "declaration");
-        String key = Objects.requireNonNull(identity.key(), "key");
-        if (key.isEmpty() || key.length() > MAX_KEY_BYTES)
-            throw new IllegalArgumentException("invalid virtual actor lookup key");
-        checkUnicode(key, "key");
-        if (!Normalizer.isNormalized(key, Normalizer.Form.NFC)
-                || key.getBytes(StandardCharsets.UTF_8).length > MAX_KEY_BYTES)
-            throw new IllegalArgumentException("non-canonical or oversized virtual actor lookup key");
-    }
-
     public final class LogicalRef {
         private final Slot slot;
         private LogicalRef(Slot slot) { this.slot = slot; }
@@ -178,10 +159,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
      */
     public Optional<Inspection> inspectIdentity(Identity identity) {
         Objects.requireNonNull(identity, "identity");
-        // Preserve foreign-domain non-disclosure without hashing unbounded IDs.
-        if (!domain.equals(identity.domain())) return Optional.empty();
-        validateLookupIdentity(identity);
         synchronized (monitor) {
+            if (!domain.equals(identity.domain())) return Optional.empty();
             Slot slot = slots.get(identity);
             if (slot == null) return Optional.empty();
             return Optional.of(snapshot(slot));
@@ -194,8 +173,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         synchronized (monitor) {
             if (logical.slot.owner != this)
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
-            if (slots.get(logical.slot.identity) != logical.slot)
-                throw new IllegalStateException("discarded virtual actor logical reference");
             return snapshot(logical.slot);
         }
     }
@@ -212,8 +189,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             Slot slot = logical.slot;
             if (slot.owner != this)
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
-            if (slot.active || slot.published || slot.outstanding != 0 || slot.incarnation != 0)
-                throw new IllegalStateException("cannot discard a previously activated virtual actor identity");
+            if (slot.active || slot.published || slot.outstanding != 0)
+                throw new IllegalStateException("cannot discard an activated virtual actor identity");
             if (slots.get(slot.identity) == slot) {
                 advanceRevision();
                 slots.remove(slot.identity, slot);
@@ -226,7 +203,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             throw new IllegalArgumentException("virtual actor page size must be 1..256");
         if (expectedRevision < -1 || (after != null && expectedRevision < 0))
             throw new IllegalArgumentException("invalid virtual actor page cursor");
-        if (after != null) validateLookupIdentity(after);
         Comparator<Identity> order = Comparator.comparing(Identity::declaration)
                 .thenComparing(Identity::key);
         synchronized (monitor) {
@@ -290,15 +266,13 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             Slot slot = logical.slot;
             if (slot.owner != this)
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
-            if (slots.get(slot.identity) != slot)
-                throw new IllegalStateException("discarded virtual actor logical reference");
             boolean initializer = !slot.active;
             if (initializer && generationSupplier == null && nextIncarnation == Long.MAX_VALUE)
                 throw new IllegalStateException("virtual actor incarnation budget exhausted");
             long candidateIncarnation = initializer
                     ? (generationSupplier == null ? nextIncarnation + 1 : generationSupplier.getAsLong())
                     : slot.incarnation;
-            if (initializer && (candidateIncarnation <= nextIncarnation || candidateIncarnation <= slot.incarnation || candidateIncarnation <= 0))
+            if (initializer && (candidateIncarnation <= slot.incarnation || candidateIncarnation <= 0))
                 throw new IllegalStateException("virtual actor generation is not monotonic");
             // Never mark an activation live before its capability is allocated.
             // Out-of-memory or constructor failure must not strand a slot as
@@ -306,7 +280,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             Activation candidate = new Activation(slot, candidateIncarnation, initializer);
             if (initializer) {
                 advanceRevision();
-                nextIncarnation = candidateIncarnation;
+                nextIncarnation = Math.max(nextIncarnation, candidateIncarnation);
                 slot.incarnation = candidateIncarnation;
                 slot.active = true;
                 slot.published = false;
@@ -446,13 +420,9 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
 
     LocalObservation inspectForHost(LogicalRef logical) {
         Objects.requireNonNull(logical, "logical");
-        synchronized (monitor) {
-            if (logical.slot.owner != this)
-                throw new IllegalArgumentException("foreign virtual actor logical reference");
-            if (slots.get(logical.slot.identity) != logical.slot)
-                throw new IllegalStateException("discarded virtual actor logical reference");
-            return inspectExistingForHost(logical.slot.identity);
-        }
+        if (logical.slot.owner != this)
+            throw new IllegalArgumentException("foreign virtual actor logical reference");
+        return inspectExistingForHost(logical.slot.identity);
     }
 
     public int outstanding(LogicalRef logical) {
@@ -460,8 +430,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         synchronized (monitor) {
             if (logical.slot.owner != this)
                 throw new IllegalArgumentException("foreign virtual actor logical reference");
-            if (slots.get(logical.slot.identity) != logical.slot)
-                throw new IllegalStateException("discarded virtual actor logical reference");
             return logical.slot.outstanding;
         }
     }

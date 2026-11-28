@@ -16,7 +16,12 @@ final class OwnershipBangAliasesTest {
     private static void sameAst(String legacy, String spaced, String compact) {
         Ast.Program expected = source(legacy);
         assertEquals(expected, source(spaced), spaced);
-        assertEquals(expected, source(compact), compact);
+        separatorDenied(compact);
+    }
+
+    private static void separatorDenied(String compact) {
+        var error = assertThrows(IllegalArgumentException.class, () -> source(compact), compact);
+        assertTrue(error.getMessage().contains("E_BANG_KEYWORD_WHITESPACE"), error::getMessage);
     }
 
     @Test
@@ -25,7 +30,8 @@ final class OwnershipBangAliasesTest {
         // 'eqfoo' is an identifier: only the complete '!eq' word is atomic.
         String eqPrefix = "fnc main(): int { val int eqfoo = 7; return %s; }";
         assertEquals(Parser.parse(eqPrefix.formatted("rt copy eqfoo")),
-                     Parser.parse(eqPrefix.formatted("copy!eqfoo")));
+                     Parser.parse(eqPrefix.formatted("copy! eqfoo")));
+        separatorDenied("copy!eqfoo");
         sameAst("rt take foo", "take! foo", "take!foo");
         sameAst("rt borrow foo", "borrow! foo", "borrow!foo");
         // Without a token boundary, mutfoo is an ordinary identifier and the
@@ -53,7 +59,8 @@ final class OwnershipBangAliasesTest {
         // JavaScript's narrower ASCII \\b word boundary.
         String program = "fnc main(): int { val int eqé = 7; return %s; }";
         assertEquals(Parser.parse(program.formatted("rt copy eqé")),
-                Parser.parse(program.formatted("copy!eqé")));
+                Parser.parse(program.formatted("copy! eqé")));
+        separatorDenied("copy!eqé");
         String neq = "fnc main(): bool { val int copy = 1; " +
                 "val int é = 2; return %s; }";
         assertEquals(Parser.parse(neq.formatted("copy neq é")),
@@ -81,7 +88,7 @@ final class OwnershipBangAliasesTest {
                 "rt borrow mut mut foo"}) {
             RuntimeException error = assertThrows(RuntimeException.class,
                     () -> source(malformed), malformed);
-            assertTrue(error.getMessage().contains("duplicate mutable borrow qualifier"),
+            assertTrue(error.getMessage().contains(malformed.contains("!mut") ? "E_BANG_KEYWORD_WHITESPACE" : "duplicate mutable borrow qualifier"),
                     malformed + ": " + error.getMessage());
         }
     }
@@ -93,15 +100,16 @@ final class OwnershipBangAliasesTest {
         for (String operand : new String[]{"foo", "(foo)", "foo.bar"}) {
             Ast.Program canonical = source("borrow! mut " + operand);
             for (String spelling : new String[]{
-                    "borrow!mut " + operand,
                     "mut borrow! " + operand,
                     "rt mut borrow " + operand,
                     "rt borrow mut " + operand}) {
                 assertEquals(canonical, source(spelling), spelling);
             }
+            separatorDenied("borrow!mut " + operand);
         }
         // The standalone 'mut' keyword, not an identifier prefix, selects &mut.
-        assertEquals(source("rt borrow mutfoo"), source("borrow!mutfoo"));
+        assertEquals(source("rt borrow mutfoo"), source("borrow! mutfoo"));
+        separatorDenied("borrow!mutfoo");
     }
 
     @Test
@@ -119,9 +127,18 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
+    void adjacentCopyBangsAreDistinctFromLogicalNegation() {
+        separatorDenied("copy!!foo");
+        assertNotEquals(source("copy!! foo"), source("copy! !foo"));
+        separatorDenied("copy!/* separator */!foo");
+        assertEquals(source("copy! !foo"), source("copy! /* separator */!foo"));
+        assertThrows(IllegalArgumentException.class, () -> source("copy!!"));
+    }
+
+    @Test
     void deepPrefixChainsFailDeterministicallyInsteadOfOverflowingTheJvmStack() {
-        for (String prefix : new String[]{"copy!", "borrow!", "take!",
-                "share!", "mut borrow! copy!", "!"}) {
+        for (String prefix : new String[]{"copy! ", "copy!! ", "borrow! ", "take! ",
+                "share! ", "mut borrow! copy! ", "!"}) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> source(prefix.repeat(200) + "foo"), prefix);
             assertTrue(error.getMessage().contains("unary expression nesting exceeds 128"),
@@ -138,7 +155,7 @@ final class OwnershipBangAliasesTest {
     void nestedCommentsCannotLeakOwnershipAliasesOrExceedLexerBudget() {
         assertDoesNotThrow(() -> Parser.parse(
                 "fnc main(): int { val int foo = 7; return " +
-                "/* outer /* mut borrow! foo */ tail /* take!foo */ */ copy!foo; }"));
+                "/* outer /* mut borrow! foo */ tail /* take!foo */ */ copy! foo; }"));
         RuntimeException unclosed = assertThrows(RuntimeException.class,
                 () -> Parser.parse(
                         "fnc main(): int { return /* outer /* copy!7 */ 7; }"));
@@ -166,7 +183,7 @@ final class OwnershipBangAliasesTest {
                   return read_item(%s);
                 }
                 """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(base.formatted("borrow!item")));
+        separatorDenied("borrow!item");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(base.formatted("borrow! item")));
     }
 
@@ -184,7 +201,7 @@ final class OwnershipBangAliasesTest {
                 """;
         for (String operation : new String[]{"copy", "share"}) {
             for (String spelling : new String[]{"rt " + operation + " item",
-                    operation + "! item", operation + "!item"}) {
+                    operation + "! item"}) {
                 RuntimeException error = assertThrows(RuntimeException.class,
                         () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
                         spelling);
@@ -207,7 +224,7 @@ final class OwnershipBangAliasesTest {
                   return item.value;
                 }
                 """;
-        for (String spelling : new String[]{"rt take item", "take! item", "take!item"}) {
+        for (String spelling : new String[]{"rt take item", "take! item"}) {
             RuntimeException error = assertThrows(RuntimeException.class,
                     () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
                     spelling);
@@ -227,7 +244,7 @@ final class OwnershipBangAliasesTest {
                   return %s;
                 }
                 """;
-        for (String spelling : new String[]{"rt borrow item", "borrow! item", "borrow!item"}) {
+        for (String spelling : new String[]{"rt borrow item", "borrow! item"}) {
             RuntimeException error = assertThrows(RuntimeException.class,
                     () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
                     spelling);

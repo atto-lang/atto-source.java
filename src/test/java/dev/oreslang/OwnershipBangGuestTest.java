@@ -28,15 +28,44 @@ final class OwnershipBangGuestTest {
             "compact", "5336fa679a7816dbd353be4480f95dac639b6af7",
             "spaced", "06afd973b34a6cd09d1d78cee258134b1c3b0451",
             "legacy", "fa3d3ef8173d046783efdae808bd291be00891be",
-            "mut-canonical", "a518f08a495763f349c7ab21baa5d61d0cfc7769",
-            "mut-compact", "a7e3b55ebd128a671cdb48ede3557aee6dc1b2b0",
-            "mut-rt-tail", "b1e982f0ca85291a5e9924e3c6ff571ba13efebe");
+            "mut-canonical", "1a2d3ee72e4541e5578cd1166ff03f5698224d70",
+            "mut-compact", "cda26b6eb8fac755e0da6fbdd5e80907d82c413f",
+            "mut-rt-tail", "466b7edb6dceeda25fc1f2f0b7de4c192104fcf4");
 
     private static String shaOfGitBlob(byte[] bytes) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
         digest.update(("blob " + bytes.length + "\0").getBytes(StandardCharsets.US_ASCII));
         digest.update(bytes);
         return HexFormat.of().formatHex(digest.digest());
+    }
+
+    @Test
+    void scalarDeepCopyPreservesBooleanValueAndEvaluatesItsOperand() throws Exception {
+        String text = """
+                fnc value(): int { return 40 + 2; }
+                pub fnc main(): int {
+                    const flag: bool = true;
+                    return (copy!!flag && !(copy! !flag)) ? copy!!value() : 0;
+                }
+                """;
+        OresCompiler.parseAndTypeCheck(text);
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(Source.newBuilder(OresLanguage.ID, text,
+                    "deep-copy-scalars.atto").build()).asLong());
+        }
+    }
+
+    @Test
+    void deepCopyRejectsTypesOutsideTheScalarProfile() {
+        String text = """
+                pub fnc main(): int {
+                    stdio.println(copy!! "Atto");
+                    return 42;
+                }
+                """;
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(text));
+        assertTrue(rejection.getMessage().contains("E_COPY_GRAPH_UNPROVEN"), rejection::getMessage);
     }
 
     @Test

@@ -163,4 +163,123 @@ final class LambdaParameterOrderTest {
                 pub routine main(): void { let fnc bad = || -> 42; return; }
                 """));
     }
+
+    @Test
+    void fourRequestedVoidLambdaStylesHaveSameTypeAndRuntimeContract() throws Exception {
+        String[] forms = {
+                "|int foo, string x| -> { return; };",
+                "|foo: int, x: string| -> { return; }",
+                "|foo: int, x: string| -> void { return; }",
+                "|foo: int, x: string| : void -> { return; }"
+        };
+        for (String form : forms) {
+            String code = """
+                    pub routine main(): void {
+                      const v = %s
+                      v(5, "ok");
+                      stdio.stdout.write("pass");
+                      return;
+                    }
+                    """.formatted(form);
+            Ast.Program ast = Parser.parse(code);
+            Ast.FunctionDecl main = (Ast.FunctionDecl) ast.modules().getFirst().declarations().getFirst();
+            Ast.BindingStmt binding = (Ast.BindingStmt) main.body().getFirst();
+            Ast.LambdaExpr lambda = assertInstanceOf(Ast.LambdaExpr.class, binding.initializer());
+            assertEquals(2, lambda.parameters().size(), form);
+            assertEquals("foo", lambda.parameters().getFirst().name(), form);
+            assertEquals("int", lambda.parameters().getFirst().type().name(), form);
+            assertEquals("x", lambda.parameters().get(1).name(), form);
+            assertEquals("string", lambda.parameters().get(1).type().name(), form);
+            assertEquals(form.contains("void"), lambda.declaredReturnType() != null, form);
+            assertDoesNotThrow(() -> TypeChecker.check(ast), form);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            Source src = Source.newBuilder(OresLanguage.ID, code, "four-void-lambdas.atto")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(out).build()) {
+                ctx.eval(src);
+            }
+            assertEquals("pass", out.toString(StandardCharsets.UTF_8), form);
+        }
+    }
+
+    @Test
+    void malformedColonReturnAndConflictingVoidPathsReject() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc main(): void {
+                    const v = |foo: int| : void { return; };
+                    return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc main(): void {
+                    const v = |foo: int| : void -> return;
+                    return;
+                }
+                """));
+        Ast.Program bad = Parser.parse("""
+                fnc main(): void {
+                    const v = |foo: int| : void -> { return 7; };
+                    return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(bad));
+    }
+
+
+    @Test
+    void twoDiscardedFormalsRetainPositionalArityAndHaveNoSourceBinding() throws Exception {
+        String source = """
+                pub routine main(): void {
+                  const fnc discard_pair = |int _, bool _| -> { return; };
+                  discard_pair(41, true);
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(source);
+        Ast.FunctionDecl main = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) main.body().getFirst();
+        Ast.LambdaExpr lambda = assertInstanceOf(Ast.LambdaExpr.class, binding.initializer());
+        assertEquals(2, lambda.parameters().size(), "both '_' slots count toward arity");
+        assertNotEquals(lambda.parameters().get(0).name(),
+                lambda.parameters().get(1).name(), "ignored slots must not alias one binding");
+        assertTrue(lambda.parameters().stream().allMatch(
+                p -> p.name().startsWith("$ignored_lambda_")));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+
+        Source executable = Source.newBuilder(OresLanguage.ID, source, "lambda-two-discarded.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertDoesNotThrow(() -> context.eval(executable));
+        }
+    }
+
+    @Test
+    void versionedAttoLambdasRequirePipeDelimitersWithoutBreakingLegacyParser() {
+        String[] invalid = {
+                "pub fnc main(): int { val v = fnc(int x) -> x + 1; return 0; }",
+                "pub fnc main(): int { val v = (int x) -> x + 1; return 0; }",
+                "pub fnc main(): int { val v = nlex fnc(int x) -> x + 1; return 0; }"
+        };
+        for (int version : new int[] {1, 2}) {
+            for (String source : invalid) {
+                IllegalArgumentException rejected = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> Parser.parseVersionedAtto(source, version),
+                        "Atto v" + version + " must require |...| for function expressions");
+                assertTrue(rejected.getMessage().contains("E_LAMBDA_PIPES"),
+                        "unexpected rejection phase: " + rejected.getMessage());
+            }
+            assertDoesNotThrow(() -> Parser.parseVersionedAtto(
+                    "pub fnc main(): int { val v = |int x| -> x + 1; return 0; }",
+                    version), "pipe-delimited lambda must remain accepted");
+        }
+
+        // Parser.parse is the historical Oreslang grammar, not the versioned
+        // AttoLang entrypoint. Do not silently remove its legacy compatibility.
+        assertDoesNotThrow(() -> Parser.parse(invalid[0]));
+        assertDoesNotThrow(() -> Parser.parse(invalid[1]));
+    }
 }

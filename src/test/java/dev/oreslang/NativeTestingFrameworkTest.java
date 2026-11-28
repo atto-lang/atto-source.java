@@ -35,6 +35,13 @@ final class NativeTestingFrameworkTest {
     }
 
     @Test
+    void nativeSeededFuzzHelperRunsThroughGuestLanguage() throws Exception {
+        String output = run(Path.of("examples/native-fuzz-testing.ores"));
+        assertTrue(output.contains(
+                "ORES_TEST|SUMMARY|total=2|passed=2|failed=0|skipped=0|filtered=0"));
+    }
+
+    @Test
     void nativeMachineReceiptHasUniqueCasesAndTerminalSummary() throws Exception {
         // Actual pure-Oreslang guest runs through the Java compiler/runtime.
         // A synchronous PASS must not be followed by delayed case events.

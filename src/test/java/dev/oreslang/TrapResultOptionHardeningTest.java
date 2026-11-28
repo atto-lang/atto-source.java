@@ -25,7 +25,7 @@ final class TrapResultOptionHardeningTest {
     }
 
     @Test
-    void ordinaryErrAndNoneRemainDataInsideTheAddedOptionLayer() throws Exception {
+    void ordinaryErrPassesThroughAndNoneRemainsSuccessfulData() throws Exception {
         String source = fixture("ordinary-data.atto");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
@@ -36,7 +36,7 @@ final class TrapResultOptionHardeningTest {
                 .allowAllAccess(false).out(stdout).build()) {
             context.eval(guest);
         }
-        assertEquals("true:true:true:true:true:true:true:true:true:true:true",
+        assertEquals("true:true:true:true:true:true:true",
                 stdout.toString(StandardCharsets.UTF_8));
     }
 
@@ -61,7 +61,7 @@ final class TrapResultOptionHardeningTest {
     }
 
     @Test
-    void trapResultDoesNotCoerceToBareResult() throws Exception {
+    void trapResultDoesNotDiscardTheWidenedErrorType() throws Exception {
         String source = fixture("implicit-flatten-reject.atto");
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));

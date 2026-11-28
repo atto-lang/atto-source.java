@@ -1,0 +1,13 @@
+// Compilation must reject a real overlapping shared/exclusive loan,
+ // not confuse core/cell policy checks with granted memory authority.
+import module cell from "core/cell";
+define class Box as
+  pub let int value = 7;
+end
+fnc mixed(borrow Box read_only, borrow mut Box writable): int {
+  return read_only.value + writable.value;
+}
+pub fnc main(): int {
+  val Box owner = new Box();
+  return mixed(rt borrow owner, rt mut borrow owner);
+}

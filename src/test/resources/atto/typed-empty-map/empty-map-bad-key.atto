@@ -1,4 +1,4 @@
 fnc read(): void {
-    const bad = ~map<int, bool>();
+    const bad = Map.of<int, bool>();
     return;
 }

@@ -21,6 +21,7 @@ on:
       - 'tools/verify-exact-source-tree.sh'
       - 'tools/test-verify-exact-source-tree.sh'
       - 'tests/private-ci-v3-codeowners.test.mjs'
+      - 'tests/private-ci-publisher-limits.test.mjs'
       - 'scripts/verify_github_run_evidence.py'
       - 'tests/test_verify_github_run_evidence.py'
   push:
@@ -44,6 +45,7 @@ on:
       - 'tools/verify-exact-source-tree.sh'
       - 'tools/test-verify-exact-source-tree.sh'
       - 'tests/private-ci-v3-codeowners.test.mjs'
+      - 'tests/private-ci-publisher-limits.test.mjs'
       - 'scripts/verify_github_run_evidence.py'
       - 'tests/test_verify_github_run_evidence.py'
 permissions:
@@ -60,6 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           node --test tests/private-ci-v3-codeowners.test.mjs
+          node --test tests/private-ci-publisher-limits.test.mjs
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh scripts/test-private-ci-codeowners-contract.sh
           python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/publish-private-ci-source-v3.py scripts/test-publish-private-ci-source-v3.py
           python3 -m py_compile scripts/ci_private_mirror_preflight.py tests/test_ci_private_mirror_preflight.py

@@ -15,32 +15,50 @@ import org.junit.jupiter.api.Test;
 final class OresSchedulerContinuationLocalityTest {
 
     @Test
-    void aResumedContinuationReturnsToItsIdleCarrier() throws Exception {
-        // ores.scheduler.locality.grace-micros=0 turns locality off by design.
-        org.junit.jupiter.api.Assumptions.assumeTrue(LocalityCarrierPool.DEFAULT_GRACE_NANOS > 0,
-                "continuation locality disabled");
-        try (OresScheduler scheduler = new OresScheduler(4, 64)) {
-            for (int round = 0; round < 50; round++) {
-                OresFuture<Integer> pending = new OresFuture<>();
-                AtomicReference<Thread> before = new AtomicReference<>();
-                AtomicReference<Thread> after = new AtomicReference<>();
-                CountDownLatch suspended = new CountDownLatch(1);
-                AtomicInteger turns = new AtomicInteger();
-                OresFuture<Integer> task = scheduler.start(resume -> {
-                    if (turns.getAndIncrement() == 0) {
-                        before.set(Thread.currentThread());
-                        suspended.countDown();
-                        return OresScheduler.await(pending);
-                    }
-                    after.set(Thread.currentThread());
-                    return OresScheduler.done((Integer) resume.value() + 1);
-                });
-                assertTrue(suspended.await(5, TimeUnit.SECONDS));
-                Thread producer = Thread.ofPlatform().start(() -> pending.completeFromRuntime(41));
-                producer.join();
-                assertEquals(42, task.get(5, TimeUnit.SECONDS));
-                assertSame(before.get(), after.get(), "round " + round + " migrated off an idle carrier");
-                assertNotSame(producer, after.get());
+    void resumedContinuationPrefersHomeButCanBeStolenAfterGrace() throws Exception {
+        // Physical affinity is a bounded hint, not a guarantee under OS
+        // preemption. Inspect actual placement/dequeue accounting instead of
+        // assuming a 50us grace always outlasts host scheduling latency.
+        try (LocalityCarrierPool pool = new LocalityCarrierPool(4, 64,
+                r -> Thread.ofPlatform().daemon(true).unstarted(r),
+                TimeUnit.MICROSECONDS.toNanos(50), 2)) {
+            pool.prestartAll();
+            try (OresScheduler scheduler = OresScheduler.runtimeOwned("locality-test", 4, pool)) {
+                for (int round = 0; round < 50; round++) {
+                    OresFuture<Integer> pending = new OresFuture<>();
+                    AtomicReference<Thread> before = new AtomicReference<>();
+                    AtomicReference<Thread> after = new AtomicReference<>();
+                    AtomicReference<ExecutionContext> context = new AtomicReference<>();
+                    CountDownLatch suspended = new CountDownLatch(1);
+                    AtomicInteger turns = new AtomicInteger();
+                    var baseline = pool.stats();
+                    OresFuture<Integer> task = scheduler.start(resume -> {
+                        if (turns.getAndIncrement() == 0) {
+                            before.set(Thread.currentThread());
+                            context.set(OresScheduler.currentExecutionContext());
+                            suspended.countDown();
+                            return OresScheduler.await(pending);
+                        }
+                        assertSame(scheduler, OresScheduler.current());
+                        assertSame(context.get(), OresScheduler.currentExecutionContext());
+                        after.set(Thread.currentThread());
+                        return OresScheduler.done((Integer) resume.value() + 1);
+                    });
+                    assertTrue(suspended.await(5, TimeUnit.SECONDS));
+                    Thread producer = Thread.ofPlatform().start(() -> pending.completeFromRuntime(41));
+                    producer.join();
+                    assertEquals(42, task.get(5, TimeUnit.SECONDS));
+                    assertEquals(2, turns.get());
+                    assertNotSame(producer, after.get());
+                    var observed = pool.stats();
+                    assertEquals(1L, observed.preferredPlacements() - baseline.preferredPlacements(),
+                            "await must submit one preferred continuation");
+                    long local = observed.localRuns() - baseline.localRuns();
+                    long stolen = observed.steals() - baseline.steals();
+                    assertEquals(1L, local + stolen, "one preferred continuation must execute");
+                    if (local == 1) assertSame(before.get(), after.get());
+                    else assertNotSame(before.get(), after.get());
+                }
             }
         }
     }
