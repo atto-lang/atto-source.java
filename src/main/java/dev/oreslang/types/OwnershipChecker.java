@@ -635,19 +635,35 @@ public final class OwnershipChecker {
 
     /** Declared parameter (by identity) to its effective implicit-borrow parameter. */
     private Map<Ast.Param, Ast.Param> implicitBorrowParams;
+    /** Every candidate declaration, by identity (owned formals map to themselves). */
+    private Map<Ast.Param, Ast.Param> implicitBorrowDeclared;
+    /**
+     * Value-keyed fallback for re-created but equal Params (e.g. resolved call
+     * signatures). Two unrelated callables may declare equal Params with
+     * different decisions; such values are ambiguous and fall back to the
+     * declared (owned) formal, which is the strict choice at a call site.
+     */
+    private Map<Ast.Param, Ast.Param> implicitBorrowByValue;
+    private Set<Ast.Param> implicitBorrowAmbiguous;
+    private Set<Ast.Param> implicitBorrowEffective;
 
     private Ast.Param effectiveParam(Ast.Param param) {
         if (implicitBorrowParams == null) computeImplicitBorrowParams();
-        return implicitBorrowParams.getOrDefault(param, param);
+        Ast.Param byIdentity = implicitBorrowParams.get(param);
+        if (byIdentity != null) return byIdentity;
+        if (implicitBorrowDeclared.containsKey(param)) return param;
+        if (implicitBorrowAmbiguous.contains(param)) return param;
+        return implicitBorrowByValue.getOrDefault(param, param);
     }
 
     private boolean isImplicitBorrowParam(Ast.Param effective) {
         if (implicitBorrowParams == null) computeImplicitBorrowParams();
-        return implicitBorrowParams.containsValue(effective);
+        return implicitBorrowEffective.contains(effective);
     }
 
     private void computeImplicitBorrowParams() {
-        implicitBorrowParams = new HashMap<>();
+        implicitBorrowParams = new IdentityHashMap<>();
+        implicitBorrowDeclared = new IdentityHashMap<>();
         List<Map.Entry<Ast.Param, List<Ast.Stmt>>> candidates = new ArrayList<>();
         for (Ast.ModuleDecl module : checkedProgram.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
@@ -666,6 +682,7 @@ public final class OwnershipChecker {
             }
         }
         for (Map.Entry<Ast.Param, List<Ast.Stmt>> candidate : candidates) {
+            implicitBorrowDeclared.put(candidate.getKey(), candidate.getKey());
             implicitBorrow(candidate.getKey(), candidate.getValue());
         }
         // Fixed point: a parameter passed on to an owned formal is itself
@@ -681,6 +698,14 @@ public final class OwnershipChecker {
                     changed = true;
                 }
             }
+        }
+        implicitBorrowByValue = new HashMap<>();
+        implicitBorrowAmbiguous = new HashSet<>();
+        implicitBorrowEffective = new HashSet<>(implicitBorrowParams.values());
+        for (Ast.Param declared : implicitBorrowDeclared.keySet()) {
+            Ast.Param decision = implicitBorrowParams.getOrDefault(declared, declared);
+            Ast.Param prior = implicitBorrowByValue.putIfAbsent(declared, decision);
+            if (prior != null && !prior.equals(decision)) implicitBorrowAmbiguous.add(declared);
         }
     }
 
@@ -734,16 +759,38 @@ public final class OwnershipChecker {
                 || type.isTupleType() || type.inferArguments()) return;
         Ast.ClassDecl klass = findClass(type.name());
         if (klass == null || klass.actorKind() != Ast.ActorKind.NONE || isCopyType(type)) return;
+        // A loan cannot be held across a suspension point: a body that awaits,
+        // selects or performs channel I/O keeps its formals owned.
+        if (containsSuspension(body)) return;
         // A body that explicitly takes ownership (take!/rt take, return, store,
         // destructure, aggregate element) declares an owned formal.
         if (consumesName(body, param.name())) return;
         boolean mutable = mutatesThrough(body, param.name(), klass);
-        // Keyed by value: resolved call signatures may re-create equal Params.
-        // If equal declarations disagree, the exclusive loan wins.
-        Ast.Param previous = implicitBorrowParams.get(param);
-        boolean exclusive = mutable || (previous != null && previous.type().mutableBorrow());
+        // Keyed by declaration identity; see effectiveParam for re-created Params.
         implicitBorrowParams.put(param,
-                new Ast.Param(Ast.TypeRef.borrowed(type, exclusive), param.name(), false, false));
+                new Ast.Param(Ast.TypeRef.borrowed(type, mutable), param.name(), false, false));
+    }
+
+    private static boolean containsSuspension(Object node) {
+        if (node instanceof Ast.AwaitExpr || node instanceof Ast.ChannelOpExpr
+                || node instanceof Ast.SelectStmt || node instanceof Ast.DynamicSelectExpr) return true;
+        if (node instanceof Ast.LambdaExpr) return false; // a lambda body suspends separately
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (containsSuspension(item)) return true;
+            return false;
+        }
+        if (node instanceof java.lang.Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (containsSuspension(component.getAccessor().invoke(record))) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** True when {@code node} explicitly transfers ownership of local {@code name}. */
@@ -761,6 +808,8 @@ public final class OwnershipChecker {
                     || (returned.value() instanceof Ast.UnaryExpr unary && unary.operator().startsWith("&")
                         && isName(unary.operand(), name)))) return true;
         if (node instanceof Ast.YieldStmt yielded && isName(yielded.value(), name)) return true;
+        // A checked cast produces an owned value of the target type: keep the parameter owned.
+        if (node instanceof Ast.CastExpr cast && isName(cast.value(), name)) return true;
         // Pattern binders over the parameter create aliases whose lifetime cannot be
         // related to an incoming loan yet: keep such parameters owned.
         if (node instanceof Ast.TypeTestExpr test && test.binding() != null && isName(test.value(), name)) return true;

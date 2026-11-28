@@ -6335,6 +6335,14 @@ public final class OresEvalRootNode extends RootNode {
             // Claim a tail-position mark only for this exact call (not for
             // calls nested in its arguments): its heap frame inherits the
             // caller's logical depth instead of adding one.
+            // And/Or/Xor intrinsics keep their short-circuit order when an operand
+            // is itself a resumable call (e.g. a helper containing a loop).
+            if (isBooleanIntrinsicCall(call, env) && call.arguments().size() >= 2
+                    && !call.typeArgumentsPresent()) {
+                evalSuspendableBooleanOperands(task, booleanIntrinsicName(call, env),
+                        call.arguments(), 0, false, env, continuation);
+                return;
+            }
             final boolean tail = isTailPositionCall(task.pendingTailReturn, call);
             if (tail) task.pendingTailReturn = null;
             Ast.CallExpr implicit;
@@ -9400,6 +9408,28 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 default -> throw new IllegalStateException("unknown boolean intrinsic " + name);
             };
+        }
+
+        private void evalSuspendableBooleanOperands(SourceTask task, String name, List<Ast.Expr> operands,
+                int index, boolean parity, Env env, SourceValueCont continuation) {
+            if (index == operands.size()) {
+                continuation.accept(task, name.equals("And") ? Boolean.TRUE
+                        : name.equals("Or") ? Boolean.FALSE : (Object) parity, null);
+                return;
+            }
+            evalSuspendableExpr(task, operands.get(index), env, (t, value, failure) -> {
+                if (failure != null) { continuation.accept(t, null, failure); return; }
+                boolean operand;
+                try {
+                    operand = booleanIntrinsicValue(name, value);
+                } catch (RuntimeException invalid) {
+                    continuation.accept(t, null, invalid);
+                    return;
+                }
+                if (name.equals("And") && !operand) { continuation.accept(t, Boolean.FALSE, null); return; }
+                if (name.equals("Or") && operand) { continuation.accept(t, Boolean.TRUE, null); return; }
+                evalSuspendableBooleanOperands(t, name, operands, index + 1, parity ^ operand, env, continuation);
+            });
         }
 
         private boolean booleanIntrinsicValue(String name, Object value) {

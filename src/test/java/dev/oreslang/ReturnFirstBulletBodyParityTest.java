@@ -222,9 +222,11 @@ final class ReturnFirstBulletBodyParityTest {
                 end
                 pub fnc main(): int { return risky(4); }
                 """;
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(program),
-                "Java cannot publish a runnable raise! guest without typed unwind/CONTROL lowering");
+        // raise! lowers to a typed guest effect; an effect naming an undeclared
+        // (non-Error) type is still rejected before any guest is published.
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.check(Parser.parse(program)));
+        assertTrue(rejected.getMessage().contains("must name Error"), rejected::getMessage);
     }
 
     @Test

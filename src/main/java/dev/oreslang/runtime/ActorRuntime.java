@@ -7218,7 +7218,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorCell<?> parent = currentActor.get();
         synchronized (runtimeLifecycleLock) {
-            if (closed.get() || linkedExitSealed) throw new IllegalStateException("actor runtime is closed");
+            // After linked exit is sealed only a draining actor's own turn may spawn
+            // (its child is drained in a later round); root spawns stay rejected.
+            if (closed.get() || (linkedExitSealed && parent == null))
+                throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
 
             ActorCell<M> cell = null;
@@ -7255,7 +7258,8 @@ public final class ActorRuntime implements AutoCloseable {
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
                         if (parent.stopped.get()
-                                || parent.sealing
+                                // A linked-exit drain retires the children of draining actors too.
+                                || (parent.sealing && !linkedExitSealed)
                                 || parent.finalized
                                 || parent.forceKillFenced) {
                             throw new CancellationException(
@@ -10087,37 +10091,50 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext("drain linked process actors");
         requireBlockingHostContext("drain linked process actors");
         final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        final List<ActorCell<?>> snapshot;
-        final List<OresFuture<Void>> drains = new ArrayList<>();
-        final List<Runnable> rejected = new ArrayList<>();
-        synchronized (runtimeLifecycleLock) {
-            if (closed.get() || linkedExitSealed)
-                throw new IllegalStateException("linked exit already sealed");
-            if (!actorGroups.isEmpty() || supervisors.size() != 1)
-                throw new IllegalStateException(
-                        "linked actor drain requires explicit group/supervisor retirement");
-            linkedExitSealed = true;
-            snapshot = List.copyOf(actors.values());
-            for (ActorCell<?> cell : snapshot) {
-                synchronized (cell.lifecycleLock) {
-                    if (cell.finalized || cell.stopped.get()) continue;
-                    cell.sealing = true;
-                    rejected.add(cell.sealAsyncSendAdmission(
-                            new ActorSealedException(cell.ref.id())));
-                    drains.add(cell.drainAcceptedMessages(true));
+        final List<ActorCell<?>> snapshot = new ArrayList<>();
+        final Set<ActorCell<?>> handled = Collections.newSetFromMap(new IdentityHashMap<>());
+        boolean firstRound = true;
+        // Drain to quiescence: a draining actor may spawn and message children;
+        // each later round seals and drains the actors that appeared meanwhile.
+        while (true) {
+            final List<ActorCell<?>> round = new ArrayList<>();
+            final List<OresFuture<Void>> drains = new ArrayList<>();
+            final List<Runnable> rejected = new ArrayList<>();
+            synchronized (runtimeLifecycleLock) {
+                if (firstRound) {
+                    if (closed.get() || linkedExitSealed)
+                        throw new IllegalStateException("linked exit already sealed");
+                    if (!actorGroups.isEmpty() || supervisors.size() != 1)
+                        throw new IllegalStateException(
+                                "linked actor drain requires explicit group/supervisor retirement");
+                    linkedExitSealed = true;
+                }
+                for (ActorCell<?> cell : actors.values()) {
+                    if (!handled.add(cell)) continue;
+                    round.add(cell);
+                    synchronized (cell.lifecycleLock) {
+                        if (cell.finalized || cell.stopped.get()) continue;
+                        cell.sealing = true;
+                        rejected.add(cell.sealAsyncSendAdmission(
+                                new ActorSealedException(cell.ref.id())));
+                        drains.add(cell.drainAcceptedMessages(true));
+                    }
                 }
             }
-        }
-        for (Runnable reject : rejected) reject.run();
-        for (ActorCell<?> cell : snapshot) cell.schedule();
-        try {
-            for (OresFuture<Void> drain : drains) {
-                long remaining = deadline - System.nanoTime();
-                if (remaining <= 0) throw new TimeoutException("linked mailbox drain deadline");
-                drain.get(remaining, TimeUnit.NANOSECONDS);
+            firstRound = false;
+            if (round.isEmpty()) break;
+            snapshot.addAll(round);
+            for (Runnable reject : rejected) reject.run();
+            for (ActorCell<?> cell : round) cell.schedule();
+            try {
+                for (OresFuture<Void> drain : drains) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) throw new TimeoutException("linked mailbox drain deadline");
+                    drain.get(remaining, TimeUnit.NANOSECONDS);
+                }
+            } catch (ExecutionException | TimeoutException failure) {
+                throw new IllegalStateException("linked mailbox drain incomplete: " + (failure.getCause() != null ? failure.getCause() : failure), failure);
             }
-        } catch (ExecutionException | TimeoutException failure) {
-            throw new IllegalStateException("linked mailbox drain incomplete", failure);
         }
         // Stop only after EVERY watermark has processed, so structured
         // parent retirement cannot discard an accepted child message.

@@ -1,4 +1,6 @@
 fnc read(): void {
-    const invalid = Map.of("ready" => true);
+    // A non-literal key leaves no exact witness: the type gate still applies.
+    const key = "ready";
+    const invalid = Map.of(key => true);
     return;
 }

@@ -17,7 +17,8 @@ final class DeclarationKindAdmissionTest {
                 {"state container", "sealed state block"},
                 {"grain", "stable keyed identity"},
                 {"model", "typed ModelGraph"},
-                {"enum", "nominal ADT case"}
+                // enum is lowered (nominal ADT cases); an empty enum still fails closed.
+                {"enum", "enum must declare at least one case"}
         };
         for (String[] kind : kinds) {
             String declaration = "define " + kind[0] + " Demo as\nend\n";

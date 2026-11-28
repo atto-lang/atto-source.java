@@ -45,7 +45,7 @@ final class OwnershipDiagnosticCodeTest {
                 define class Bar as
                   pub let String foo = "start";
                 end
-                fnc consume(Bar b): void {
+                fnc consume(take! Bar b): void {
                   return;
                 }
                 fnc bad(): void {
@@ -64,7 +64,7 @@ final class OwnershipDiagnosticCodeTest {
                 define class Bar as
                   pub let String foo = "start";
                 end
-                fnc change(Bar b): void {
+                fnc change(borrow Bar b): void {
                   b.foo = "foobar";
                   return;
                 }

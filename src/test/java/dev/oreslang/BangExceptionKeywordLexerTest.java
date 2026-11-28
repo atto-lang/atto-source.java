@@ -29,14 +29,17 @@ final class BangExceptionKeywordLexerTest {
     }
 
     @Test
-    void canonicalExceptionalStatementsFailClosedUntilTypedGuestUnwindExists() {
+    void canonicalExceptionalStatementsLowerToTypedGuestEffects() {
+        // defer-recover-unwind-v1: each bang form lowers to its typed guest effect
+        // operation (never a host exception); the type checker gates its payload.
         for (String keyword : List.of("throw!", "raise!", "panic!")) {
             String source = "fnc main():int { " + keyword + " new Error(); }";
-            RuntimeException rejected = assertThrows(RuntimeException.class,
-                    () -> Parser.parse(source));
-            assertTrue(rejected.getMessage().contains("typed exceptional effect"),
-                    keyword + " must not silently execute as a host exception: "
-                            + rejected.getMessage());
+            String effect = keyword.substring(0, keyword.length() - 1);
+            var body = ((dev.oreslang.ast.Ast.FunctionDecl) Parser.parse(source)
+                    .modules().getFirst().declarations().getFirst()).body();
+            var lowered = org.junit.jupiter.api.Assertions.assertInstanceOf(dev.oreslang.ast.Ast.ExprStmt.class, body.getFirst());
+            var operation = org.junit.jupiter.api.Assertions.assertInstanceOf(dev.oreslang.ast.Ast.RuntimeCallExpr.class, lowered.expression());
+            assertEquals(effect, operation.operation(), keyword);
         }
     }
 

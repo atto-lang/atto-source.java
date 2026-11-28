@@ -7265,7 +7265,15 @@ public final class TypeChecker {
                     "await requires Future<T>, HasFuture<T>, or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
-            Type sink = typeOf(channelOp.channel(), env, generics, self);
+            // A direct `writech stdio.out, v` / `readch stdio.in` names the endpoint without
+            // reifying it (canonical stdout endpoints are direct-write-only).
+            Type sink = channelOp.channel() instanceof Ast.MemberExpr endpoint
+                    && endpoint.receiver() instanceof Ast.NameExpr stdioRoot
+                    && stdioRoot.name().equals("stdio") && canonicalStdoutRoot("stdio", env)
+                    && Set.of("out", "err", "in").contains(endpoint.member())
+                    ? new Named(endpoint.member().equals("in") ? "stdio.stdin"
+                            : endpoint.member().equals("err") ? "stdio.stderr" : "stdio.stdout", List.of())
+                    : typeOf(channelOp.channel(), env, generics, self);
             if (sink instanceof Named stream && stream.name().startsWith("stdio.")) {
                 // stdio streams are line channels: write a value to stdout/stderr,
                 // read one line (string) from stdin.

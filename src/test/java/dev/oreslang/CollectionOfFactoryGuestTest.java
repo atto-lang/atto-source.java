@@ -102,7 +102,8 @@ final class CollectionOfFactoryGuestTest {
     void missingOrInvalidMapWitnessesAreNotDynamicMaps() {
         requireCompilerFactoryGate("const m = Map.of();",
                 "Map.of() requires a directly declared, fully typed Map<K,V>");
-        requireCompilerFactoryGate("const m = Map.of(\"key\" => 1);",
+        // All-literal single-type entries fix an exact witness; a non-literal key does not.
+        requireCompilerFactoryGate("const k = \"key\";\nconst m = Map.of(k => 1);",
                 "Map.of(...) requires a directly declared, fully typed Map<K,V>");
         requireParserFactoryGate("const m = Map.of<string>(\"key\" => 1);",
                 "Map.of<K,V> requires exactly two positional type witnesses");
@@ -266,7 +267,7 @@ final class CollectionOfFactoryGuestTest {
 
     @Test
     void unimplementedFactoriesCannotFallThroughToHostCollections() {
-        for (String kind : new String[]{"Entry", "Pair", "List", "Vector", "Set"}) {
+        for (String kind : new String[]{"Vector", "Set"}) {
             IllegalArgumentException problem = assertThrows(
                     IllegalArgumentException.class,
                     () -> Parser.parse(program("const x = " + kind + ".of(1, 2);")),

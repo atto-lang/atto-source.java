@@ -1013,7 +1013,10 @@ public final class Parser {
                 externalFunctions.putIfAbsent(nameToken.lexeme(), nameToken);
                 continue;
             }
-            if (isContextualIdentifier("mtd") && checkNext(LPAREN)) {
+            if (isContextualIdentifier("mtd") && checkNext(LPAREN) && current + 2 < tokens.size()
+                    && (tokens.get(current + 2).type() == SELF
+                        || (tokens.get(current + 2).type() == MUT && current + 3 < tokens.size()
+                            && tokens.get(current + 3).type() == SELF))) {
                 // Out-of-line receiver method: `mtd (self: Owner) name(...) ...`
                 // attaches an ordinary instance method to the nominal class Owner.
                 Token head = advance(); // contextual mtd
@@ -1514,6 +1517,16 @@ public final class Parser {
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
             }
+            if (matchContextualIdentifier("enum")) {
+                validateOnlyVisibilityModifiers(modifiers, "enums");
+                rejectCallableStructuralAnnotation(annotations, "enum declarations");
+                Ast.EnumDecl enumeration = parseTaggedEnum();
+                if (!pendingEnumMethods.isEmpty()) {
+                    pendingEnumMethods.clear();
+                    throw error(previous(), "enum methods are supported only on root enum declarations");
+                }
+                return enumeration;
+            }
             rejectUnloweredRuntimeEntityDeclaration();
             ActorPrefix actorPrefix = parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
@@ -1898,6 +1911,19 @@ public final class Parser {
     }
 
     /** Contextual mtd accepts both receiver-first and name-first declarations. */
+    /** A bare `name(...): T { ... }` interface member is a trait default, not a signature. */
+    private boolean bareInterfaceMemberHasBody() {
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN || type == LT) depth++;
+            else if ((type == RPAREN || type == GT) && depth > 0) depth--;
+            else if (depth == 0 && (type == SEMICOLON || type == END || type == EOF)) return false;
+            else if (depth == 0 && type == LBRACE) return true;
+        }
+        return false;
+    }
+
     private boolean isExternalActorMethodHead() {
         return isContextualIdentifier("mtd")
                 && current + 1 < tokens.size()
@@ -2518,10 +2544,6 @@ public final class Parser {
             throw error(peek(), "source model declarations require typed ModelGraph "
                     + "admission and verified code generation; not yet enabled");
         }
-        if (name.equals("enum")) {
-            throw error(peek(), "source enum declarations require nominal ADT case "
-                    + "typing, layout and match lowering; not yet enabled");
-        }
         if (!name.equals("supervisor") && !name.equals("mailman")
                 && !name.equals("scheduler") && !name.equals("proxy")
                 && !name.equals("pipe")) return;
@@ -3026,7 +3048,7 @@ public final class Parser {
             }
             // Trait/interface signatures allow the canonical bare instance
             // method form: get_future(): Future<T>;
-            if (match(FNC) || (check(IDENT) && checkNext(LPAREN))) {
+            if (match(FNC) || (check(IDENT) && checkNext(LPAREN) && !bareInterfaceMemberHasBody())) {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
                 validateInterfaceCallableModifiers(memberModifiers);
                 CallableStructural callableStructural = normalizeCallableStructural(memberAnnotations, memberModifiers.structural);
@@ -4774,10 +4796,23 @@ public final class Parser {
         return false;
     }
 
+    /** maybe failure arms keep the declared variant arity: `Err()` is not `Err(_)` there. */
+    private boolean strictVariantArity;
+
+    private Ast.Pattern parseStrictArityPattern() {
+        boolean outer = strictVariantArity;
+        strictVariantArity = true;
+        try {
+            return parsePattern();
+        } finally {
+            strictVariantArity = outer;
+        }
+    }
+
     private Ast.Stmt parseMaybe(boolean returning) {
         List<MaybeBinding> bindings = new ArrayList<>();
         while (isMaybeBindingAt(current)) {
-            Ast.Pattern pattern = parsePattern();
+            Ast.Pattern pattern = parseStrictArityPattern();
             if (!(pattern instanceof Ast.ConstructorPattern constructor)
                     || constructor.arguments().size() != 1
                     || !(constructor.arguments().getFirst() instanceof Ast.BindingPattern
@@ -4815,7 +4850,7 @@ public final class Parser {
                 throw error(peek(), "maybe else wildcard '_' must be the final arm");
             }
             matchContextualIdentifier("on");
-            Ast.Pattern pattern = parsePattern();
+            Ast.Pattern pattern = parseStrictArityPattern();
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 if (constructor.constructor().equals("Err")) {
                     if (constructor.arguments().size() != 1) {
@@ -4941,7 +4976,7 @@ public final class Parser {
             return parseMaybe(false);
         }
         if (match(CARET)) { // canonical `^ value;` early return (^ is never statement-initial XOR)
-            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
+            Ast.Expr value = match(VOID) || check(SEMICOLON) || isSafeStatementBoundary()
                     ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "caret return requires ';'");
             return new Ast.ReturnStmt(value);
@@ -5043,7 +5078,9 @@ public final class Parser {
             // Source exceptional effects (atto-spec defer-recover-unwind-v1):
             // throw/raise/panic E and `recover handler;` lower to checked
             // runtime operations with distinct catch/trap/recover behaviour.
-            String effect = previous().lexeme();
+            // `throw!` / `raise!` / `panic!` are the canonical spellings of the same effects.
+            String effect = previous().lexeme().endsWith("!")
+                    ? previous().lexeme().substring(0, previous().lexeme().length() - 1) : previous().lexeme();
             Ast.Expr operand = parseExpression();
             consumeExpressionStatementTerminator(operand, effect + " statement should end with ';'");
             usedPreludeProducts.add("Error");
@@ -6062,6 +6099,12 @@ public final class Parser {
                 && map.mapType() == null;
         if (!(initializer instanceof Ast.ContextualEmptyMapExpr) && !untypedEntries) {
             return initializer;
+        }
+        // All-scalar-literal entries of one key type and one value type fix the
+        // exact Map<K,V> witness without a declared binding type.
+        if (declaredType == null && initializer instanceof Ast.MapLiteralExpr literalMap && untypedEntries) {
+            Ast.TypeRef uniform = uniformScalarMapType(literalMap.entries());
+            if (uniform != null) return new Ast.MapLiteralExpr(uniform, literalMap.entries());
         }
         if (declaredType == null || !declaredType.name().equals("Map")
                 || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
@@ -7431,7 +7474,7 @@ public final class Parser {
                 if (!check(RPAREN)) {
                     do args.add(parsePattern()); while (match(COMMA));
                 }
-                if (args.isEmpty() && (name.equals("Err") || name.equals("Some"))) {
+                if (args.isEmpty() && !strictVariantArity && (name.equals("Err") || name.equals("Some"))) {
                     // `on Err() ->` matches the variant and ignores its payload (= `Err(_)`).
                     // `Ok()` keeps its meaning: the zero-payload Ok of Result<void, E>.
                     args.add(new Ast.WildcardPattern());
@@ -8695,7 +8738,9 @@ public final class Parser {
                 || !member.member().equals("of")
                 || !(member.receiver() instanceof Ast.NameExpr owner)) return false;
         return PENDING_OF_TYPES.contains(owner.name())
-                && !shadowedOfTypes.contains(owner.name());
+                && !shadowedOfTypes.contains(owner.name())
+                // List/Pair/Entry.of lower through canonicalOfFactory to checked literals.
+                && canonicalOfFactory(callee) == null;
     }
 
     private Ast.Expr parseFactoryOf(String kind, List<Ast.TypeRef> explicitTypes) {
@@ -8755,6 +8800,7 @@ public final class Parser {
         if (!(callee instanceof Ast.MemberExpr member) || !member.member().equals("of")
                 || !(member.receiver() instanceof Ast.NameExpr owner)
                 || !CANONICAL_OF_FACTORIES.contains(owner.name())
+                || shadowedOfTypes.contains(owner.name())
                 || isLocalTypeName(owner.name()) || rootAggregateShapes.containsKey(owner.name())) return null;
         return owner.name();
     }
@@ -9455,6 +9501,7 @@ public final class Parser {
 
     private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType, boolean entryOnly) {
         List<Ast.MapLiteralEntry> entries = new ArrayList<>();
+        Boolean alternatingMapForm = null;
         java.util.Map<String, Integer> constantStringKeyKinds = new java.util.HashMap<>();
         do {
             if (check(ELLIPSIS)) {
@@ -9496,7 +9543,15 @@ public final class Parser {
                 consume(RPAREN, "product factory requires exactly two arguments");
             } else {
                 key = parseExpression();
-                consume(FAT_ARROW, "map literals require '=>' between key and value");
+                // `Map.of(k1, v1, k2, v2)` alternates keys and values; `k => v` pairs
+                // them explicitly. One call uses one form.
+                boolean alternatingEntry = !entryOnly && !check(FAT_ARROW) && check(COMMA);
+                if (alternatingMapForm != null && alternatingMapForm != alternatingEntry) {
+                    throw error(peek(), "Map.of cannot mix 'k => v' entries with alternating key, value arguments");
+                }
+                alternatingMapForm = alternatingEntry;
+                if (alternatingEntry) consume(COMMA, "Map.of alternating form needs a value after each key");
+                else consume(FAT_ARROW, "map literals require '=>' between key and value");
                 value = parseExpression();
             }
             // Reject mixed-kind constant duplicates in the new factory syntax.

@@ -204,7 +204,8 @@ final class TildeCollectionConstructorRemovalTest {
 
     @Test
     void pendingFactoriesRequireCheckedGuestLoweringBeforeParserAdmission() {
-        for (String kind : new String[]{"Entry", "Pair", "List", "Vector", "Set"}) {
+        // List/Pair/Entry.of now lower to checked literals and prelude products.
+        for (String kind : new String[]{"Vector", "Set"}) {
             String expression = kind + ".of(1, 2)";
             IllegalArgumentException failure = assertThrows(
                     IllegalArgumentException.class,

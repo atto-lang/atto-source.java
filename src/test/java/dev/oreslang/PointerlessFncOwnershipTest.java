@@ -468,7 +468,7 @@ final class PointerlessFncOwnershipTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define class Box as
                           pub let int value = 1;
-                          pub combine(Box other): int { return self.value; }
+                          pub combine(take! Box other): int { return self.value; }
                         end
                         fnc bad(): void {
                           let mut Box box = new Box();
