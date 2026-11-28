@@ -119,14 +119,14 @@ final class TrapResultSemanticsTest {
 
     @Test
     void unsupportedSuspendingTrapFormsFailClosed() {
-        IllegalArgumentException async = assertThrows(
+        IllegalArgumentException suspends = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
-                        async trap fnc later(): int {
+                        suspends trap fnc later(): int {
                           return 1;
                         }
                         """));
-        assertTrue(async.getMessage().contains("suspending trap"));
+        assertTrue(suspends.getMessage().contains("suspending trap"));
 
         IllegalArgumentException generator = assertThrows(
                 IllegalArgumentException.class,

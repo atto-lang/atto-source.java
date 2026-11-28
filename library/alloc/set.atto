@@ -101,6 +101,40 @@ define pub class BoundedIntSet as
     return true;
   }
 
+  // Explicit in-place set XOR. Incompatible domains leave receiver intact.
+  // Logical size is maintained on each transition; no temporary allocation.
+  pub symmetric_difference_from(mut self)(borrow BoundedIntSet other): bool {
+    if self.domain neq other.capacity(); do return false; fi
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      if other.contains(i); do
+        if self.flags.get(i) eq 1; do
+          self.flags.set(i, 0);
+          self.members = self.members - 1;
+        else
+          self.flags.set(i, 1);
+          self.members = self.members + 1;
+        fi
+      fi
+    done
+    return true;
+  }
+
+  // Non-mutating XOR: a new bounded owner, never a view into either input.
+  // The domain mismatch is rejected before allocation. Physical allocation
+  // failure follows the existing alloc provider contract; no partial result.
+  pub symmetric_difference(borrow BoundedIntSet other): BoundedIntSet {
+    if self.domain neq other.capacity(); do
+      rt fail("alloc/set: symmetric difference domain mismatch");
+    fi
+    let mut BoundedIntSet result = new BoundedIntSet(self.domain);
+    for (let int i = 0; i < self.domain; i = i + 1) do
+      if self.contains(i) neq other.contains(i); do
+        if !result.insert(i); do rt fail("alloc/set: inconsistent fresh set"); fi
+      fi
+    done
+    return result;
+  }
+
   pub is_subset_of(borrow BoundedIntSet other): bool {
     if self.domain != other.capacity(); do return false; fi
     for (let int i = 0; i < self.domain; i = i + 1) do
@@ -155,6 +189,100 @@ define pub class IntHashSet as
       if state == 1 && self.keys.get(pos) == key; do return true; fi
     done
     return false;
+  }
+
+  // Read-only membership comparisons, independent of capacity and probe order.
+  pub same_members(borrow IntHashSet other): bool {
+    if self.count neq other.len(); do return false; fi
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) eq 1 && !other.contains(self.keys.get(i)); do
+        return false;
+      fi
+    done
+    return true;
+  }
+
+  pub has_overlap(borrow IntHashSet other): bool {
+    if self.count eq 0 || other.is_empty(); do return false; fi
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) eq 1 && other.contains(self.keys.get(i)); do return true; fi
+    done
+    return false;
+  }
+
+  pub is_subset_of(borrow IntHashSet other): bool {
+    if self.count > other.len(); do return false; fi
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) eq 1 && !other.contains(self.keys.get(i)); do return false; fi
+    done
+    return true;
+  }
+
+  // Count membership XOR without materializing either set. Scan the receiver's
+  // bounded capacity; public API never reveals slot layout.
+  // Both capacities are <= 65536, so the scalar sum cannot overflow.
+  pub intersection_size(borrow IntHashSet other): int {
+    let mut int matched = 0;
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) eq 1 && other.contains(self.keys.get(i)); do
+        matched = matched + 1;
+      fi
+    done
+    return matched;
+  }
+
+  pub symmetric_difference_size(borrow IntHashSet other): int {
+    let int shared = self.intersection_size(rt borrow other);
+    return self.count + other.len() - 2 * shared;
+  }
+
+  // A caller may choose a result capacity within the existing bounded
+  // allocation profile. Reject impossible cardinality before creating
+  // any result storage. Inputs are borrowed, never modified.
+  pub symmetric_difference_with_capacity(borrow IntHashSet other, int capacity): IntHashSet {
+    // Reject nonsensical bounds before even scanning the operands.
+    if capacity < 1 || capacity > 65536; do
+      rt fail("alloc/set: symmetric difference capacity exceeded");
+    fi
+    let int required = self.symmetric_difference_size(rt borrow other);
+    return self.materialize_xor(rt borrow other, capacity, required);
+  }
+
+  // Private helper accepts only the cardinality computed by the checked
+  // public entry points. Do not repeat the potentially costly intersection.
+  materialize_xor(borrow IntHashSet other, int capacity, int required): IntHashSet {
+    if capacity < 1 || capacity > 65536 || required < 0 || required > capacity; do
+      rt fail("alloc/set: symmetric difference capacity exceeded");
+    fi
+    let mut IntHashSet result = new IntHashSet(capacity);
+    for (let int i = 0; i < self.limit; i = i + 1) do
+      if self.states.get(i) eq 1; do
+        let int key = self.keys.get(i);
+        if !other.contains(key); do
+          if !result.insert(key); do rt fail("alloc/set: inconsistent fresh hash set"); fi
+        fi
+      fi
+    done
+    for (let int i = 0; i < other.capacity(); i = i + 1) do
+      if other.states.get(i) eq 1; do
+        let int key = other.keys.get(i);
+        if !self.contains(key); do
+          if !result.insert(key); do rt fail("alloc/set: inconsistent fresh hash set"); fi
+        fi
+      fi
+    done
+    if result.len() neq required; do rt fail("alloc/set: inconsistent hash set cardinality"); fi
+    return result;
+  }
+
+  // Retain at least the greater input capacity when possible, but never
+  // shrink the requested capacity below the actual XOR cardinality.
+  pub symmetric_difference(borrow IntHashSet other): IntHashSet {
+    let mut int capacity = self.limit;
+    if other.capacity() > capacity; do capacity = other.capacity(); fi
+    let int required = self.symmetric_difference_size(rt borrow other);
+    if required > capacity; do capacity = required; fi
+    return self.materialize_xor(rt borrow other, capacity, required);
   }
 
   // Full probe first: a tombstone can precede a duplicate key.
@@ -280,6 +408,15 @@ pub fnc self_test(): bool {
     return false;
   fi
   lhs.insert(0);
+  lhs.insert(4);
+  if lhs.symmetric_difference_from(rt borrow wrong) || lhs.len() neq 2 ||
+     !lhs.contains(0) || !lhs.contains(4); do return false; fi
+  if !lhs.symmetric_difference_from(rt borrow rhs) ||
+     lhs.len() neq 2 || !lhs.contains(0) || !lhs.contains(7) ||
+     lhs.contains(4) || rhs.len() neq 2 || !rhs.contains(4); do return false; fi
+  if !lhs.symmetric_difference_from(rt borrow rhs) ||
+     lhs.len() neq 2 || !lhs.contains(0) || !lhs.contains(4) ||
+     lhs.contains(7); do return false; fi
   lhs.clear();
   return lhs.len() == 0 && !lhs.contains(0) && hash_set_self_test();
 }

@@ -1,0 +1,1 @@
+suspends fnc main(): int { return await select<int> { default: -> {} }; }

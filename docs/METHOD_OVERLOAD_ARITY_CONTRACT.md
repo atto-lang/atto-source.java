@@ -1,5 +1,7 @@
 # Oreslang class-method overload contract (pre-1.0)
 
+> **Later target amendment (2026-10-17):** The [enum variant extension](ENUM_VARIANT_OVERLOAD_EXTENSION.md) proposes statically bound case-type method slots, separate from constructor overloads. This mainline method document describes the existing arity-only execution model; no unbound same-arity runtime dispatch is enabled.
+
 > **Current implementation:** this file describes the arity-only implementation
 > in Java/GraalVM. **New normative target:** same-arity overloading will be
 > allowed **only** for eligible distinct nominal enum types, with arity first,

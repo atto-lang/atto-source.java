@@ -162,17 +162,23 @@ final class NamedPartialGenericCallsTest {
     }
 
     @Test
-    void rejectsUnsupportedNamedGenericArgumentsInTypePositions() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module app
-                          define class Box<T> as
-                            pub val T value;
-                          end
-                          fnc use(Box<T=int> box): void { return; }
-                        end
-                        """)));
-        assertTrue(error.getMessage().contains("named generic type arguments"));
+    void namedGenericArgumentsInNominalTypePositionsAreSupported() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Box<T> as
+                    pub val T value;
+                  end
+                  fnc use(Box<T=int> box): void { return; }
+                end
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Box<T> as
+                    pub val T value;
+                  end
+                  fnc use(Box<U=int> box): void { return; }
+                end
+                """)));
     }
 
     @Test
@@ -218,4 +224,90 @@ final class NamedPartialGenericCallsTest {
                         """)));
         assertTrue(hole.getMessage().contains("positional concrete payload type"));
     }
+    @Test
+    void bracketShapeCannotBindANominalGenericSlot() {
+        for (String type : java.util.List.of("Box[int]", "Box[int, bool]")) {
+            String source = """
+                    define class Box<T> as
+                      pub val T value;
+                    end
+                    fnc consume(%s value): void { return; }
+                    """.formatted(type);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), type);
+            assertTrue(failure.getMessage().contains("sequence shape"), failure.getMessage());
+        }
+    }
+
+    @Test
+    void nestedDesignatedCollectionShapeRemainsATypeArgument() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box<T> as
+                  pub val T value;
+                end
+                fnc consume(Box<Array[int]> value): void { return; }
+                """)));
+    }
+
+    @Test
+    void integerNamedGenericValueCannotBindATypeFormal() {
+        String source = """
+                fnc fixed<T>(): int { return 42; }
+                fnc use(): int { return fixed<T=3>(); }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        // The current source grammar rejects an integer at this slot before
+        // generic binding. A separate direct binder test checks the synthetic
+        // metadata node, which may be supplied by other compiler passes.
+        assertTrue(failure.getMessage().contains("expected name")
+                || failure.getMessage().contains("const value"), failure.getMessage());
+    }
+
+    @Test
+    void squareGenericDeclarationsAndNamedCallsAreRejected() {
+        for (String source : java.util.List.of(
+                "fnc identity[T](T value): T { return value; }",
+                "define class Box[T] as pub val T value; end",
+                "fnc identity<T>(T value): T { return value; } "
+                        + "fnc use(): int { return identity[T=int](42); }")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
+    @Test
+    void mismatchedCollectionDelimitersAreRejected() {
+        for (String type : java.util.List.of("Map<string, int]", "Map[string, int>")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc consume(" + type + " value): void { return; }"), type);
+        }
+    }
+
+    @Test
+    void mapShorthandNormalizesToTheSameTypedGenericSlots() {
+        for (String[] pair : java.util.List.of(
+                new String[]{"Map[string, int]", "Map<string, int>"},
+                new String[]{"Map[string, Array[int]]", "Map<string, Array[int]>"})) {
+            var square = Parser.parse("fnc consume(" + pair[0] + " value): void { return; }");
+            var angle = Parser.parse("fnc consume(" + pair[1] + " value): void { return; }");
+            assertDoesNotThrow(() -> TypeChecker.check(square));
+            assertDoesNotThrow(() -> TypeChecker.check(angle));
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                    "fnc same(" + pair[0] + " value): " + pair[1] + " { return rt take value; }")));
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                    "fnc same(" + pair[0] + " value): " + pair[1] + " { return value; }")));
+        }
+    }
+
+    @Test
+    void mapShorthandRejectsMalformedOrAdditionalSlots() {
+        for (String type : java.util.List.of("Map[]", "Map[int]", "Map[int,int,int]",
+                "Map[K=string,V=int]", "Map<string,int>[int,int]",
+                "Map[string,int][int,int]", "Map[3 of int, string]", "Map[string,int>")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc consume(" + type + " value): void { return; }"), type);
+        }
+    }
+
 }

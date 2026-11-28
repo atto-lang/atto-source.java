@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 permissions:
@@ -44,7 +46,6 @@ jobs:
         run: bash tests/java_source_tree_integrity_admission.sh
       - name: Validate source parity launcher fail-closed CLI admissions
         run: bash tests/java_source_parity_launcher_admission.sh
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Test AI smoke evidence admission (no compiler claims)
         run: python3 scripts/test_ai_conformance_smoke.py
       - name: Schema validator

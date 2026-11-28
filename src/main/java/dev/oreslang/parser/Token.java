@@ -1,6 +1,10 @@
 package dev.oreslang.parser;
 
-public record Token(Type type, String lexeme, int line, int column) {
+public record Token(Type type, String lexeme, int line, int column, char stringQuote) {
+    // Legacy token constructors and synthetic non-string tokens carry no quote provenance.
+    public Token(Type type, String lexeme, int line, int column) {
+        this(type, lexeme, line, column, '\0');
+    }
     public enum Type {
         IDENT,
         INT,
@@ -18,7 +22,7 @@ public record Token(Type type, String lexeme, int line, int column) {
         CPU,
 
         LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
-        COMMA, DOT, ELLIPSIS, SEMICOLON, COLON, DOUBLE_COLON, QUESTION, FALLIBLE_BIND, AT, BACKTICK,
+        COMMA, DOT, ELLIPSIS, SEMICOLON, COLON, DOUBLE_COLON, COLON_ASSIGN, QUESTION, FALLIBLE_BIND, AT, BACKTICK,
         PLUS, MINUS, STAR, SLASH, PERCENT, PIPE, PIPE_FORWARD, PIPE_REVERSE, AMP, CARET, TILDE, BANG, UNICODE_NOT,
         EQUAL, EQUAL_EQUAL, BANG_EQUAL,
         LT, LTE, GT, GTE,

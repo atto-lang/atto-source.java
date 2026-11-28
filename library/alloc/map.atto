@@ -84,6 +84,105 @@ define module map as
       return false;
     }
 
+    // Read-only keyed predicates; compare scalar values, never reference identity.
+    // Tombstones and unused slots are not keys. Capacity need not match.
+    pub contains_entry(int key, int value): bool {
+      let int start = self.start_slot(key);
+      for (let int probe = 0; probe < self.limit; probe = probe + 1) {
+        let int slot = Integer.rem((start + probe), self.limit);
+        let int state = self.states.get(slot);
+        if state eq 0; do return false; fi
+        if state eq 1 && self.keys.get(slot) eq key; do
+          return self.values.get(slot) eq value;
+        fi
+      }
+      return false;
+    }
+
+    pub same_keys(borrow IntMap other): bool {
+      if self.count neq other.len(); do return false; fi
+      for (let int i = 0; i < self.limit; i = i + 1) do
+        if self.states.get(i) eq 1 && !other.contains_key(self.keys.get(i)); do
+          return false;
+        fi
+      done
+      return true;
+    }
+
+    pub has_overlap(borrow IntMap other): bool {
+      if self.count eq 0 || other.is_empty(); do return false; fi
+      for (let int i = 0; i < self.limit; i = i + 1) do
+        if self.states.get(i) eq 1 && other.contains_key(self.keys.get(i)); do
+          return true;
+        fi
+      done
+      return false;
+    }
+
+    // Directional predicates: every right-hand key/entry must occur on left.
+    // Scan only our occupied slots, count matches against the other's size.
+    // No access to another object's private backing arrays and no allocation.
+    pub contains_keys(borrow IntMap other): bool {
+      let int required = other.len();
+      if required eq 0; do return true; fi
+      if self.count < required; do return false; fi
+      let mut int matched = 0;
+      for (let int i = 0; i < self.limit; i = i + 1) do
+        if self.states.get(i) eq 1 && other.contains_key(self.keys.get(i)); do
+          matched = matched + 1;
+          if matched eq required; do return true; fi
+        fi
+      done
+      return false;
+    }
+
+    pub contains_entries(borrow IntMap other): bool {
+      let int required = other.len();
+      if required eq 0; do return true; fi
+      if self.count < required; do return false; fi
+      let mut int matched = 0;
+      for (let int i = 0; i < self.limit; i = i + 1) do
+        if self.states.get(i) eq 1 &&
+           other.contains_entry(self.keys.get(i), self.values.get(i)); do
+          matched = matched + 1;
+          if matched eq required; do return true; fi
+        fi
+      done
+      return false;
+    }
+
+    // Vacuous agreement: disjoint maps have no conflicting shared value.
+    pub conflict_free(borrow IntMap other): bool {
+      if self.count eq 0 || other.is_empty(); do return true; fi
+      for (let int i = 0; i < self.limit; i = i + 1) do
+        if self.states.get(i) eq 1; do
+          let int key = self.keys.get(i);
+          if other.contains_key(key) && !other.contains_entry(key, self.values.get(i)); do
+            return false;
+          fi
+        fi
+      done
+      return true;
+    }
+
+    // Candidate nonvacuous rule: disjoint inputs do not match; both empty match.
+    // This is not an equivalence relation and is never a hash witness.
+    pub overlapping_values_equal(borrow IntMap other): bool {
+      if self.count eq 0; do return other.len() eq 0; fi
+      if other.is_empty(); do return false; fi
+      let mut bool shared = false;
+      for (let int i = 0; i < self.limit; i = i + 1) do
+        if self.states.get(i) eq 1; do
+          let int key = self.keys.get(i);
+          if other.contains_key(key); do
+            if !other.contains_entry(key, self.values.get(i)); do return false; fi
+            shared = true;
+          fi
+        fi
+      done
+      return shared;
+    }
+
     // Returns old value on replacement, None for new insertion.
     // On CapacityExceeded, no existing key/value/state has changed.
     pub try_insert(mut self)(int key, int value): Result<Option<int>, String> {

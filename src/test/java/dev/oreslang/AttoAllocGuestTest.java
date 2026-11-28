@@ -9,6 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
@@ -91,7 +92,9 @@ final class AttoAllocGuestTest {
         // not Java-only models or parser-only fixture acceptance.
         for (String name : new String[]{
                 "allocator-transactions-positive.atto",
-                "set-hash-operations-positive.atto"}) {
+                "set-hash-operations-positive.atto",
+                "set-dense-xor-positive.atto",
+                "set-hash-xor-positive.atto"}) {
             Path guest = Path.of("tests", "fixtures", "alloc-java-guest", name);
             assertTrue(Files.isRegularFile(guest), "missing Atto fixture " + name);
             assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()), name);
@@ -99,6 +102,32 @@ final class AttoAllocGuestTest {
                     guest, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
                     new ByteArrayOutputStream(), new ByteArrayOutputStream());
             assertEquals(42, result.exitStatus(), "real guest must run " + name);
+        }
+    }
+
+    @Test
+    void denseSymmetricDifferenceRejectsIncompatibleDomainsAtRuntime() throws Exception {
+        Path guest = Path.of("tests", "fixtures", "alloc-java-guest", "set-dense-xor-domain-negative.atto");
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()),
+                "domain mismatch must reach actual guest execution");
+        PolyglotException failure = assertThrows(PolyglotException.class,
+                () -> LinkedProgramRunner.runWithExitStatus(guest, IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(), new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(failure.getMessage().contains("alloc/set: symmetric difference domain mismatch"),
+                failure::getMessage);
+    }
+
+    @Test
+    void hashSymmetricDifferenceRejectsInvalidResultCapacityAtRuntime() throws Exception {
+        for (String name : new String[] {"set-hash-xor-capacity-negative.atto",
+                "set-hash-xor-zero-capacity-negative.atto", "set-hash-xor-limit-negative.atto"}) {
+            Path guest = Path.of("tests", "fixtures", "alloc-java-guest", name);
+            assertDoesNotThrow(() -> LinkedProgramRunner.validate(guest, Map.of()), name);
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> LinkedProgramRunner.runWithExitStatus(guest, IsolatePolicy.developer(),
+                            ExecutionProfile.serverJit(), new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+            assertTrue(failure.getMessage().contains("alloc/set: symmetric difference capacity exceeded"),
+                    failure::getMessage);
         }
     }
 
@@ -141,6 +170,7 @@ final class AttoAllocGuestTest {
         for (String name : new String[]{
                 "arc-shared-owner-negative.atto",
                 "set-generic-hash-negative.atto",
+                "set-hash-xor-private-helper-negative.atto",
                 "allocator-physical-handle-negative.atto",
                 "alloc-internal-scope-negative.atto",
                 "alloc-internal-loan-negative.atto",

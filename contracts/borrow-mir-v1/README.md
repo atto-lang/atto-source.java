@@ -1,8 +1,8 @@
-# AttoLang borrow checker — six-backend conformance V1
+# AttoLang borrow checker — nine-toolchain conformance V1
 
 **Evidence: source-authored contract; NOT executed compiler parity.**
 
-This contract fixes one common baseline for `oreslang-source.java`, `.llvm`, `.net`, `.wasm`, `.forge` and `.cranelift`. It is a *restricted, acyclic typed ownership-event CFG* vocabulary compatible with the **intent** of the Rust canonical V0 design. It is not an alternative full borrow checker. Its JavaScript tests exercise an independent **source-free model**, not compiler code, actual guest execution, or a trusted Rust differential check.
+This contract fixes one common baseline for all nine active `oreslang-source.*` targets: `.java`, `.llvm`, `.net`, `.wasm`, `.forge`, `.cranelift`, `.js`, `.rs`, and `.hdl`. It is a *restricted, acyclic typed ownership-event CFG* vocabulary compatible with the **intent** of the Rust canonical V0 design. It is not an alternative full borrow checker. Its JavaScript tests exercise an independent **source-free model**, not compiler code, actual guest execution, or a trusted Rust differential check.
 
 ## Shared semantics
 
@@ -28,9 +28,15 @@ This contract fixes one common baseline for `oreslang-source.java`, `.llvm`, `.n
 
 **Cranelift/Rust:** typed frontend before CLIF lowering; can link the canonical Rust library directly when supported, but must authenticate source facts and exact generated program and reject unsupported operations.
 
+**JavaScript (.js):** JS source-to-IR compiler and Node/browser workers must carry real ownership facts into output; source-free JavaScript actor and scalar model tests do not prove borrow checking.
+
+**Native Rust (.rs):** independently authored Rust backend and typed CFG/MIR need explicit owner/loan dataflow and emission proofs. The separate canonical `atto-borrow-checker.rs` is a reference verifier, not proof that the native `.rs` backend consumes it.
+
+**HDL (.hdl):** hardware-oriented compiler must reject unsupported dynamic actor borrows and mutable aliasing before RTL emission. Hardware memory-port exclusivity, borrow lifetime, reset and pipeline hazards need hardware-specific evidence; a scalar Verilog testbench is not general ownership proof.
+
 ## Evidence promotion
 
-Manifest `evidence[backend].status` starts **NOT_EXECUTED** for all six. The test suite intentionally never returns `verified:true`, including for a synthetic self-contained receipt.
+Manifest `evidence[backend].status` starts **NOT_EXECUTED** for all nine. The test suite intentionally never returns `verified:true`, including for a synthetic self-contained receipt.
 
 To count a *real* compiler differential result, bind independently:
 1. Exact Git source commit/tree and complete path/mode/blob SHA manifest.
@@ -48,3 +54,28 @@ Run `node --test tests/borrow-mir-v1-contract.test.mjs` for a *source-free contr
 Related canonical Rust [PR #5](https://github.com/ores-truffle-oreslang/atto-borrow-checker.rs/pull/5), Java [PR #2752](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/2752), and [borrow-checker consolidation issue #3](https://github.com/ores-truffle-oreslang/atto-borrow-checker.rs/issues/3).
 
 **Security:** private Git trees must not be exported across organizations without the protected private CI destination+snapshot authorization. Keeping identical contract blobs inside the original private source organization does not authorize alternate-org mirroring.
+
+
+## Protocol stdlib loan lifecycle additions (C23–C24)
+
+The shared ownership-event corpus now includes a protocol-resource descriptor
+lifecycle used by the WebSocket/QUIC/compute source integration guests:
+
+- **C23 (accept):** initialize one non-Copy owner; acquire two simultaneous
+  shared loans; read through the owner while only shared loans exist; end both
+  loans; acquire one exclusive loan; write through that exact LoanId; end it;
+  move the owner into a new identity; read the moved identity; return with no
+  live loans.
+- **C24 (reject):** acquire two shared loans and then attempt an exclusive
+  loan while both are live; require `E_BORROW_CONFLICT`.
+
+These are core ownership semantics. Protocol library functions neither
+create nor validate loans. Backends must translate their own source constructs
+into authenticated typed ownership events before code emission. The source
+candidate `tests/stdlib/protocol_borrow_core.atto` additionally invokes
+backend-owned WebSocket backpressure, QUIC range and compute-buffer helpers
+between those ownership events.
+
+The corpus now contains 24 cases. The source-free model test validates C23/C24
+but continues to report `verified:false`; it is not compiler execution.
+All nine native backend evidence entries remain `NOT_EXECUTED`.

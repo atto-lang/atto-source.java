@@ -24,10 +24,19 @@ final class ActorContinuationTerminalResourceFailureTest {
         assertEquals("physical drop failed",
                 failure.getSuppressed()[0].getCause().getMessage());
         assertEquals(1, releaseAttempts.get());
-        assertEquals(0, ledger.snapshot().running());
+        // A failed external drop is ambiguous, not physical retirement.
+        // Keep the existing credit and refuse admission even after STOP.
+        assertEquals(1, ledger.snapshot().running());
         assertEquals(0, ledger.snapshot().queued());
+        assertTrue(ledger.hasReleaseFailure());
+        assertThrows(IllegalStateException.class, () -> ledger.admit(
+                ActorContinuationLedger.Lane.SOURCE_TASK, () -> fail("quarantined owner admitted cleanup")));
+        ledger.sealAll();
+        assertFalse(ledger.retirementReady());
         receipt.close();
         assertEquals(1, releaseAttempts.get(), "terminal release must not repeat");
+        assertEquals(1, ledger.snapshot().running());
+        assertFalse(ledger.retirementReady());
     }
 
     @Test
@@ -45,9 +54,16 @@ final class ActorContinuationTerminalResourceFailureTest {
         assertEquals("cleanup error", failure.getCause().getMessage());
         assertEquals(1, releases.get());
         assertEquals(0, ledger.snapshot().queued());
+        assertEquals(1, ledger.snapshot().running());
+        assertTrue(ledger.hasReleaseFailure());
         assertThrows(IllegalStateException.class, receipt::run);
+        assertThrows(IllegalStateException.class, () -> ledger.admit(
+                ActorContinuationLedger.Lane.SOURCE_TASK, () -> fail("quarantined owner admitted cleanup")));
+        ledger.sealAll();
         receipt.close();
         assertEquals(1, releases.get());
+        assertEquals(1, ledger.snapshot().running());
+        assertFalse(ledger.retirementReady());
     }
 
     @Test
