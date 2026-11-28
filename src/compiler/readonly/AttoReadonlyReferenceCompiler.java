@@ -70,8 +70,26 @@ public final class AttoReadonlyReferenceCompiler {
             need(";");need("}");if(at!=tokens.size())throw reject("trailing source");
         }
     }
+    // A closed helper graph only permits a read of a final scalar field
+    // or a forward to an earlier helper. Resolve it without runtime calls.
+    private static int[] resolveFields(Parser p) {
+        int[] fields = new int[p.helpers.size()];
+        for (int i=0; i<fields.length; i++) {
+            Helper h = p.helpers.get(i);
+            if (h.forward) {
+                if (h.index < 0 || h.index >= i) throw reject("unproved forwarding edge");
+                fields[i] = fields[h.index];
+            } else {
+                if (h.index < 0 || h.index >= p.fields.size()) throw reject("unproved field");
+                fields[i] = h.index;
+            }
+        }
+        return fields;
+    }
+
     public static String emit(String source){
         Parser p=new Parser(source);p.parse();
+        int[] fields = resolveFields(p);
         StringBuilder out=new StringBuilder("public final class AttoReadonlyGuest {\nprivate static final class Obj {\n");
         for(int i=0;i<p.fields.size();i++)out.append("final long f").append(i).append(";\n");
         out.append("Obj(");
@@ -79,11 +97,10 @@ public final class AttoReadonlyReferenceCompiler {
         out.append("){");
         for(int i=0;i<p.fields.size();i++)out.append("this.f").append(i).append("=a").append(i).append(';');
         out.append("}\n}\n");
-        for(int i=0;i<p.helpers.size();i++){Helper h=p.helpers.get(i);out.append("private static long f").append(i).append("(Obj p){return ").append(h.forward?"f"+h.index+"(p)":"p.f"+h.index).append(";}\n");}
         out.append("public static long run(){Obj p=new Obj(");
         for(int i=0;i<p.fields.size();i++){if(i>0)out.append(',');out.append(p.fields.get(i).value).append('L');}
-        out.append(");long r=f").append(p.calls.get(0)).append("(p);\n");
-        for(int i=1;i<p.calls.size();i++)out.append("r=Math.").append(p.ops.get(i-1).equals("+")?"addExact":"subtractExact").append("(r,f").append(p.calls.get(i)).append("(p));\n");
+        out.append(");long r=p.f").append(fields[p.calls.get(0)]).append(";\n");
+        for(int i=1;i<p.calls.size();i++)out.append("r=Math.").append(p.ops.get(i-1).equals("+")?"addExact":"subtractExact").append("(r,p.f").append(fields[p.calls.get(i)]).append(");\n");
         return out.append("return r;}\npublic static void main(String[] args){System.out.println(run());}\n}\n").toString();
     }
     public static int compile(Path source, String expectedSha, Path output) {
