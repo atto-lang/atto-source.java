@@ -398,4 +398,28 @@ final class OresVMTest {
             vm.close();
         }
     }
+    @Test
+    void vmOwnsOneRuntimeAndRetiresActorsBeforeClosingControl() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8, 64);
+        ActorRuntime runtime = vm.createActorRuntime(IsolatePolicy.developer(),
+                config, ActorRuntime.TurnExecutor.direct());
+        try {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                    () -> vm.createActorRuntime(IsolatePolicy.developer(),
+                            config, ActorRuntime.TurnExecutor.direct()));
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {});
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            assertEquals(1, runtime.actorCount());
+            vm.close();
+            assertEquals(0, runtime.actorCount());
+            org.junit.jupiter.api.Assertions.assertFalse(vm.started());
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                    () -> vm.createActorRuntime(IsolatePolicy.developer(),
+                            config, ActorRuntime.TurnExecutor.direct()));
+        } finally {
+            vm.close();
+        }
+    }
+
 }

@@ -122,6 +122,10 @@ public final class OresVM implements AutoCloseable {
     private final Set<VmNioTcpListener> nioTcpListeners =
             ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
+    // Admission/close claims are serialized briefly, never across physical joins.
+    private boolean closeInProgress;
+    private ActorRuntime ownedActors;
+    private boolean ownedActorsRetired;
     private volatile StartupState startupState = StartupState.NEW;
 
     private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor,
@@ -251,6 +255,33 @@ public final class OresVM implements AutoCloseable {
                         System.getProperty("ores.runtime.control.parallelism")),
                 Runnable::run,
                 null, parallelism, queueCapacity);
+    }
+
+    /**
+     * Exactly one actor runtime per context/VM. Its CONTROL and physical STOP
+     * executors are owned here; actor dispatchers must retire before them.
+     */
+    synchronized ActorRuntime createActorRuntime(IsolatePolicy policy,
+            ActorRuntime.DispatcherConfig config, ActorRuntime.TurnExecutor turn) {
+        if (!started() || closed.get() || closeInProgress || ownedActors != null) {
+            throw new IllegalStateException("Oreslang VM cannot admit another actor runtime");
+        }
+        ActorRuntime runtime = new ActorRuntime(
+                Objects.requireNonNull(policy, "policy"),
+                Objects.requireNonNull(config, "config"),
+                Objects.requireNonNull(turn, "turn"),
+                this::executeControl, this::executePhysicalStop);
+        ownedActors = runtime;
+        return runtime;
+    }
+
+    // Context shutdown has already completed the coordinated actor/native-I/O
+    // joins. Record that successful receipt, not merely an admission fence.
+    synchronized void confirmOwnedActorRetirement(ActorRuntime runtime) {
+        if (runtime == null || runtime != ownedActors || closeInProgress || closed.get()) {
+            throw new IllegalStateException("invalid VM actor retirement receipt");
+        }
+        ownedActorsRetired = true;
     }
 
     /**
@@ -543,9 +574,25 @@ public final class OresVM implements AutoCloseable {
             throw new IllegalStateException(
                     "OresVM must be closed outside actor, Mailman and scheduler turns");
         }
+        final ActorRuntime actorsToRetire;
         synchronized (this) {
-            if (!closed.compareAndSet(false, true)) return;
-            startupState = StartupState.CLOSED;
+            if (closeInProgress) {
+                throw new IllegalStateException("Oreslang VM close already in progress");
+            }
+            if (closed.get()) return;
+            closeInProgress = true;
+            actorsToRetire = ownedActorsRetired ? null : ownedActors;
+        }
+        try {
+            // Do not hold the VM monitor while callbacks, actor STOPs or
+            // physical revokers execute. CONTROL remains usable until actor
+            // retirement succeeds; failed joins may be retried by the host.
+            if (actorsToRetire != null) actorsToRetire.close();
+            synchronized (this) {
+                ownedActorsRetired = true;
+                startupState = StartupState.CLOSED;
+                closed.set(true);
+            }
             RuntimeException nioFailure = closeNioReadiness();
             try {
                 try {
@@ -597,6 +644,10 @@ public final class OresVM implements AutoCloseable {
                 }
             }
             if (nioFailure != null) throw nioFailure;
+        } finally {
+            synchronized (this) {
+                closeInProgress = false;
+            }
         }
     }
 }

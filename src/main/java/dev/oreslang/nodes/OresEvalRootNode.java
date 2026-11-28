@@ -7753,6 +7753,13 @@ public final class OresEvalRootNode extends RootNode {
             if (method.async() || methodContainsPotentialSuspension(method)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(method, receiver, args);
+                // The task completion is an implementation envelope, not an
+                // extra source-level Future. Match the existing free-function
+                // rule for a synchronous callable explicitly returning Future.
+                // Async methods keep their own declared task boundary.
+                if (!method.async() && method.returnType().name().equals("Future")) {
+                    return chainFuture(future, values -> values.getFirst(), true, false);
+                }
                 return returnSourceTaskResult(future, method.async());
             }
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
@@ -12269,6 +12276,9 @@ public final class OresEvalRootNode extends RootNode {
                                 fn.async()
                                         ? detachAsyncArguments(args, fn.parameters())
                                         : args);
+                if (!fn.async() && fn.returnType().name().equals("Future")) {
+                    return chainFuture(future, values -> values.getFirst(), true, false);
+                }
                 return returnSourceTaskResult(future, fn.async());
             }
             return callStaticFunctionBodyRaw(fn, args);

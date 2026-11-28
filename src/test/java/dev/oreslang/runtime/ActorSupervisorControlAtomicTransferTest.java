@@ -28,7 +28,7 @@ final class ActorSupervisorControlAtomicTransferTest {
         source.publish(notice(first, 1, 1));
         source.publish(notice(second, 1, 2));
         source.publish(notice(third, 1, 3));
-        assertEquals(first, source.poll().orElseThrow().actor());
+        assertEquals(first, source.poll().orElseThrow().notice().actor());
 
         var sourceBefore = source.snapshot();
         var rootBefore = root.snapshot();
@@ -42,8 +42,9 @@ final class ActorSupervisorControlAtomicTransferTest {
         assertEquals(0, source.snapshot().reserved());
         assertEquals(3, source.snapshot().transferred());
         for (var id : new ActorRuntime.ActorId[]{first, second, third}) {
-            assertEquals(id, root.poll().orElseThrow().actor());
-            root.ack(id, 1);
+            var delivery = root.poll().orElseThrow();
+            assertEquals(id, delivery.notice().actor());
+            root.ack(delivery);
         }
         assertTrue(root.poll().isEmpty());
         assertEquals(0, root.snapshot().reserved());
@@ -67,8 +68,9 @@ final class ActorSupervisorControlAtomicTransferTest {
         assertThrows(IllegalStateException.class, () -> source.transferPublishedTo(root));
         assertEquals(sourceBefore, source.snapshot());
         assertEquals(rootBefore, root.snapshot());
-        assertEquals(second, root.poll().orElseThrow().actor());
-        root.ack(second, 1);
+        var delivery = root.poll().orElseThrow();
+        assertEquals(second, delivery.notice().actor());
+        root.ack(delivery);
         assertTrue(root.poll().isEmpty());
     }
 
