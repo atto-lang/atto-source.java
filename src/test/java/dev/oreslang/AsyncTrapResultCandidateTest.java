@@ -122,7 +122,7 @@ final class AsyncTrapResultCandidateTest {
                 async trap fnc later(): int {
                   val int n = await ready();
                   val Option<int> absent = None;
-                  return absent.unwrap();
+                  return absent.expect("async-candidate-panic-sentinel");
                 }
                 pub fnc main(): void {
                   val Result<int, Error> r = await later();
@@ -131,7 +131,7 @@ final class AsyncTrapResultCandidateTest {
                 }
                 """;
         PolyglotException failure = assertThrows(PolyglotException.class, () -> run(source));
-        assertTrue(failure.getMessage().contains("Option::unwrap"), failure::getMessage);
+        assertTrue(failure.getMessage().contains("async-candidate-panic-sentinel"), failure::getMessage);
     }
 
     @Test
