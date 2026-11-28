@@ -203,12 +203,10 @@ public final class OresContext implements AutoCloseable {
         AsyncRuntime async = null;
         RuntimeGarbageCollector gc = null;
         try {
-            actors = new ActorRuntime(
+            actors = vm.createActorRuntime(
                     isolatePolicy,
                     ActorRuntime.DispatcherConfig.defaults(),
-                    this::executeActorTurn,
-                    vm::executeControl,
-                    vm::executePhysicalStop);
+                    this::executeActorTurn);
             // Trusted host opt-in only. Actor mail carries immutable metadata
             // independently of payload; no third-party exporter is installed.
             actors.configureTracePropagation(autoTrace.enabled());
@@ -232,9 +230,7 @@ public final class OresContext implements AutoCloseable {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
-            if (actors != null) {
-                try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
-            }
+            // VM owns the admitted actor runtime and retires it before CONTROL.
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             try { asyncStdio.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
@@ -674,6 +670,7 @@ public final class OresContext implements AutoCloseable {
         }
         try {
             joinActorsAndNativeIo(actors, nativeIo);
+            vm.confirmOwnedActorRetirement(actors);
         } catch (RuntimeException incomplete) {
             // Physical retirement is incomplete: reject new output without
             // waiting for (or re-entering) the potentially blocked sink.
