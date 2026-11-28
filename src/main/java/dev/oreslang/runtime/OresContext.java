@@ -438,6 +438,10 @@ public final class OresContext implements AutoCloseable {
             }
         }
 
+        // Result publication can precede the outer TruffleContext.leave().
+        // The host entry must not report a successful root return until its
+        // physical carrier has retired. Never infer retirement from isDone().
+        var physicallyRetired = new java.util.concurrent.CountDownLatch(1);
         OresFuture<Object> task = vm.rootScheduler().start(new OresScheduler.Task<>() {
             private int pc;
 
@@ -480,7 +484,7 @@ public final class OresContext implements AutoCloseable {
                 throw new IllegalStateException(
                         "root main scheduler task resumed after terminal state");
             }
-        });
+        }, physicallyRetired::countDown);
         try {
             if (isolatedRootTurns != null) {
                 while (!task.isDone()) {
@@ -514,12 +518,40 @@ public final class OresContext implements AutoCloseable {
                     registration.detach();
                 }
             }
-            return task.join();
+            Object result = task.join();
+            if (physicallyRetired.getCount() != 0) {
+                if (location != null) {
+                    com.oracle.truffle.api.TruffleSafepoint.setBlockedThreadInterruptible(
+                            location, latch -> {
+                                if (!latch.await(5, TimeUnit.SECONDS))
+                                    throw new IllegalStateException(
+                                            "root main physical retirement incomplete");
+                            }, physicallyRetired);
+                } else {
+                    try {
+                        if (!physicallyRetired.await(5, TimeUnit.SECONDS))
+                            throw new IllegalStateException(
+                                    "root main physical retirement incomplete");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new java.util.concurrent.CancellationException(
+                                "root main physical retirement interrupted");
+                    }
+                }
+            }
+            return result;
         } finally {
             // On interrupted guest entry, revoke the root task rather than
             // leave an observer parked on an abandoned scheduler continuation.
             if (!task.isDone()) task.cancel(true);
         }
+    }
+
+    /** Linked CLI only: drain finite accepted actor mail while Truffle can
+     * still dispatch guest turns. General Context.close remains cancelling. */
+    public void drainLinkedExit(Node location) {
+        com.oracle.truffle.api.TruffleSafepoint.setBlockedThreadInterruptible(
+                location, ignored -> actors.drainLinkedExit(), this);
     }
 
     private void executeRootTurn(Runnable turn) {

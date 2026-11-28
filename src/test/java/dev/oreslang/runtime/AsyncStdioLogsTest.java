@@ -16,6 +16,32 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class AsyncStdioLogsTest {
     @Test
+    void utf8QuotaUsesExactScalarByteLengthWithoutReplacement() {
+        for (String value : new String[]{"", "A", String.valueOf((char) 0), "\u007f", "\u0080", "\u07ff",
+                "\u0800", "\uffff", "\ud800\udc00", "\udbff\udfff",
+                "x".repeat(65_536), "\u00e9".repeat(32_768),
+                "\u20ac".repeat(21_845) + "x", "\ud83d\ude00".repeat(16_384)}) {
+            assertEquals(value.getBytes(StandardCharsets.UTF_8).length,
+                    AsyncStdioLogs.checkedBytes(value));
+        }
+        for (String invalid : new String[]{"\ud800", "\udc00", "\ud800x", "x\ud800",
+                "\udc00\ud800", "x".repeat(65_537), "\u00e9".repeat(32_769),
+                "\u20ac".repeat(21_846), "\ud83d\ude00".repeat(16_385)}) {
+            assertThrows(IllegalArgumentException.class, () -> AsyncStdioLogs.checkedBytes(invalid));
+        }
+        var random = new java.util.Random(1127L);
+        for (int i = 0; i < 2048; i++) {
+            var value = new StringBuilder();
+            for (int j = 0; j < 32; j++) {
+                int cp = random.nextInt(0x110000);
+                if (cp < 0xd800 || cp > 0xdfff) value.appendCodePoint(cp);
+            }
+            String text = value.toString();
+            assertEquals(text.getBytes(StandardCharsets.UTF_8).length, AsyncStdioLogs.checkedBytes(text));
+        }
+    }
+
+    @Test
     void fifoFlushIsABarrierForAlreadyAcceptedRecords() throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (AsyncStdioLogs logs = new AsyncStdioLogs(
@@ -82,7 +108,7 @@ final class AsyncStdioLogsTest {
             logs.logAsync("blocked\n");
             assertTrue(entered.await(2, TimeUnit.SECONDS));
             try {
-                for (int i = 0; i < 1024; i++) logs.logAsync("queued\n");
+                for (int i = 0; i < 1023; i++) logs.logAsync("queued\n");
                 IllegalStateException error = assertThrows(IllegalStateException.class,
                         () -> logs.logAsync("over capacity\n"));
                 assertTrue(error.getMessage().contains("queue is full"));
@@ -92,6 +118,211 @@ final class AsyncStdioLogsTest {
             logs.flushAsync().get(3, TimeUnit.SECONDS);
         } finally {
             unblock.countDown();
+        }
+    }
+
+    @Test
+    void bufferedAdmissionWaitsInFifoWithoutBlockingCallerAndCancelsBeforeCommit() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        java.io.StringWriter backing = new java.io.StringWriter();
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+                backing.write(chars, off, len);
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            logs.admitBuffered("first|").get(1, TimeUnit.SECONDS);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            try {
+                for (int i = 0; i < 1023; i++) {
+                    assertTrue(logs.admitBuffered("q").isDone());
+                }
+                var first = logs.admitBuffered("A");
+                var cancelled = logs.admitBuffered("DROP");
+                var second = logs.admitBuffered("B");
+                assertFalse(first.isDone());
+                assertFalse(second.isDone());
+                assertTrue(cancelled.cancel(false));
+                assertThrows(IllegalStateException.class, () -> logs.logAsync("overtake"));
+                release.countDown();
+                first.get(3, TimeUnit.SECONDS);
+                second.get(3, TimeUnit.SECONDS);
+                assertFalse(first.cancel(false));
+                logs.flushAsync().get(3, TimeUnit.SECONDS);
+                assertEquals("first|" + "q".repeat(1023) + "AB", backing.toString());
+            } finally {
+                release.countDown();
+            }
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void zeroByteRecordsStillConsumeCountCapacityIncludingActiveSink() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            try {
+                logs.admitBuffered("first").get(1, TimeUnit.SECONDS);
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                for (int i = 0; i < 1023; i++) logs.admitBuffered("").get(1, TimeUnit.SECONDS);
+                var pending = logs.admitBuffered("");
+                assertFalse(pending.isDone());
+                assertEquals(1, logs.pendingAdmissionCount());
+                assertTrue(pending.cancel(false));
+                assertThrows(IllegalStateException.class, () -> logs.logAsync(""));
+                release.countDown();
+                logs.flushAsync().get(3, TimeUnit.SECONDS);
+            } finally { release.countDown(); }
+        }
+    }
+
+    @Test
+    void bufferedAdmissionCountsInFlightBytesAndDoesNotOvertakeLargeWaiter() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicLong written = new java.util.concurrent.atomic.AtomicLong();
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+                written.addAndGet(len);
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        String frame = "x".repeat(65_536);
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            try {
+                logs.admitBuffered(frame).get(1, TimeUnit.SECONDS);
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                for (int i = 1; i < 64; i++) {
+                    logs.admitBuffered(frame).get(1, TimeUnit.SECONDS);
+                }
+                var large = logs.admitBuffered(frame);
+                var small = logs.admitBuffered("!");
+                assertFalse(large.isDone());
+                assertFalse(small.isDone());
+                assertThrows(IllegalStateException.class, () -> logs.logAsync("overtake"));
+                release.countDown();
+                large.get(5, TimeUnit.SECONDS);
+                small.get(5, TimeUnit.SECONDS);
+                logs.flushAsync().get(5, TimeUnit.SECONDS);
+                assertEquals(65L * 65_536 + 1, written.get());
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test
+    void cancellationOfLargeHeadPromotesFittingSuccessorWhileSinkRemainsGated() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            try {
+                String frame = "x".repeat(65_536);
+                for (int i = 0; i < 63; i++) logs.admitBuffered(frame).get(1, TimeUnit.SECONDS);
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                logs.admitBuffered("x".repeat(65_535)).get(1, TimeUnit.SECONDS);
+                var head = logs.admitBuffered("XX");
+                var tail = logs.admitBuffered("Y");
+                assertFalse(head.isDone());
+                assertFalse(tail.isDone());
+                assertTrue(head.cancel(false));
+                tail.get(1, TimeUnit.SECONDS);
+                assertFalse(tail.cancel(false));
+                assertThrows(IllegalArgumentException.class,
+                        () -> logs.admitBuffered(String.valueOf((char) 0xd800)));
+                release.countDown();
+                logs.flushAsync().get(3, TimeUnit.SECONDS);
+            } finally { release.countDown(); }
+        }
+    }
+
+    @Test
+    void bufferedAdmissionQuotaAndSealSettleUnadmittedWaiters() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Writer slow = new Writer() {
+            @Override public void write(char[] chars, int off, int len) throws IOException {
+                entered.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("sink timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(error);
+                }
+            }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        try (AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(slow))) {
+            logs.admitBuffered("first").get(1, TimeUnit.SECONDS);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            try {
+                for (int i = 0; i < 1023; i++) assertTrue(logs.admitBuffered("q").isDone());
+                var pending = new java.util.ArrayList<OresFuture<Void>>();
+                for (int i = 0; i < 64; i++) pending.add(logs.admitBuffered("x"));
+                assertThrows(ExecutionException.class,
+                        () -> logs.admitBuffered("overflow").get(1, TimeUnit.SECONDS));
+                assertTrue(pending.getFirst().cancel(false));
+                var replacement = logs.admitBuffered("replacement");
+                assertFalse(replacement.isDone());
+                logs.sealAdmission();
+                assertThrows(ExecutionException.class,
+                        () -> replacement.get(1, TimeUnit.SECONDS));
+                for (int i = 1; i < pending.size(); i++) {
+                    final var waiter = pending.get(i);
+                    assertThrows(ExecutionException.class, () -> waiter.get(1, TimeUnit.SECONDS));
+                }
+            } finally {
+                release.countDown();
+            }
+        } finally {
+            release.countDown();
         }
     }
 
@@ -353,12 +584,22 @@ final class AsyncStdioLogsTest {
         };
         AsyncStdioLogs logs = new AsyncStdioLogs(new PrintWriter(blocked, true));
         try {
-            logs.logAsync("blocked\n");
+            var inFlight = logs.logAsync("blocked\n");
             assertTrue(entered.await(2, TimeUnit.SECONDS));
+            var queued = logs.logAsync("queued");
+            var barrier = logs.flushAsync();
             // A worker owns the sink lock. close() must report incomplete
             // shutdown within its deadline without entering that monitor.
             IllegalStateException timeout = assertThrows(IllegalStateException.class, logs::close);
             assertTrue(timeout.getMessage().contains("shutdown deadline"));
+            for (var receipt : java.util.List.of(inFlight, queued, barrier)) {
+                var error = assertThrows(ExecutionException.class,
+                        () -> receipt.get(1, TimeUnit.SECONDS));
+                assertSame(timeout, error.getCause());
+            }
+            release.countDown();
+            assertThrows(IllegalStateException.class, logs::close);
+            assertThrows(ExecutionException.class, () -> inFlight.get(1, TimeUnit.SECONDS));
         } finally {
             release.countDown();
         }
@@ -426,6 +667,66 @@ final class AsyncStdioLogsTest {
         assertTrue(failure.getCause().getMessage().contains("closed"));
         assertThrows(IllegalStateException.class, () -> logs.logAsync("late\n"));
         logs.close();
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(45)
+    void cancellationRacingWithAdmissionHasExactlyOneObservableOutcome() throws Exception {
+        // Race cancellation against the drain's capacity release. Either
+        // cancellation wins before enqueue or admission wins and writes once.
+        // The second waiter must survive in FIFO order in both cases.
+        for (int trial = 0; trial < 8; trial++) {
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var race = new CountDownLatch(1);
+            var backing = new java.io.StringWriter();
+            Writer gated = new Writer() {
+                @Override public void write(char[] chars, int off, int len) throws IOException {
+                    entered.countDown();
+                    try {
+                        if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("gate timeout");
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException(e);
+                    }
+                    backing.write(chars, off, len);
+                }
+                @Override public void flush() { }
+                @Override public void close() { }
+            };
+            try (var logs = new AsyncStdioLogs(new PrintWriter(gated))) {
+                try {
+                    logs.admitBuffered("S").get(2, TimeUnit.SECONDS);
+                    assertTrue(entered.await(2, TimeUnit.SECONDS));
+                    for (int i = 0; i < 1023; i++) logs.admitBuffered("q").get(2, TimeUnit.SECONDS);
+                    var candidate = logs.admitBuffered("A");
+                    var follower = logs.admitBuffered("B");
+                    assertEquals(2, logs.pendingAdmissionCount());
+                    var cancel = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                        try {
+                            if (!race.await(5, TimeUnit.SECONDS)) throw new AssertionError("race timeout");
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                        return candidate.cancel(false);
+                    });
+                    race.countDown();
+                    release.countDown();
+                    boolean cancelled = cancel.get(5, TimeUnit.SECONDS);
+                    if (!cancelled) candidate.get(5, TimeUnit.SECONDS);
+                    else assertTrue(candidate.isCancelled());
+                    follower.get(5, TimeUnit.SECONDS);
+                    logs.flushAsync().get(5, TimeUnit.SECONDS);
+                    assertEquals(0, logs.pendingAdmissionCount());
+                    assertFalse(candidate.cancel(false));
+                    assertEquals("S" + "q".repeat(1023) + (cancelled ? "B" : "AB"), backing.toString());
+                } finally {
+                    race.countDown();
+                    release.countDown();
+                }
+            }
+        }
     }
 
 }

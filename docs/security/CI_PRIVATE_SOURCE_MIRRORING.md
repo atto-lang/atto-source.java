@@ -129,6 +129,36 @@ present. The source-bearing commit may change only that source subtree plus
 the receipt; carrier workflow and test-plan bytes remain inherited from the
 pinned base.
 
+
+### Current AttoLang numerical-compiler handoff sizing (review-only)
+
+The publisher's executable `scripts/publish-private-ci-source.py` currently sets
+`MAX_FILES = 4096`, `MAX_BYTES = 40 * 1024 * 1024`, and
+`MAX_SINGLE = 10 * 1024 * 1024`. The former 1,024-file documentation limit
+was stale; raising it here would not increase the actual authorization or
+publisher capacity. The independently retrieved, complete (non-truncated) Git
+tree of private Atto Java numerical candidate PR #1736 at
+`c16a0313b166f4b426e5c4aa2b3f487475e107b6`
+(root tree `c8fe1626629782a171e6950ba3d7080e489160cd`)
+contains 2,906 blob files totaling 20,904,978 bytes, within the numeric file
+and byte ceilings. Actual transfer still has to prove every file mode and
+blob, directory bounds, traversal safety, exact current PR head, and Git tree
+identity at the time of execution.
+
+**Size eligibility is not export authorization.** At the audit checkpoint
+source `main` is not verifiably protected, the live private CI destination
+allowlist contains no active approved entries, and the candidate private
+`opto-sync/atto-ci` repository (numeric ID `1458322748`) has no approved
+carrier workflow/test-plan contract; its default branch is not `main`.
+Successful source-free carrier capacity runs cannot grant approval or justify
+exporting any private bytes. Do not modify the allowlist automatically or
+copy the source tree as a work-around. An independent security-owner review and
+effective governed policy change are required before any source-bearing write.
+
+This paragraph is an **audit record and nonauthorizing reviewer handoff**;
+numerical regression claims remain `NOT_EXECUTED` until real exact-head JVM,
+guest, and full guest AOT evidence exists.
+
 ## Carrier checkout and execution isolation
 
 A private carrier repository may contain unrelated private project files. Those
@@ -219,7 +249,7 @@ checked publisher authorize private transfer. A manually fabricated
 destination commit with matching trailers must never be treated as an
 approved source snapshot without separate trusted origin evidence.
 
-The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
+The publisher bounds the export to 4,096 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
 prevent parent-directory symlink swap races. It rejects symbolic links,

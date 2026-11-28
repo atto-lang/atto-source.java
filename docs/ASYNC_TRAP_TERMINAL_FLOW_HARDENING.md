@@ -1,0 +1,5 @@
+# Async trap terminal-flow hardening
+
+On the current-main reconciliation of #579, async trapping occurs only at the completed SourceFlow failure boundary, not an unexpected evaluator exception. Normal completion requires retired cleanup. Direct typed GuestOrdinaryThrow is the only candidate for Err; unknown host/wrapper/control failures and any non-inert suppressed cleanup diagnostic fail closed. The terminal boundary does not unwrap away wrapper diagnostics. This is intentionally narrower than the compatibility classifier and does not certify every upstream await/cleanup path; #1704 and shared fixture execution remain dependencies. The strict source gate is unchanged.
+
+Local isolated OpenJDK 21 javac/java execution: 23 assertions passed with exact Git blobs GuestErrorValue 64d8af2734f79c95d3faef19d297ac3125ba3c86, GuestOrdinaryThrow 0ad3b4bbe7c0543e4b4e6d51ef5c26ad42acf884, SourceBoundaryTrace bad0621ef352e55e1f40637375022f44ad23ee00, and AsyncTrapAdmission faac97282f4b9318aff253bf2cdf0e6be570b429. These are runtime-policy assertions, not full compiler/JUnit, actual Atto source guest, Java 25 or Native Image evidence.

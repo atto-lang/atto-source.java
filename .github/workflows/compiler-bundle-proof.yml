@@ -1,0 +1,117 @@
+name: Immutable JVM compiler bundle (private source-org only)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/compiler-bundle-proof.yml'
+      - 'scripts/ci/compiler_bundle.py'
+      - 'scripts/ci/test_compiler_bundle.py'
+      - 'pom.xml'
+      - 'src/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: immutable-compiler-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-org-compiler:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Check out exact PR head in its original private organization
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Validate exact source identity and clean tree
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "SOURCE_COMMIT=$EXPECTED_COMMIT" >> "$GITHUB_ENV"
+          echo "SOURCE_TREE=$(git show -s --format=%T HEAD)" >> "$GITHUB_ENV"
+      - name: Run isolated, source-free admission regressions
+        run: python3 -m unittest discover -s scripts/ci -p 'test_compiler_bundle.py' -v
+      - name: Prepare approved existing GraalVM toolchain
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Build and test exact source revision
+        run: |
+          test -n "${JAVA_HOME:-}" && test -x "$JAVA_HOME/bin/java"
+          "$JAVA_HOME/bin/java" --version
+          java --version
+          mvn --version
+          mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Materialize the runtime dependency closure inside original org
+        run: |
+          mvn -B -ntp org.apache.maven.plugins:maven-dependency-plugin:3.7.1:copy-dependencies \
+            -DincludeScope=runtime -DoutputDirectory=target/compiler-runtime-deps
+      - name: Generate exact-source self-reported JVM bundle receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/compiler_bundle.py create \
+            --source-dir "$GITHUB_WORKSPACE" \
+            --source-commit "$SOURCE_COMMIT" \
+            --source-tree "$SOURCE_TREE" \
+            --main-jar "$GITHUB_WORKSPACE/target/oreslang-source-0.1.0-SNAPSHOT.jar" \
+            --dependency-dir "$GITHUB_WORKSPACE/target/compiler-runtime-deps" \
+            --out-dir "$RUNNER_TEMP/oreslang-compiler-bundle"
+          BUNDLE_MANIFEST_SHA256="$(sha256sum "$RUNNER_TEMP/oreslang-compiler-bundle/manifest.json" | awk '{print $1}')"
+          python3 scripts/ci/compiler_bundle.py verify \
+            --bundle "$RUNNER_TEMP/oreslang-compiler-bundle" \
+            --source-commit "$SOURCE_COMMIT" \
+            --source-tree "$SOURCE_TREE" \
+            --expected-manifest-sha256 "$BUNDLE_MANIFEST_SHA256" \
+            --probe-launcher
+          sha256sum "$RUNNER_TEMP/oreslang-compiler-bundle/manifest.json"
+          sha256sum "$RUNNER_TEMP/oreslang-compiler-bundle/run-oreslang"
+      - name: Real Java OresMain positive/negative source checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PYCODE'
+          import os, pathlib, re, subprocess, tempfile
+          launcher = pathlib.Path(os.environ['RUNNER_TEMP']) / 'oreslang-compiler-bundle/run-oreslang'
+          repo = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          positive = repo / 'examples/together.ores'
+          if not positive.is_file() or positive.is_symlink():
+              raise SystemExit('pinned positive Oreslang fixture missing or symlinked')
+          java_home = pathlib.Path(os.environ.get('JAVA_HOME', ''))
+          if not java_home.is_absolute() or not (java_home / 'bin/java').is_file():
+              raise SystemExit('required GraalVM JAVA_HOME unavailable')
+          env = {'PATH': str(java_home / 'bin') + os.pathsep + os.defpath,
+                 'LC_ALL': 'C', 'LANG': 'C', 'TZ': 'UTC'}
+          valid = subprocess.run([str(launcher), '--check', str(positive)],
+                                 cwd=repo, env=env, capture_output=True, timeout=90)
+          if valid.returncode != 0 or valid.stdout:
+              raise SystemExit('positive .ores compilation failed')
+          with tempfile.TemporaryDirectory(prefix='oreslang-bundle-negative-') as tmp:
+              negative = pathlib.Path(tmp) / 'parse-negative.ores'
+              negative.write_bytes(b'pub routine main( {\n')
+              bad = subprocess.run([str(launcher), '--check', str(negative)],
+                                   cwd=repo, env=env, capture_output=True, timeout=90)
+              pattern = (rb'^' + re.escape(os.fsencode(negative)) +
+                         rb':[1-9][0-9]*:[1-9][0-9]*: error: ')
+              if bad.returncode != 1 or bad.stdout or not re.search(pattern, bad.stderr, re.M):
+                  raise SystemExit('malformed source was not rejected with a positioned compiler diagnostic')
+          print('REAL_JAVA_CLI_SOURCE_CHECKS_PASS not_ml_guest_evidence=true')
+          PYCODE
+      - name: Store short-lived artifact in original private repository only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-source-org-jvm-bundle-unattested
+          path: ${{ runner.temp }}/oreslang-compiler-bundle/
+          retention-days: 1
+          if-no-files-found: error

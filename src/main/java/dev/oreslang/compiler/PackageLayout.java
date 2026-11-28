@@ -28,24 +28,41 @@ import java.util.regex.Pattern;
  * <p>Namespace names use '.' separators; '/' only appears in import paths.
  * Unit ids are logical, package-relative paths: never absolute host paths.
  */
-public record PackageLayout(Map<String, String> packageRoots) {
+public record PackageLayout(Map<String, String> packageRoots, Map<String,String> pinnedUnits) {
+    public PackageLayout(Map<String,String> roots) { this(roots, Map.of()); }
+    public static PackageLayout pinned(Map<String,String> units) { return new PackageLayout(Map.of(),units); }
     private static final Pattern SEGMENT = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
 
     public static final PackageLayout NONE = new PackageLayout(Map.of());
 
     public PackageLayout {
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
+        java.util.HashSet<String> packageNames = new java.util.HashSet<>();
         for (Map.Entry<String, String> entry : packageRoots.entrySet()) {
             String root = normalizeRoot(entry.getKey());
             String name = entry.getValue();
             if (name == null || !Pattern.matches("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*", name)) {
                 throw new IllegalArgumentException("invalid package name '" + name + "'");
             }
+            // This legacy API supplies names, not pinned package-instance IDs.
+            // Never collapse two distinct roots into the same visibility/cache domain.
+            if (!packageNames.add(name)) {
+                throw new IllegalArgumentException("ambiguous package instance for name '" + name + "'");
+            }
             if (normalized.putIfAbsent(root, name) != null) {
                 throw new IllegalArgumentException("duplicate package root '" + root + "'");
             }
         }
         packageRoots = Map.copyOf(normalized);
+        if (!packageRoots.isEmpty() && !pinnedUnits.isEmpty()) throw new IllegalArgumentException("mixed inferred and pinned layout");
+        var exact=new LinkedHashMap<String,String>();
+        for(var e:pinnedUnits.entrySet()){
+            String id=Path.of(e.getKey()).normalize().toString().replace('\\','/');
+            if(id.isBlank()||!id.equals(e.getKey())||e.getValue()==null||!e.getValue().matches("p_[a-f0-9]{64}"))
+                throw new IllegalArgumentException("invalid pinned package unit identity");
+            exact.put(id,e.getValue());
+        }
+        pinnedUnits=Map.copyOf(exact);
     }
 
     /** The package root owning a unit (longest matching root), or null. */
@@ -59,6 +76,7 @@ public record PackageLayout(Map<String, String> packageRoots) {
     }
 
     public String packageId(String unitId) {
+        if(pinnedUnits.containsKey(unitId))return "pkg:"+pinnedUnits.get(unitId);
         String root = rootOf(unitId);
         return root == null ? "file:" + unitId : "pkg:" + packageRoots.get(root);
     }
@@ -78,6 +96,11 @@ public record PackageLayout(Map<String, String> packageRoots) {
      * the folder-path default. Without a package, a missing header stays null.
      */
     public String effectiveNamespace(String unitId, String declared) {
+        if(pinnedUnits.containsKey(unitId)){
+            if(declared!=null&&declared.startsWith(Parser.DERIVED_NAMESPACE_PREFIX))
+                throw new IllegalArgumentException("derived namespace not admitted by pinned layout");
+            return declared;
+        }
         if (declared != null && declared.startsWith(Parser.DERIVED_NAMESPACE_PREFIX)) {
             int depth = Integer.parseInt(declared.substring(Parser.DERIVED_NAMESPACE_PREFIX.length()));
             List<String> folders = folders(unitId);

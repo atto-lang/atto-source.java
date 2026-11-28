@@ -1,0 +1,11 @@
+fnc seed(): int { stdio.println("seed"); return 5; }
+fnc twice(int x): int { stdio.println("twice"); return x * 2; }
+pub fnc main(): int {
+    defer seed() |> twice |> (|int x| -> || -> { stdio.println(x); });
+    defer (7, "tuple") |> (|int x, string msg| -> || -> {
+        stdio.println(msg);
+        stdio.println(x);
+    });
+    stdio.println("body");
+    return 42;
+}
