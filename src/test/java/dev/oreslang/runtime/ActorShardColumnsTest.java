@@ -29,7 +29,10 @@ final class ActorShardColumnsTest {
                     }
                     assertThrows(IndexOutOfBoundsException.class, () -> lease.read(8));
                     assertThrows(IllegalStateException.class, () -> shard.write(1, 1, 17));
+                    double beforeFailedKernel = shard.read(3, 0);
                     assertThrows(IllegalStateException.class, () -> shard.integrate(0, 1, 0.1));
+                    assertEquals(beforeFailedKernel, shard.read(3, 0),
+                            "borrow rejection must occur before the first dense-kernel write");
                     assertThrows(IllegalStateException.class, shard::close);
                     assertEquals(0.25, lease.read(0), "failed close must preserve the lease");
                     lease.close();
@@ -72,6 +75,16 @@ final class ActorShardColumnsTest {
                     }
                     for (int row = 0; row < 9; row++) {
                         for (int field = 0; field < 4; field++) assertEquals(row * 10 + field, shard.read(row, field));
+                    }
+                    // Position and velocity intentionally live in different
+                    // inner SoAoS groups. The bulk kernel must honor each
+                    // group's distinct base while preserving untouched fields.
+                    shard.integrate(0, 2, 0.5);
+                    for (int row = 0; row < 9; row++) {
+                        assertEquals(row * 15.0 + 1.0, shard.read(row, 0));
+                        assertEquals(row * 10.0 + 1.0, shard.read(row, 1));
+                        assertEquals(row * 10.0 + 2.0, shard.read(row, 2));
+                        assertEquals(row * 10.0 + 3.0, shard.read(row, 3));
                     }
                     assertThrows(IllegalArgumentException.class,
                             () -> new ActorShardColumns(ActorShardColumns.Layout.SOAOS, 9, 4, 1, 3));
@@ -118,6 +131,12 @@ final class ActorShardColumnsTest {
                                         first.countDown();
                                     } else {
                                         store[0].integrate(0, 1, 1);
+                                        for (int i = 0; i < 65; i++) {
+                                            assertEquals(2.0 * i, store[0].read(i, 1),
+                                                    "velocity field must remain unchanged");
+                                            assertEquals(-1.0, store[0].read(i, 2),
+                                                    "unrelated field must remain unchanged");
+                                        }
                                         result.set(store[0].snapshotColumn(0));
                                         second.countDown();
                                     }

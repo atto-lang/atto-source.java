@@ -9,6 +9,7 @@ on:
       - 'src/main/c/**'
       - 'src/test/java/**'
       - 'scripts/build-native-thread.sh'
+      - 'scripts/check-native-arena-abi.sh'
       - '.github/workflows/actor-native-memory.yml'
 
 permissions:
@@ -29,8 +30,10 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: Verify source-native JNI allocation ABI
+        run: bash scripts/check-native-arena-abi.sh
       - name: Exercise native storage and source allocation
         run: >-
           mvn -B -ntp
-          -Dtest=ActorLinearMemoryTest,ActorNativeArenaTest,ActorNativeObjectAllocationTest,ActorShardColumnsTest,ActorShardColumnCopyTest,ActorShardSnapshotLeaseTest,ActorShardStopRaceTest,ActorAsyncFinalizationBarrierTest,ActorPhysicalTurnGateTest,SourceActorSpawnExecutionTest,ClassConstructorHardeningTest,ActorDeclarationLexicalBoundaryTest
+          -Dtest=ActorLinearMemoryTest,ActorNativeArenaTest,ActorNativeObjectAllocationTest,ActorShardColumnsTest,ActorShardColumnCopyTest,ActorShardSnapshotLeaseTest,ActorShardStopRaceTest,ActorOutputStreamTest,ActorAsyncFinalizationBarrierTest,ActorPhysicalTurnGateTest,SourceActorSpawnExecutionTest,ClassConstructorHardeningTest,ActorDeclarationLexicalBoundaryTest
           test

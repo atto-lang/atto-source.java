@@ -78,6 +78,29 @@ exit. Foreign-arena native objects/capabilities are still rejected rather than
 downgraded to managed aliases. Reads may still materialize boxed/String evaluator
 values.
 
+**Opaque capability issuance is separate from Java interface implementation.**
+The arena's `NativeCapability` interface is a *description*, not an admission
+credential. The package-internal, actor-owner-checked
+`issueNativeCapability` records provenance by object identity before any
+capability can be persisted into a guest-native field. The trusted HTTP core's
+`NativeHttp.Exchange.nativeArena()` validates its owner and generation,
+releases the HTTP `State` monitor, and only then issues the current exchange
+to that actor. This avoids an arena/State monitor lock-order inversion with
+concurrent actor handlers; the generation/owner is revalidated on subsequent
+storage reads and moves. Arbitrary host wrappers that merely
+return the same `ActorNativeArena` are rejected in both preflight and storage.
+Opaque handle reference counts still drop the strong host handle after the last
+slot overwrite; issuance uses weak keys and is cleared at actor teardown.
+Future core/stdlib resources must have their own trusted issuance path.
+This is not an operating-system sandbox for Java host code with privileged
+runtime-package access; untrusted Oreslang guest code still has no general Java
+FFI/host-class capability.
+
+**Verification status:** the new issuance commits and negative JUnit cases must
+run against their exact PR head. Previously reported JDK21/25 test totals below
+do not certify these later changes. The latest inspected source-org Actions
+native-memory job failed before starting any test steps.
+
 Native facade provenance uses weak identity keys rather than structural equality
 or strong actor-lifetime references. A separate reference-counted lookup retains
 a facade only while one or more native slots contain its actor-relative address;
@@ -117,6 +140,12 @@ revokes all pages and refunds their native-byte reservations.
   ranges. Both validate the full destination span and every page's borrow
   status **before** modifying any bytes. `copy` also checks the full source
   range. These are baseline scalar kernels, not vectorized bulk copies.
+* Native `Region.ReadOnlyLease` now supports checked `readByte` and
+  `readUnsignedByte`, in addition to eight-byte word/double reads. Every
+  byte is validated against the borrowed slice and owning actor; no mutable
+  array or `ByteBuffer` escapes. The native linear-memory tests include
+  a deterministic 600-operation differential oracle for `fill` and
+  overlapping `copy` around page boundaries.
 * `leaseReadOnlyPage(pageIndex, offset, length)` borrows native page storage
   within the owning actor. It blocks all writes to that page while borrowed;
   a primitive write crossing two pages preflights both before mutating either.
@@ -276,6 +305,22 @@ must cover both normal and exceptional paths. `strict-no-gc` stays unavailable;
 native guest payloads alone do not eliminate runtime GC or establish hard
 real-time execution.
 
+## Standalone native ABI preflight
+
+Run `bash scripts/check-native-arena-abi.sh` from a POSIX shell with
+a JDK, a C compiler, and Linux JNI headers installed. The script compiles
+`src/main/c/oresarena.c` with warnings treated as errors, generates a
+temporary **source-free** Java JNI ABI probe in a private temporary directory,
+checks invalid sizes, allocation zeroing, independence, little-endian
+native word storage, and 1,000 explicit native-buffer allocations/releases.
+Temporary probe sources, classes, and shared-library objects are removed
+on exit.
+
+This can run without Maven or GraalVM and checks **only** the native
+allocator boundary. It does **not** prove actor ownership, memory lifetime
+under concurrent actor turns, native image compatibility, or zero-GC guest
+allocation. The full GraalVM JUnit suite remains the release gate.
+
 ## Validation for this change
 
 The focused native-storage, actor lifecycle, constructor, imported-class and
@@ -291,6 +336,13 @@ is not optimized-JIT or Native Image evidence. The dedicated workflow runs the
 focused suite with the repository's pinned GraalVM setup. No allocation-free,
 zero-GC, hard-real-time or native-image compatibility claim is admitted by these
 tests.
+
+
+### Dense kernel critical-section amortization
+
+`ActorShardColumns.integrate` now lowers each complete AoS/SoA/AoSoA/SoAoS pass to one owner-authenticated `ActorNativeArena.Region` bulk operation. The region validates writability, finite scalar parameters, and the highest byte touched by every block **before** the first store, then keeps one arena critical section for the complete pass. This removes per-element actor-owner checks and monitor entry/exit from the dense loop while preserving the actor's single-flight execution authority and read-lease freeze semantics.
+
+The physical traversal remains layout-specific: AoS uses a record stride, SoA uses contiguous scalar columns, SoAoS uses the inner-group stride, and AoSoA uses contiguous lanes plus an explicit tail block. No raw `ByteBuffer` or native address escapes. This is a structural hot-path improvement, not a SIMD or cache-miss performance claim; optimized Graal/Native Image code generation and hardware counters still require exact-head execution evidence.
 
 ## Compact 32-bit actor-relative managed references (integration hardening)
 

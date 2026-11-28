@@ -4048,17 +4048,81 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private Map<String, Object> newObjectValueStorage(Ast.ObjectExpr object) {
+            ActorNativeArena arena = ActorRuntime.currentNativeArena();
+            if (arena != null) {
+                List<String> names = object.explicitStruct()
+                        ? object.declaredFields().stream().map(Ast.StructFieldSpec::name).toList()
+                        : object.fields().stream().map(Ast.ObjectField::name).toList();
+                return arena.fields(names, UNINITIALIZED_FIELD);
+            }
+
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+            if (object.explicitStruct()) {
+                for (Ast.StructFieldSpec field : object.declaredFields()) {
+                    if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate explicit struct field " + field.name());
+                    }
+                }
+            }
+            return result;
+        }
+
+        private void storeObjectValueField(
+                Ast.ObjectExpr object,
+                Map<String, Object> result,
+                String key,
+                Object value) {
+            boolean fixedLayout =
+                    object.explicitStruct() || result instanceof ActorNativeArena.NativeValue;
+            if (fixedLayout) {
+                if (!result.containsKey(key)) {
+                    throw new IllegalArgumentException(
+                            object.explicitStruct()
+                                    ? "explicit struct initializer contains undeclared field " + key
+                                    : "struct initializer contains undeclared field " + key);
+                }
+                if (result.get(key) != UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            object.explicitStruct()
+                                    ? "duplicate explicit struct initializer field " + key
+                                    : "duplicate struct field " + key);
+                }
+                result.put(key, value);
+                return;
+            }
+
+            if (result.containsKey(key)) {
+                throw new IllegalArgumentException("duplicate struct field " + key);
+            }
+            result.put(key, value);
+        }
+
+        private Object finishObjectValue(
+                Ast.ObjectExpr object,
+                Map<String, Object> result) {
+            if (result instanceof ActorNativeArena.NativeValue) {
+                return object.structuralRecord()
+                        ? new NativeReadonlyRecordValue(result)
+                        : new NativeMutableStructValue(result);
+            }
+            return object.structuralRecord()
+                    ? new ReadonlyRecordValue(result)
+                    : new MutableStructValue(result);
+        }
+
         private void evalSuspendableObject(
                 SourceTask task,
                 Ast.ObjectExpr object,
                 Env env,
                 SourceValueCont continuation) {
-            ArrayList<Object> values = new ArrayList<>();
+            Map<String, Object> result = newObjectValueStorage(object);
             evalSuspendableObjectField(
                     task,
                     object,
                     env,
-                    values,
+                    result,
                     0,
                     (t, built, failure) ->
                             continuation.accept(
@@ -4071,42 +4135,11 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.ObjectExpr object,
                 Env env,
-                ArrayList<Object> values,
+                Map<String, Object> result,
                 int index,
                 SourceValueCont continuation) {
             if (index >= object.fields().size()) {
-                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
-                if (object.explicitStruct()) {
-                    for (Ast.StructFieldSpec field : object.declaredFields()) {
-                        if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct field " + field.name());
-                        }
-                    }
-                }
-                for (Object value : values) {
-                    @SuppressWarnings("unchecked")
-                    Map.Entry<String, Object> entry =
-                            (Map.Entry<String, Object>) value;
-                    if (object.explicitStruct()) {
-                        if (!result.containsKey(entry.getKey())) {
-                            throw new IllegalArgumentException(
-                                    "explicit struct initializer contains undeclared field " + entry.getKey());
-                        }
-                        if (result.get(entry.getKey()) != UNINITIALIZED_FIELD) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct initializer field " + entry.getKey());
-                        }
-                        result.put(entry.getKey(), entry.getValue());
-                    } else if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
-                        throw new IllegalArgumentException(
-                                "duplicate struct field " + entry.getKey());
-                    }
-                }
-                Object built = object.structuralRecord()
-                        ? new ReadonlyRecordValue(result)
-                        : new MutableStructValue(result);
-                continuation.accept(task, built, null);
+                continuation.accept(task, finishObjectValue(object, result), null);
                 return;
             }
 
@@ -4120,12 +4153,17 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        values.add(Map.entry(field.name(), value));
+                        try {
+                            storeObjectValueField(object, result, field.name(), value);
+                        } catch (RuntimeException storeFailure) {
+                            continuation.accept(t, null, storeFailure);
+                            return;
+                        }
                         evalSuspendableObjectField(
                                 t,
                                 object,
                                 env,
-                                values,
+                                result,
                                 index + 1,
                                 continuation);
                     });
@@ -5337,18 +5375,32 @@ public final class OresEvalRootNode extends RootNode {
                     return new OresObject(object.owner, object.klass, fields);
                 }
                 if (value instanceof ReadonlyRecordValue readonly) {
-                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                    Map<String, Object> fields = arena == null
+                            ? new LinkedHashMap<>()
+                            : arena.fields(
+                                    readonly.keySet().stream().toList(),
+                                    UNINITIALIZED_FIELD);
                     for (Map.Entry<String, Object> entry : readonly.entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
-                    return new ReadonlyRecordValue(fields);
+                    return fields instanceof ActorNativeArena.NativeValue
+                            ? new NativeReadonlyRecordValue(fields)
+                            : new ReadonlyRecordValue(fields);
                 }
                 if (value instanceof MutableStructValue mutableStruct) {
-                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                    Map<String, Object> fields = arena == null
+                            ? new LinkedHashMap<>()
+                            : arena.fields(
+                                    mutableStruct.keySet().stream().toList(),
+                                    UNINITIALIZED_FIELD);
                     for (Map.Entry<String, Object> entry : mutableStruct.entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
-                    return new MutableStructValue(fields);
+                    return fields instanceof ActorNativeArena.NativeValue
+                            ? new NativeMutableStructValue(fields)
+                            : new MutableStructValue(fields);
                 }
                 if (value instanceof OptionValue option) {
                     return option.present()
@@ -7058,41 +7110,32 @@ public final class OresEvalRootNode extends RootNode {
                                 "dynamic select"));
             }
             if (expr instanceof Ast.ListExpr list) {
+                ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                if (arena != null) {
+                    // Actor list literals are persistent guest values, not
+                    // evaluator scratch storage. Keep their authoritative
+                    // elements in the actor arena just like new List<T>().
+                    ActorNativeArena.NativeList result = arena.nativeList();
+                    for (Ast.Expr item : list.elements()) {
+                        result.add(eval(item, env));
+                    }
+                    return result;
+                }
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
-                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
-                if (object.explicitStruct()) {
-                    for (Ast.StructFieldSpec field : object.declaredFields()) {
-                        if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct field " + field.name());
-                        }
-                    }
-                }
+                Map<String, Object> result = newObjectValueStorage(object);
                 for (Ast.ObjectField field : object.fields()) {
-                    String key = field.name();
-                    Object value = eval(field.value(), env);
-                    if (object.explicitStruct()) {
-                        if (!result.containsKey(key)) {
-                            throw new IllegalArgumentException(
-                                    "explicit struct initializer contains undeclared field " + key);
-                        }
-                        if (result.get(key) != UNINITIALIZED_FIELD) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct initializer field " + key);
-                        }
-                        result.put(key, value);
-                    } else if (result.putIfAbsent(key, value) != null) {
-                        throw new IllegalArgumentException("duplicate struct field " + key);
-                    }
+                    storeObjectValueField(
+                            object,
+                            result,
+                            field.name(),
+                            eval(field.value(), env));
                 }
-                return object.structuralRecord()
-                        ? new ReadonlyRecordValue(result)
-                        : new MutableStructValue(result);
+                return finishObjectValue(object, result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();

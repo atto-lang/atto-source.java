@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -203,6 +204,84 @@ final class ActorLinearMemoryTest {
                     () -> memory.fill(0, -1, (byte) 0));
             assertThrows(IndexOutOfBoundsException.class,
                     () -> memory.fill(Long.MAX_VALUE, 1, (byte) 0));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void deterministicBulkOperationsMatchArrayOracleAcrossNativePageBoundaries() {
+        AtomicLong charged = new AtomicLong();
+        final int size = ActorLinearMemory.PAGE_BYTES * 2;
+        final byte[] expected = new byte[size];
+        final Random random = new Random(0x0a72e41L);
+        try (ActorNativeArena arena = arena(size, charged)) {
+            ActorLinearMemory memory = arena.linearMemory(2, 2);
+            for (int turn = 0; turn < 600; turn++) {
+                int length = random.nextInt(320);
+                int source = random.nextInt(size - length + 1);
+                int target = random.nextInt(size - length + 1);
+                // Periodically force both directions of overlap and page
+                // crossing, rather than relying on uniform chance alone.
+                if (turn % 7 == 0) {
+                    source = ActorLinearMemory.PAGE_BYTES - 80;
+                    target = source + 13;
+                    length = 180;
+                } else if (turn % 11 == 0) {
+                    target = ActorLinearMemory.PAGE_BYTES - 80;
+                    source = target + 13;
+                    length = 180;
+                }
+                if (turn % 3 == 0) {
+                    byte value = (byte) random.nextInt();
+                    memory.fill(target, length, value);
+                    java.util.Arrays.fill(expected, target, target + length, value);
+                } else {
+                    memory.copy(target, source, length);
+                    System.arraycopy(expected, source, expected, target, length);
+                }
+                // Always check the exact destination and its immediate
+                // boundaries, plus sampled non-destination actor memory.
+                for (int at = Math.max(0, target - 1);
+                        at <= Math.min(size - 1, target + length); at++) {
+                    assertEquals(expected[at], memory.readByte(at),
+                            "turn " + turn + " offset " + at);
+                }
+                for (int j = 0; j < 24; j++) {
+                    int at = random.nextInt(size);
+                    assertEquals(expected[at], memory.readByte(at),
+                            "unmodified memory turn " + turn + " offset " + at);
+                }
+            }
+            for (int at = 0; at < size; at += 41) {
+                assertEquals(expected[at], memory.readByte(at));
+            }
+        }
+        assertEquals(0, charged.get(), "native bytes refunded after fuzz regression");
+    }
+
+    @Test
+    void canonicalArenaAddressesAreProvenanceNotLinearPointerArithmetic() {
+        AtomicLong charged = new AtomicLong();
+        int page = ActorLinearMemory.PAGE_BYTES;
+        try (ActorNativeArena arena = arena(3L * page, charged)) {
+            ActorLinearMemory memory = arena.linearMemory(1, 2);
+            long firstPageBase = memory.actorOffset(0);
+
+            // Interleave an ordinary actor-native allocation before a later
+            // linear-memory grow. The guest address space remains contiguous,
+            // while canonical arena identity addresses need not be.
+            var interleaved = arena.region(64);
+            long interleavedBase = interleaved.nativeOffset();
+            assertTrue(interleavedBase >= firstPageBase + page);
+
+            assertEquals(1, memory.grow(1));
+            long secondPageBase = memory.actorOffset(page);
+            assertNotEquals(firstPageBase + page, secondPageBase,
+                    "canonical arena offsets must not be treated as linear pointer arithmetic");
+
+            memory.writeLong(page - 4L, 0x0102030405060708L);
+            assertEquals(0x0102030405060708L, memory.readLong(page - 4L),
+                    "guest linear offsets remain contiguous across the page boundary");
         }
         assertEquals(0, charged.get());
     }

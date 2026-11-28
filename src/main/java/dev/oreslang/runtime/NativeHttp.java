@@ -177,14 +177,29 @@ public final class NativeHttp implements AutoCloseable {
     public Exchange claim(String token) {
         Exchange exchange = transfers.get(token);
         if (exchange == null) throw new IllegalStateException("unknown or already claimed HTTP transfer");
+
+        // Phase 1 authenticates the actor and prepares native-slot authority
+        // without consuming the one-shot transfer token.
+        final ActorNativeArena arena;
+        synchronized (exchange.state) {
+            exchange.checkOwner();
+            arena = ActorRuntime.currentNativeArena();
+            if (arena == null) {
+                throw new SecurityException("HTTP transfer claim requires actor native memory authority");
+            }
+        }
+        arena.issueNativeCapability(exchange);
+
+        // Phase 2 revalidates ownership and commits the one-shot claim. If
+        // capability issuance failed, the transfer remains claimable/abortable.
         synchronized (exchange.state) {
             exchange.checkOwner();
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
             exchange.state.ticket = null;
             exchange.state.claimedNanos = System.nanoTime();
             CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
-            return exchange;
         }
+        return exchange;
     }
 
     private Object owner() {
