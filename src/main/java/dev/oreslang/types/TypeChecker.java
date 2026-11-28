@@ -80,9 +80,10 @@ public final class TypeChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
-    /** Every lexical import binding, including type-only namespace aliases. */
-    private final Set<String> importedBindings = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    // Type-only imports still occupy names. No lexical import may be
+    // mistaken for a privileged runtime type-test intrinsic.
+    private final Set<String> allImportBindings = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -211,8 +212,8 @@ public final class TypeChecker {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
+                allImportBindings.add(name);
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
-                importedBindings.add(name);
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
                 }
@@ -237,15 +238,15 @@ public final class TypeChecker {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     rejectOpaqueTopRedeclaration(klass.name(), "class");
-                    putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
+                    putQualified(classes, ambiguousClasses, module.name(), klass.name(), "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     rejectOpaqueTopRedeclaration(iface.name(), "interface/trait");
-                    putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
+                    putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     rejectOpaqueTopRedeclaration(alias.name(), "type alias");
-                    putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
+                    putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
             }
@@ -2423,12 +2424,14 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (isBuiltinIntegerPredicate(call, env)) {
+            if (isBuiltinIntegerPredicate(call, env) || isBuiltinDoublePredicate(call, env)) {
+                String predicate = isBuiltinIntegerPredicate(call, env)
+                        ? "Integer.is_int" : "Double.is_double";
                 if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("Integer.is_int does not accept call-site type arguments");
+                    throw new IllegalArgumentException(predicate + " does not accept call-site type arguments");
                 }
                 if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
-                    throw new IllegalArgumentException("Integer.is_int expects exactly one value");
+                    throw new IllegalArgumentException(predicate + " expects exactly one value");
                 }
                 typeOf(call.arguments().getFirst(), env, generics, self);
                 return Primitive.BOOL;
@@ -5189,8 +5192,22 @@ public final class TypeChecker {
         return env.lookup("Integer") == null
                 && !modules.containsKey("Integer")
                 && findClass("Integer") == null
+                && findTypeAlias("Integer") == null
                 && !hasFunctionFamily("Integer")
-                && !importedBindings.contains("Integer");
+                && !allImportBindings.contains("Integer");
+    }
+
+    private boolean isBuiltinDoublePredicate(Ast.CallExpr call, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !member.member().equals("is_double")
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Double")) return false;
+        return env.lookup("Double") == null
+                && !modules.containsKey("Double")
+                && findClass("Double") == null
+                && findTypeAlias("Double") == null
+                && !hasFunctionFamily("Double")
+                && !allImportBindings.contains("Double");
     }
 
     private Type typeOfCondition(Ast.Expr expr, Env env, Set<String> generics, Type self) {
@@ -5206,19 +5223,28 @@ public final class TypeChecker {
 
     private void defineConditionBindings(
             Ast.Expr condition, Env destination, Env sourceEnv, Set<String> generics, Type self) {
-        if (condition instanceof Ast.CallExpr call && isBuiltinIntegerPredicate(call, sourceEnv)
-                && call.arguments().size() == 1
+        if (condition instanceof Ast.CallExpr call
+                && (isBuiltinIntegerPredicate(call, sourceEnv)
+                    || isBuiltinDoublePredicate(call, sourceEnv))
+                && call.arguments().size() == 1 && !call.typeArgumentsPresent()
                 && call.arguments().getFirst() instanceof Ast.NameExpr name) {
-            // Repeating the same trusted guard along an && chain reuses the
-            // already-proven local instead of creating a duplicate binding.
+            // Repeated trusted guards along an && chain reuse the existing
+            // refinement rather than shadowing it with a duplicate binding.
             if (destination.bindings.containsKey(name.name())) return;
             Env.Binding binding = sourceEnv.lookup(name.name());
-            // Only immutable/stable bindings are narrowed. Rebindable locations
-            // retain their declared type so mutation cannot invalidate the proof.
+            Type narrowed = isBuiltinIntegerPredicate(call, sourceEnv)
+                    ? Primitive.INT : Primitive.FLOAT;
+            // A runtime scalar guard validates the *value*, not capabilities
+            // attached to a borrow, generic, union or nominal wrapper. Never
+            // erase borrow/ownership/effect metadata by refining its deref'd
+            // type to a bare primitive. This stage supports only opaque
+            // source top values and already-typed matching scalars.
             if (binding != null && binding.kind() != Ast.BindingKind.LET
                     && !binding.hasUninitializedFields()
-                    && typesMayOverlap(deref(binding.type()), Primitive.INT)) {
-                destination.define(name.name(), Primitive.INT, binding.kind());
+                    && (binding.type() == Types.Any.INSTANCE
+                        || binding.type() == Types.UnknownValue.INSTANCE
+                        || binding.type() == narrowed)) {
+                destination.define(name.name(), narrowed, binding.kind());
             }
             return;
         }

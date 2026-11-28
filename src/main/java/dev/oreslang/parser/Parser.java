@@ -21,6 +21,10 @@ public final class Parser {
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
+    // A missing false arm is only legal in a parenthesized nested true-arm
+    // conditional and must be fully resolved before its parent returns.
+    private int ternaryTrueArmDepth;
+    private int pendingInheritedTernaryArms;
     private boolean suppressRefinementOperators;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
@@ -3098,10 +3102,52 @@ public final class Parser {
     private Ast.Expr parseConditional() {
         Ast.Expr condition = parseLogicalOr();
         if (!match(QUESTION)) return condition;
-        Ast.Expr whenTrue = parseAssignment();
-        consume(COLON, "expected ':' in ternary expression");
+
+        int beforeTrueArm = pendingInheritedTernaryArms;
+        Ast.Expr whenTrue;
+        ternaryTrueArmDepth++;
+        try {
+            whenTrue = parseAssignment();
+        } finally {
+            ternaryTrueArmDepth--;
+        }
+
+        if (!match(COLON)) {
+            // The enclosing conditional will supply the false arm. A bare
+            // "condition ? value" cannot silently return void/null or
+            // acquire an unrelated default. Parentheses delimit the shorthand.
+            if (ternaryTrueArmDepth > 0 && check(RPAREN)) {
+                pendingInheritedTernaryArms++;
+                return new Ast.ConditionalExpr(condition, whenTrue, null);
+            }
+            throw error(peek(), "expected ':' in ternary expression; inherited false arms require a parenthesized nested true branch");
+        }
+
+        int beforeFalseArm = pendingInheritedTernaryArms;
         Ast.Expr whenFalse = parseConditional();
-        return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+        if (pendingInheritedTernaryArms != beforeFalseArm) {
+            throw error(peek(), "an omitted ternary ':' cannot occur inside a false branch");
+        }
+
+        Ast.Expr expandedTrue = inheritTernaryFalseArm(whenTrue, whenFalse);
+        if (pendingInheritedTernaryArms != beforeTrueArm) {
+            throw error(peek(), "omitted ternary ':' is permitted only in direct parenthesized true-branch conditionals");
+        }
+        return new Ast.ConditionalExpr(condition, expandedTrue, whenFalse);
+    }
+
+    /**
+     * Rewrite before AST consumers run: a ? (b ? x) : y becomes
+     * a ? (b ? x : y) : y. Both uses of y are in mutually exclusive paths.
+     * Only direct true-branch conditional trees inherit; never rewrite
+     * arbitrary call operands, arithmetic, false branches or assignments.
+     */
+    private Ast.Expr inheritTernaryFalseArm(Ast.Expr branch, Ast.Expr inherited) {
+        if (!(branch instanceof Ast.ConditionalExpr conditional)) return branch;
+        Ast.Expr ownFalse = conditional.whenFalse() == null ? inherited : conditional.whenFalse();
+        if (conditional.whenFalse() == null) pendingInheritedTernaryArms--;
+        Ast.Expr trueArm = inheritTernaryFalseArm(conditional.whenTrue(), ownFalse);
+        return new Ast.ConditionalExpr(conditional.condition(), trueArm, ownFalse);
     }
 
     private Ast.Expr parseLogicalOr() {
