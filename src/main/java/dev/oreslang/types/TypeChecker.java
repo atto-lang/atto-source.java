@@ -14918,6 +14918,9 @@ public final class TypeChecker {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
                 for (Ast.TypeRef ref : klass.interfaces()) {
+                    // Newable is a validated static factory witness, never
+                    // an instance interface or an awaitable capability.
+                    if (ref.name().equals("Newable")) continue;
                     Type discovered = hasFutureResult(
                             concreteClassReference(ref, klass, named), seen);
                     result = mergeAwaitResult(result, discovered);
@@ -14958,6 +14961,8 @@ public final class TypeChecker {
         if (actual == null) return false;
 
         for (Ast.TypeRef ifaceRef : actual.interfaces()) {
+            // Static factory witnesses cannot participate in instance subtyping.
+            if (ifaceRef.name().equals("Newable")) continue;
             Named ifaceType = concreteClassReference(ifaceRef, actual, actualType);
             if (interfaceTypeExtends(ifaceType, expectedInterfaceType, new LinkedHashSet<>())) {
                 return true;
