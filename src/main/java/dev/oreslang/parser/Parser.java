@@ -7377,9 +7377,41 @@ public final class Parser {
 
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
+    /**
+     * `<<<=`, `>>>=` or `ashr=` at the current position (atto-spec
+     * bitwise-and-stream-operators-v1). The lexer keeps `<=`/`>=` whole, so
+     * the operators are adjacent `<` `<` `<=`, `>` `>` `>=` and `ashr` `=`.
+     * Returns the shift operator, or null.
+     */
+    private String checkCompoundShift() {
+        if (current + 1 >= tokens.size()) return null;
+        Token first = tokens.get(current);
+        Token second = tokens.get(current + 1);
+        if (first.type() == IDENT && first.lexeme().equals("ashr")
+                && second.type() == EQUAL && adjacent(first, second)) return "ashr";
+        if (current + 2 >= tokens.size()) return null;
+        Token third = tokens.get(current + 2);
+        if (!adjacent(first, second) || !adjacent(second, third)) return null;
+        if (first.type() == LT && second.type() == LT && third.type() == LTE) return "<<<";
+        if (first.type() == GT && second.type() == GT && third.type() == GTE) return ">>>";
+        return null;
+    }
+
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parsePipeline();
         rejectUnsupportedActorPipeline();
+        String compound = checkCompoundShift();
+        if (compound != null) {
+            // `x op= n` is exactly `x = x op n` on a named local; the ordinary
+            // assignment mutability and int shift checks apply.
+            Token at = peek();
+            current += compound.equals("ashr") ? 2 : 3;
+            if (!(expr instanceof Ast.NameExpr name)) {
+                throw error(at, "compound shift assignment requires a named local");
+            }
+            return new Ast.AssignExpr(expr,
+                    new Ast.BinaryExpr(compound, new Ast.NameExpr(name.name()), parseAssignment()));
+        }
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
@@ -7855,6 +7887,7 @@ public final class Parser {
         Ast.Expr expr = parseShift();
         while (true) {
             if (checkIoReadBinder()) break; // `source >> val name;`, not `>` twice
+            if (checkCompoundShift() != null) break; // `x <<<= n`, not a comparison
             if (match(LT, LTE, GT, GTE)) {
                 String op = previous().lexeme();
                 expr = new Ast.BinaryExpr(op, expr, parseShift());
@@ -7900,6 +7933,7 @@ public final class Parser {
         Ast.Expr expr = parseAdditive();
         while (true) {
             String op;
+            if (checkCompoundShift() != null) break; // `x <<<= n` belongs to parseAssignment
             if (matchAdjacentTriple(GT)) op = ">>>";
             else if (matchAdjacentTriple(LT)) op = "<<<";
             // Arithmetic (sign-filling) right shift is the contextual infix word
