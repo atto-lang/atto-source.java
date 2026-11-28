@@ -103,8 +103,10 @@ public final class OresVM implements AutoCloseable {
         }
     }
 
-    /** Root and CONTROL carriers; root-task continuations prefer their last carrier. */
+    /** Independent ROOT and CONTROL admission domains. */
     private final LocalityCarrierPool controlExecutor;
+    private final LocalityCarrierPool rootExecutor;
+    private final OresScheduler controlScheduler;
     private final ThreadPoolExecutor physicalStopExecutor;
     private final OresScheduler rootScheduler;
     private final NioReadinessGroup nioReadiness;
@@ -177,30 +179,49 @@ public final class OresVM implements AutoCloseable {
                 physicalFactory,
                 new ThreadPoolExecutor.AbortPolicy());
 
-        // Scheduler creation itself can fail before startup(). Ensure the
-        // newly allocated physical and CONTROL workers are not leaked.
-        final OresScheduler initializedRoot;
+        // Strict isolates retain their caller-owned admission queue. Ordinary
+        // VMs serialize ROOT turns on one bounded, independent carrier.
+        ThreadFactory rootFactory = runnable -> Thread.ofPlatform()
+                .daemon(true).name("ores-root-process-0")
+                .stackSize(LogicalStackQuota.CARRIER_STACK_BYTES)
+                .unstarted(LogicalStackQuota.carrierBody(
+                        LogicalStackQuota.CARRIER_STACK_BYTES, runnable));
+        this.rootExecutor = rootAdmission == null
+                ? new LocalityCarrierPool(1, DEFAULT_QUEUE_CAPACITY, rootFactory) : null;
+        OresScheduler initializedRoot = null;
+        OresScheduler initializedControl;
         try {
             initializedRoot = OresScheduler.runtimeOwned(
-                    "ores-root-scheduler",
-                    rootAdmission == null ? controlParallelism : 1,
-                    rootAdmission == null ? controlExecutor : rootAdmission,
-                    turnExecutor);
+                    "ores-root-scheduler", 1,
+                    rootAdmission == null ? rootExecutor : rootAdmission, turnExecutor);
+            initializedControl = OresScheduler.runtimeOwned(
+                    "ores-control-scheduler", rootAdmission == null ? controlParallelism : 1,
+                    rootAdmission == null ? controlExecutor : rootAdmission, turnExecutor);
         } catch (RuntimeException | Error failure) {
-            shutdownPhysicalStops();
-            controlExecutor.shutdownNow();
+            try {
+                if (initializedRoot != null) initializedRoot.close();
+            } finally {
+                if (rootExecutor != null) rootExecutor.shutdownNow();
+                controlExecutor.shutdownNow();
+                shutdownPhysicalStops();
+            }
             throw failure;
         }
         this.rootScheduler = initializedRoot;
+        this.controlScheduler = initializedControl;
         // Construction owns no selector or reactor thread. The first accepted
         // readiness watch starts the VM-owned reactor lazily.
         this.nioReadiness = new NioReadinessGroup();
         try {
             startup();
         } catch (RuntimeException | Error failure) {
-            rootScheduler.close();
-            controlExecutor.shutdownNow();
-            shutdownPhysicalStops();
+            try {
+                closeSchedulers();
+            } finally {
+                if (rootExecutor != null) rootExecutor.shutdownNow();
+                controlExecutor.shutdownNow();
+                shutdownPhysicalStops();
+            }
             throw failure;
         }
     }
@@ -312,6 +333,12 @@ public final class OresVM implements AutoCloseable {
                                 + required + ", live=" + live
                                 + ", newlyStarted=" + newlyStarted);
             }
+            if (rootExecutor != null) {
+                rootExecutor.prestartAll();
+                if (rootExecutor.liveCarriers() != 1) {
+                    throw new IllegalStateException("ROOT dispatcher bootstrap incomplete");
+                }
+            }
             startupState = StartupState.STARTED;
         } catch (RuntimeException | Error failure) {
             startupState = StartupState.FAILED;
@@ -325,6 +352,14 @@ public final class OresVM implements AutoCloseable {
 
     int controlCarrierCount() {
         return controlExecutor.liveCarriers();
+    }
+
+    int controlParallelism() {
+        return controlExecutor.carrierCount();
+    }
+
+    int rootCarrierCount() {
+        return rootExecutor == null ? 0 : rootExecutor.liveCarriers();
     }
 
     /** Trusted runtime-only shared readiness domain; guest access is permission-gated above it. */
@@ -428,10 +463,9 @@ public final class OresVM implements AutoCloseable {
     }
 
     /**
-     * Admit runtime CONTROL work through the already-owned root scheduler.
+     * Admit runtime CONTROL work through its own scheduler facade.
      *
-     * Mailmen and other control services share the VM root/CONTROL admission
-     * boundary. In a strict isolate this preserves the isolate's JNI/root-turn
+     * Mailmen and other control services do not queue behind ordinary ROOT work. In a strict isolate this preserves the isolate's JNI/root-turn
      * admission executor rather than hopping guest work onto an unadmitted
      * native carrier.
      */
@@ -441,7 +475,7 @@ public final class OresVM implements AutoCloseable {
             throw new RejectedExecutionException(
                     "Oreslang VM CONTROL dispatcher is not available");
         }
-        return rootScheduler.startSync(() -> {
+        return controlScheduler.startSync(() -> {
             task.run();
             return null;
         });
@@ -560,6 +594,20 @@ public final class OresVM implements AutoCloseable {
         }
     }
 
+    private void closeSchedulers() {
+        try {
+            rootScheduler.close();
+        } catch (RuntimeException | Error failure) {
+            try {
+                controlScheduler.close();
+            } catch (RuntimeException | Error secondary) {
+                failure.addSuppressed(secondary);
+            }
+            throw failure;
+        }
+        controlScheduler.close();
+    }
+
     @Override
     public void close() {
         // A CONTROL/root task cannot wait for its own carrier to leave. Reject
@@ -568,6 +616,7 @@ public final class OresVM implements AutoCloseable {
         // An ordinary actor/Mailman must likewise delegate blocking VM teardown
         // to its supervising host after its turn finishes.
         if (OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()
                 || onNioWorker()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
@@ -596,7 +645,7 @@ public final class OresVM implements AutoCloseable {
             RuntimeException nioFailure = closeNioReadiness();
             try {
                 try {
-                    rootScheduler.close();
+                    closeSchedulers();
                 } catch (RuntimeException | Error failure) {
                     if (nioFailure != null) failure.addSuppressed(nioFailure);
                     throw failure;
@@ -614,16 +663,19 @@ public final class OresVM implements AutoCloseable {
                     // Even a broken discard observer cannot prevent CONTROL
                     // carrier teardown or poison later shutdown attempts.
                     controlExecutor.shutdownNow();
+                    if (rootExecutor != null) rootExecutor.shutdownNow();
                 }
                 try {
                     boolean physicalDone =
                             physicalStopExecutor.awaitTermination(5, TimeUnit.SECONDS);
                     boolean controlDone =
                             controlExecutor.awaitTermination(5, TimeUnit.SECONDS);
-                    if (!controlDone || !physicalDone) {
+                    boolean rootDone = rootExecutor == null
+                            || rootExecutor.awaitTermination(5, TimeUnit.SECONDS);
+                    if (!controlDone || !physicalDone || !rootDone) {
                         IllegalStateException incomplete = new IllegalStateException(
                                 "Oreslang VM carrier teardown incomplete: control="
-                                        + controlDone + ", physicalStop=" + physicalDone);
+                                        + controlDone + ", physicalStop=" + physicalDone + ", root=" + rootDone);
                         if (physicalShutdownFailure != null) {
                             incomplete.addSuppressed(physicalShutdownFailure);
                         }

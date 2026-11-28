@@ -31,7 +31,9 @@ final class OresVMControlBudgetParityTest {
             assertEquals(2, first.controlCarrierCount(),
                     "default is two CONTROL workers, regardless of CPU count");
             assertEquals(2, sibling.controlCarrierCount());
-            assertEquals(2, sibling.rootScheduler().parallelism());
+            assertEquals(1, sibling.rootScheduler().parallelism());
+            assertEquals(2, sibling.controlParallelism());
+            assertEquals(1, sibling.rootCarrierCount());
 
             first.close();
 

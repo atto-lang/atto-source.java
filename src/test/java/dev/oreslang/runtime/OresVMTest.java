@@ -222,7 +222,7 @@ final class OresVMTest {
         try {
             assertTrue(vm.started());
             assertEquals(
-                    vm.rootScheduler().parallelism(),
+                    vm.controlParallelism(),
                     vm.controlCarrierCount(),
                     "all CONTROL carriers must be resident before root execution");
 
@@ -237,7 +237,7 @@ final class OresVMTest {
                     });
 
             String threadName = first.get(5, TimeUnit.SECONDS);
-            assertTrue(threadName.startsWith("ores-control-plane-"));
+            assertTrue(threadName.startsWith("ores-root-process-"));
         } finally {
             vm.close();
         }
@@ -393,7 +393,8 @@ final class OresVMTest {
             assertTrue(dispatch > 0L);
             vm.startup();
             vm.startup();
-            assertEquals(vm.rootScheduler().parallelism(), vm.controlCarrierCount());
+            assertEquals(vm.controlParallelism(), vm.controlCarrierCount());
+            assertEquals(1, vm.rootScheduler().parallelism());
         } finally {
             vm.close();
         }
@@ -422,4 +423,50 @@ final class OresVMTest {
         }
     }
 
+
+    @Test
+    void blockedRootTurnDoesNotStarveControlOrPermitAnotherRootTurn() throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var secondStarted = new java.util.concurrent.atomic.AtomicBoolean();
+        try (OresVM vm = OresVM.createConfigured(Runnable::run, null, "1")) {
+            assertEquals(1, vm.rootScheduler().parallelism());
+            assertEquals(1, vm.rootCarrierCount());
+            OresFuture<Integer> first = vm.rootScheduler().startSync(() -> {
+                entered.countDown();
+                assertTrue(release.await(10, TimeUnit.SECONDS));
+                return 1;
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                OresFuture<Integer> second = vm.rootScheduler().startSync(() -> {
+                    secondStarted.set(true);
+                    return 2;
+                });
+                vm.executeControl(() -> {
+                    assertTrue(Thread.currentThread().getName().startsWith("ores-control-plane-"));
+                    assertTrue(!secondStarted.get(), "ROOT turns must be single-flight");
+                }).get(5, TimeUnit.SECONDS);
+                release.countDown();
+                assertEquals(1, first.get(5, TimeUnit.SECONDS));
+                assertEquals(2, second.get(5, TimeUnit.SECONDS));
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test
+    void controlKeepsStrictCallerAdmission() throws Exception {
+        var turns = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        try (OresVM vm = OresVM.create(Runnable::run, turns::add)) {
+            Thread caller = Thread.currentThread();
+            assertEquals(0, vm.rootCarrierCount());
+            OresFuture<Void> control = vm.executeControl(() ->
+                    assertEquals(caller, Thread.currentThread()));
+            assertTrue(!control.isDone());
+            java.util.Objects.requireNonNull(turns.poll(5, TimeUnit.SECONDS)).run();
+            control.get(5, TimeUnit.SECONDS);
+        }
+    }
 }
