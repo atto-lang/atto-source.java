@@ -228,15 +228,17 @@ final class SupervisorRestartWindowTest {
     @Test
     void elapsedOverflowDoesNotCommitRejectedRawTimestamp() throws Exception {
         var gate = new SupervisorRestartWindow(1, 100);
-        assertTrue(gate.tryAcquire(10).allowed());
+        // Reach a coherent near-overflow state via public admission, rather
+        // than changing elapsed time without updating the timestamp ring.
+        assertEquals(0, gate.advance(0));
+        assertTrue(gate.tryAcquire(Long.MAX_VALUE - 2).allowed());
         var elapsed = SupervisorRestartWindow.class.getDeclaredField("elapsedNanos");
         elapsed.setAccessible(true);
-        elapsed.setLong(gate, Long.MAX_VALUE - 2);
 
-        assertThrows(IllegalStateException.class, () -> gate.advance(13));
-        // If the rejected sample had advanced lastRawNanos to 13, this
-        // previously valid sample at 11 would be mistaken for a rollback.
-        assertEquals(1, gate.advance(11));
+        assertThrows(IllegalStateException.class, () -> gate.advance(Long.MIN_VALUE));
+        assertEquals(1, gate.currentAdmissions());
+        // A rejected sample must not commit its raw clock origin.
+        assertEquals(1, gate.advance(Long.MAX_VALUE - 1));
         assertEquals(Long.MAX_VALUE - 1, elapsed.getLong(gate));
         assertEquals(1, gate.currentAdmissions());
     }
