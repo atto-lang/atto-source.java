@@ -48,3 +48,12 @@
 /scripts/run-in-private-ci-destination.sh @ORESoftware
 /scripts/publish-private-ci-source.py @ORESoftware
 /scripts/publish-private-ci-source-v3.py @ORESoftware
+
+# Exact private-source runner admission and regression gates.
+/.github/workflows/private-exact-main-validation.yml @ORESoftware
+/.github/workflows/private-exact-candidate-validation.yml @ORESoftware
+/.github/workflows/private-exact-publisher-validation.yml @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java @ORESoftware
+/src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java @ORESoftware
+/docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md @ORESoftware

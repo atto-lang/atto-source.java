@@ -6,8 +6,8 @@ import java.util.function.LongSupplier;
 /**
  * Soft, per-dispatch loop quantum for a single heap-backed Oreslang source task.
  *
- * <p>One cheap saturating reduction update and phase increment per completed backedge; monotonic
- * clock reads occur only after an amortized 128-backedge batch. This class decides when a
+ * <p>One cheap counter increment and mask per completed backedge; monotonic
+ * clock reads occur only after an amortized batch. This class decides when a
  * checkpoint is due, NOT where suspension is legal. Only SourceTask's proven
  * post-commit continuation can publish OresScheduler.cooperate().</p>
  *
@@ -25,8 +25,13 @@ public final class SourceCooperationQuantum {
     private long lastCooperateAtNanos;
     private long dispatchStartedAtNanos;
     private long backedgesThisDispatch;
-    // Separate wrapping phase: the saturated long must not freeze polling.
+    // Persistent across await/resume: short turns cannot evade cold checks.
     private int pollPhase;
+    private boolean pollDue;
+    // A requested handoff belongs to the logical task, not one carrier turn.
+    private boolean pendingHandoff;
+    // Prevent a completed 512-edge turn from relatching after real cooperation.
+    private boolean acknowledgedCooperate;
 
     /** Production clock, injected in tests to validate exact clock-read cost. */
     public SourceCooperationQuantum() {
@@ -41,9 +46,17 @@ public final class SourceCooperationQuantum {
 
     /** Refresh only the fairness quantum; keep the logical cooperation clock. */
     public void beginDispatch() {
+        // Await/carrier migration is not a cooperation. Keep overdue work
+        // pending until the logical task actually hands off.
+        if (!acknowledgedCooperate
+                && backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+            pendingHandoff = true;
+        }
+        acknowledgedCooperate = false;
         dispatchStartedAtNanos = monotonicNanos.getAsLong();
         backedgesThisDispatch = 0;
-        pollPhase = 0;
+        // A new physical dispatch must earn a fresh poll ticket.
+        pollDue = false;
     }
 
     /**
@@ -51,22 +64,15 @@ public final class SourceCooperationQuantum {
      * Absolutely no clock reads or scheduler calls on the usual fast path.
      */
     public boolean completedBackedgeNeedsCheck() {
-        // Every committed backedge pays only for saturating reduction
-        // accounting and a tiny counter. The expensive safepoint is eligible
-        // only on every 128th backedge, including after the soft 512 cap.
-        // A no-yield region may delay handoff by up to 127 more reductions,
-        // never turn the expensive poll into a per-iteration operation.
-        // Unlike masking the saturated long, an independent phase keeps
-        // polling even when total reductions reach Long.MAX_VALUE.
+        // Charge cheap work each iteration, even when an overdue critical
+        // section prohibits suspension. Saturate the physical dispatch count.
         if (backedgesThisDispatch != Long.MAX_VALUE) {
             backedgesThisDispatch++;
         }
-        pollPhase++;
-        if (pollPhase == LOOP_CHECK_INTERVAL) {
-            pollPhase = 0;
-            return true;
-        }
-        return false;
+        // The cold poll remains periodic even past the 512 reduction cap.
+        pollPhase = (pollPhase + 1) & (LOOP_CHECK_INTERVAL - 1);
+        pollDue = pollPhase == 0;
+        return pollDue;
     }
 
     /** Slow path only: reduction cap, watchdog request, or active dispatch time.
@@ -78,19 +84,50 @@ public final class SourceCooperationQuantum {
     }
 
     public boolean shouldCooperateAtCheck(boolean watchdogRequested) {
-        // A pending watchdog notice is advisory and must not cause another
-        // clock read. Only the compiler-lowered caller may publish Cooperate.
-        if (watchdogRequested || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+        // One ticket per 128 committed backedges: repeated or off-cycle
+        // callers must not trigger new clock reads or scheduler polls.
+        if (!pollDue) {
+            return false;
+        }
+        pollDue = false;
+        if (pendingHandoff || watchdogRequested
+                || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+            pendingHandoff = true;
             return true;
         }
-        return elapsedNanosOrOverdue(
+        if (elapsedNanosOrOverdue(
                 monotonicNanos.getAsLong(), dispatchStartedAtNanos)
-                >= SOFT_DISPATCH_QUANTUM_NANOS;
+                >= SOFT_DISPATCH_QUANTUM_NANOS) {
+            pendingHandoff = true;
+            return true;
+        }
+        return false;
     }
 
     /** Called only for an actual rt cooperate / automatic scheduler handoff. */
     public void recordedCooperate() {
         lastCooperateAtNanos = monotonicNanos.getAsLong();
+        pollDue = false;
+        pendingHandoff = false;
+        acknowledgedCooperate = true;
+    }
+
+    /**
+     * Clock-free indication for a compiler-verified no-yield-scope exit.
+     * This is a request only; it never authorizes suspension by itself.
+     */
+    public boolean pendingHandoffOnNoYieldExit() {
+        return pendingHandoff
+                || (!acknowledgedCooperate
+                    && backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH);
+    }
+
+    private static long elapsedNanosOrOverdue(long now, long started) {
+        // A regressing clock or signed subtraction overflow must fail toward
+        // fairness, never make an overdue task appear to have a fresh quantum.
+        if (now < started) return Long.MAX_VALUE;
+        long elapsed = now - started;
+        return elapsed < 0 ? Long.MAX_VALUE : elapsed;
     }
 
     /**
@@ -100,21 +137,6 @@ public final class SourceCooperationQuantum {
     public long timeSinceLastCooperateNanos() {
         return elapsedNanosOrOverdue(
                 monotonicNanos.getAsLong(), lastCooperateAtNanos);
-    }
-
-    /**
-     * Fail closed on clock regression and signed subtraction overflow.
-     * A wrapped positive delta can otherwise make a long-overdue dispatch
-     * look younger than the soft quantum. Never do raw signed subtraction
-     * of two potentially extreme nanoTime readings.
-     */
-    private static long elapsedNanosOrOverdue(long now, long started) {
-        try {
-            long delta = Math.subtractExact(now, started);
-            return delta >= 0L ? delta : Long.MAX_VALUE;
-        } catch (ArithmeticException overflow) {
-            return Long.MAX_VALUE;
-        }
     }
 
     public long completedBackedgesThisDispatch() {

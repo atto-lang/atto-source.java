@@ -15,6 +15,59 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 final class ChannelRuntimeTest {
+
+    @Test
+    void closeReleasesPendingWriterWithoutPublishingRejectedPayload() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1, 2);
+        assertTrue(channel.tryWrite(11));
+        OresFuture<Void> pending = channel.writeAsync(22);
+        assertFalse(pending.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        channel.close();
+        assertThrows(RuntimeException.class, pending::join);
+        assertEquals(0, channel.pendingRegistrations(),
+                "shutdown must release the pending write registration");
+        assertEquals(11, channel.tryRead().orElseThrow(),
+                "the previously admitted payload must remain ordered");
+        assertEquals(0, channel.size(),
+                "the rejected write must never appear after close");
+        assertThrows(RuntimeException.class, () -> channel.tryWrite(33),
+                "closed channels fail immediately; they do not queue new writes");
+        channel.close(); // repeated close does not republish the rejected payload
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void pendingReaderCancellationRestoresFullRegistrationBudget() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1, 1);
+        OresFuture<Integer> first = channel.readAsync();
+        assertFalse(first.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(first.cancel(false));
+        assertEquals(0, channel.pendingRegistrations(),
+                "a cancelled reader may not hold its registration quota");
+        OresFuture<Integer> next = channel.readAsync();
+        assertFalse(next.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(channel.tryWrite(42));
+        assertEquals(42, next.join());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void failedRendezvousSendDoesNotQueueOrBlock() {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0, 1);
+        assertFalse(channel.tryWrite(7),
+                "zero-capacity channel must reject an unmatched immediate send");
+        assertEquals(0, channel.pendingRegistrations());
+        OresFuture<Integer> waiting = channel.readAsync();
+        assertFalse(waiting.isDone());
+        assertTrue(channel.tryWrite(8),
+                "a matched immediate send must rendezvous without parking");
+        assertEquals(8, waiting.join());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
     @Test
     void pendingWriterCannotOvertakeBufferedValue() {
         ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
@@ -550,6 +603,7 @@ final class ChannelRuntimeTest {
         assertEquals(29, output.tryRead().orElseThrow());
     }
 
+    @Test
     void priorityWriteSelectPublishesOnlyTheWinningPayload() {
         ChannelRuntime.Channel<Integer> first = new ChannelRuntime.Channel<>(1);
         ChannelRuntime.Channel<Integer> second = new ChannelRuntime.Channel<>(1);
@@ -663,6 +717,62 @@ final class ChannelRuntimeTest {
             }
             assertEquals(0, channel.pendingRegistrations(),
                     "race retained a channel registration: " + round);
+        }
+    }
+
+    @Test
+    void mixedPendingFutureReadAndCancellationConserveMessageAndRetireWaiters() throws Exception {
+        for (int round = 0; round < 128; round++) {
+            var channel = new ChannelRuntime.Channel<Integer>(1, 2);
+            var completion = new java.util.concurrent.CompletableFuture<Integer>();
+            var pending = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.read(channel), ChannelRuntime.await(OresFuture.from(completion)))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            assertFalse(pending.isDone());
+            assertEquals(1, channel.pendingRegistrations());
+            var gate = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            java.util.List<Runnable> operations = List.of(
+                    () -> pending.cancel(false),
+                    () -> assertTrue(channel.tryWrite(41)),
+                    () -> assertTrue(completion.complete(73)));
+            var racers = new java.util.ArrayList<Thread>();
+            for (Runnable operation : operations) {
+                racers.add(Thread.startVirtualThread(() -> {
+                    try {
+                        assertTrue(gate.await(2, TimeUnit.SECONDS));
+                        operation.run();
+                    } catch (Throwable e) {
+                        failure.compareAndSet(null, e);
+                    }
+                }));
+            }
+            gate.countDown();
+            for (Thread racer : racers) {
+                racer.join(5_000);
+                assertFalse(racer.isAlive(), "mixed select race stalled");
+            }
+            if (failure.get() != null) throw new AssertionError("mixed race", failure.get());
+            assertTrue(pending.isDone());
+            assertEquals(73, completion.join(), "independent Future completion must survive");
+            if (pending.isCancelled()) {
+                assertThrows(CancellationException.class, pending::join);
+                assertEquals(41, channel.tryRead().orElseThrow());
+            } else {
+                var winner = pending.join();
+                assertTrue(winner.index() == 0 || winner.index() == 1);
+                if (winner.index() == 0) {
+                    assertEquals(41, winner.value());
+                    assertTrue(channel.tryRead().isEmpty());
+                } else {
+                    assertEquals(73, winner.value());
+                    assertEquals(41, channel.tryRead().orElseThrow());
+                }
+                assertFalse(pending.cancel(false), "committed result must not cancel");
+            }
+            assertEquals(0, channel.pendingRegistrations());
+            assertTrue(channel.tryWrite(99), "registration capacity must remain usable");
+            assertEquals(99, channel.tryRead().orElseThrow());
         }
     }
 

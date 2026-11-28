@@ -1,0 +1,176 @@
+// Candidate only: requires integrated verified HTTP, UTF-8 and alloc/json gates.
+// Synthetic correctness admission before official scoring. No host business logic.
+import class Json from "alloc/json";
+import class JsonValue from "alloc/json";
+
+define actor SharkBenchWorker as
+  receive(ActorMail<String> mail): void {
+    val exchange = http.claim(mail.value);
+    if exchange.method != "GET"; then
+      await exchange.respond(405, "text/plain", "GET required");
+      self.end();
+      return;
+    fi
+
+    val parts = exchange.target.split_literal("?");
+    val route = parts.get(0);
+    if route != "/api/v1/periodic-table/element"
+      && route != "/api/v1/periodic-table/shells"; then
+      await exchange.respond(404, "text/plain", "not found");
+      self.end();
+      return;
+    fi
+    if parts.size != 2; then
+      await exchange.respond(400, "text/plain", "one symbol query required");
+      self.end();
+      return;
+    fi
+    // Official workload uses canonical ASCII symbols. Reject ambiguous,
+    // repeated, percent-encoded, and extra parameters before upstream I/O.
+    val query = parts.get(1).split_literal("=");
+    if query.size != 2 || query.get(0) != "symbol"; then
+      await exchange.respond(400, "text/plain", "invalid symbol query");
+      self.end();
+      return;
+    fi
+    val symbol = query.get(1);
+    // Keep validation inside the actor's lexical boundary. No implicit
+    // access to file-scope functions and no change to actor isolation.
+    val codes = symbol.codepoints();
+    let bool symbol_valid = codes.size >= 1 && codes.size <= 3;
+    if symbol_valid; then
+      if codes.get(0) < 65 || codes.get(0) > 90; then
+        symbol_valid = false;
+      fi
+      for (let int i = 1; i < codes.size; i = i + 1) {
+        if codes.get(i) < 97 || codes.get(i) > 122; then
+          symbol_valid = false;
+          break;
+        fi
+      }
+    fi
+    if !symbol_valid; then
+      await exchange.respond(400, "text/plain", "invalid symbol");
+      self.end();
+      return;
+    fi
+
+    let string upstream = "http://127.0.0.1:5002/element.json";
+    if route == "/api/v1/periodic-table/shells"; then
+      upstream = "http://127.0.0.1:5002/shells.json";
+    fi
+    try {
+      val response = await http.request("GET", upstream,
+        [("Accept", "application/json")]);
+      if response.status != 200; then
+        await response.close();
+        await exchange.respond(502, "text/plain", "upstream status");
+      else
+        val body = response.take_body();
+        let mut List<Bytes> chunks = [];
+        let int total = 0;
+        let bool oversized = false;
+        let bool read_failed = false;
+        try {
+          try {
+            while true {
+              val Bytes chunk = await body.read_owned_bytes(8192);
+              val int size = chunk.size();
+              if size == 0; then
+                chunk.close();
+                break;
+              fi
+              if size > 131072 - total; then
+                chunk.close();
+                oversized = true;
+                break;
+              fi
+              total = total + size;
+              chunks.add(chunk);
+            }
+          } finally {
+            await body.close();
+          }
+        } catch (read_failure) {
+          read_failed = true;
+        }
+        // One consuming join on every ordinary read/close outcome retires
+        // all admitted chunks. Never parse a partial or oversized body.
+        val Bytes joined = Bytes.join(chunks);
+        val decoded = joined.to_utf8();
+        joined.close();
+        if oversized || read_failed || total == 0 || decoded.is_none(); then
+          await exchange.respond(502, "text/plain", "invalid upstream body");
+        else
+          val JsonValue document = Json.parse(decoded.unwrap());
+          val found = document.get(symbol);
+          if found.is_none(); then
+            await exchange.respond(404, "text/plain", "unknown symbol");
+          else
+            val JsonValue selected = found.unwrap();
+            if route == "/api/v1/periodic-table/element"; then
+              // Missing fields are ordinary validation failures, never
+              // a panic-producing Option.unwrap() on untrusted data.
+              val name_field = selected.get("name");
+              val number_field = selected.get("number");
+              val group_field = selected.get("group");
+              if name_field.is_none() || number_field.is_none() || group_field.is_none(); then
+                await exchange.respond(502, "text/plain", "missing upstream field");
+              else
+                val JsonValue name = name_field.unwrap();
+                val JsonValue number = number_field.unwrap();
+                val JsonValue group = group_field.unwrap();
+                if name.as_string().is_none() || number.as_int().is_none()
+                  || group.as_int().is_none(); then
+                  await exchange.respond(502, "text/plain", "invalid upstream shape");
+                else
+                  val string encoded = "{\"name\":" + Json.stringify(rt borrow name)
+                    + ",\"number\":" + Json.stringify(rt borrow number)
+                    + ",\"group\":" + Json.stringify(rt borrow group) + "}";
+                  await exchange.respond(200, "application/json", encoded);
+                fi
+              fi
+            else
+              // Verify the selected array consists of bounded integral
+              // entries. at() rejects a non-array and distinguishes EOF.
+              let int index = 0;
+              let bool valid = true;
+              while index < 32 {
+                val item = selected.at(index);
+                if item.is_none(); then break; fi
+                val JsonValue shell = item.unwrap();
+                if shell.as_int().is_none(); then
+                  valid = false;
+                  break;
+                fi
+                index = index + 1;
+              }
+              if index == 0 || !valid || (index == 32 && !selected.at(32).is_none()); then
+                await exchange.respond(502, "text/plain", "invalid shell array");
+              else
+                val string encoded = "{\"shells\":" + Json.stringify(rt borrow selected) + "}";
+                await exchange.respond(200, "application/json", encoded);
+              fi
+            fi
+          fi
+        fi
+      fi
+    } catch (failure) {
+      if exchange.can_respond; then
+        await exchange.respond(502, "text/plain", "upstream failure");
+      fi
+    }
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val server = http.listen("127.0.0.1", 5001, 128, 1024, 5000);
+  val handler = http.handler("SharkBenchWorker");
+  while true {
+    val request = await server.accept();
+    handler.dispatch(rt mut borrow request);
+  }
+  return;
+}

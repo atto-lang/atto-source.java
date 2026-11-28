@@ -1,0 +1,37 @@
+// Correctness-first guest microbenchmark: real compiler and canonical JSON.
+import class Json from "alloc/json";
+import class JsonValue from "alloc/json";
+
+fnc workload(): int {
+  val string input = "{\"He\":{\"name\":\"Hélium 😀\",\"number\":2,\"group\":18},\"shells\":[2]}";
+  let int checksum = 0;
+  for (let int i = 0; i < 1000; i = i + 1) {
+    val JsonValue doc = Json.parse(input);
+    val JsonValue element = doc.get("He").unwrap();
+    val JsonValue number = element.get("number").unwrap();
+    val JsonValue group = element.get("group").unwrap();
+    val JsonValue name = element.get("name").unwrap();
+    if name.as_string().unwrap() == "Hélium 😀" && doc.get("missing").is_none(); then
+      checksum = checksum + number.as_int().unwrap() + group.as_int().unwrap();
+    fi
+    val string encoded = Json.stringify(rt borrow element);
+    val JsonValue roundtrip = Json.parse(encoded);
+    checksum = checksum + roundtrip.get("number").unwrap().as_int().unwrap();
+  }
+  return checksum;
+}
+
+pub fnc main(): void {
+  // Warm up within the same JVM, not separate short-lived processes.
+  for (let int i = 0; i < 5; i = i + 1) {
+    stdio.println(workload());
+  }
+  for (let int i = 0; i < 7; i = i + 1) {
+    val int start = process.monotonic_ns();
+    val int checksum = workload();
+    val int elapsed = process.monotonic_ns() - start;
+    stdio.println(checksum);
+    stdio.println(elapsed);
+  }
+  return;
+}

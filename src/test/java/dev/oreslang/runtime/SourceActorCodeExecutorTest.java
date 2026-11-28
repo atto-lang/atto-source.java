@@ -203,16 +203,14 @@ final class SourceActorCodeExecutorTest {
                             bad,
                             "Worker");
 
-            Throwable failure = assertThrows(
-                    RuntimeException.class,
-                    () -> ref.ready().join());
-            assertTrue(failure.getMessage().contains("does not match actor")
-                            || (failure.getCause() != null
-                                && failure.getCause().getMessage().contains(
-                                        "does not match actor")),
-                    failure.toString());
+            assertThrows(RuntimeException.class, () -> ref.ready().join());
             assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
-            assertTrue(ref.failure().isPresent());
+            // #1223: ready sees the snapshot; the raw cause is on the host path.
+            Throwable raw = ref.failure().orElseThrow();
+            assertTrue(raw.getMessage().contains("does not match actor")
+                            || (raw.getCause() != null
+                                && raw.getCause().getMessage().contains("does not match actor")),
+                    raw.toString());
         }
     }
 }

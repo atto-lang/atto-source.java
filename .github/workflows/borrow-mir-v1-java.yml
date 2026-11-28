@@ -9,6 +9,11 @@ on:
       - "src/test/java/dev/oreslang/BorrowMirCompilerAdmissionV1Test.java"
       - "src/test/java/dev/oreslang/types/BorrowMirAuditV1CollectorTest.java"
       - ".github/workflows/borrow-mir-v1-java.yml"
+      - "stdlib/core/**"
+      - "stdlib/alloc/text_*.atto"
+      - "stdlib/std/collections.atto"
+      - "tests/fixtures/core-alloc-ownership/**"
+      - "src/test/java/dev/oreslang/AttoCoreAllocCollectionsBorrowAdmissionTest.java"
   workflow_dispatch:
 
 permissions:
@@ -40,7 +45,11 @@ jobs:
             src/main/java/dev/oreslang/compiler/OresCompiler.java \
             src/test/java/dev/oreslang/BorrowMirAuditV1Test.java \
             src/test/java/dev/oreslang/BorrowMirCompilerAdmissionV1Test.java \
-            src/test/java/dev/oreslang/types/BorrowMirAuditV1CollectorTest.java; do
+            src/test/java/dev/oreslang/types/BorrowMirAuditV1CollectorTest.java \
+            src/test/java/dev/oreslang/AttoCoreAllocCollectionsBorrowAdmissionTest.java \
+            stdlib/core/convert.atto stdlib/core/fmt.atto \
+            stdlib/alloc/text_convert.atto stdlib/alloc/text_fmt.atto \
+            stdlib/std/collections.atto; do
             test "$(git rev-parse "HEAD:$path")" = "$(git hash-object --no-filters "$path")"
             printf '%s %s\n' "$path" "$(git rev-parse "HEAD:$path")" >> target/borrow-mir-v1-evidence/identity.txt
           done
@@ -56,8 +65,8 @@ jobs:
         run: |
           set -euo pipefail
           java -version 2>&1 | tee target/borrow-mir-v1-evidence/java-version.txt
-          mvn -B -ntp -Dtest=BorrowMirAuditV1Test,BorrowMirCompilerAdmissionV1Test,BorrowMirAuditV1CollectorTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test | tee target/borrow-mir-v1-evidence/maven.log
-          for suite in BorrowMirAuditV1Test BorrowMirCompilerAdmissionV1Test BorrowMirAuditV1CollectorTest; do
+          mvn -B -ntp -Dtest=BorrowMirAuditV1Test,BorrowMirCompilerAdmissionV1Test,BorrowMirAuditV1CollectorTest,AttoCoreAllocCollectionsBorrowAdmissionTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test | tee target/borrow-mir-v1-evidence/maven.log
+          for suite in BorrowMirAuditV1Test BorrowMirCompilerAdmissionV1Test BorrowMirAuditV1CollectorTest AttoCoreAllocCollectionsBorrowAdmissionTest; do
             case "$suite" in
               BorrowMirAuditV1CollectorTest) package="dev.oreslang.types" ;;
               *) package="dev.oreslang" ;;

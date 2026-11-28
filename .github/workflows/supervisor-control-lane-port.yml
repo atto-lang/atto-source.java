@@ -1,0 +1,36 @@
+name: Supervisor CONTROL reservation lane (JDK25 JUnit)
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorSupervisorControlLane.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorSupervisorControl*Test.java'
+      - 'scripts/verify-supervisor-control-lane-port.sh'
+      - '.github/workflows/supervisor-control-lane-port.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  supervisor-control-lane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact head
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Compile exact source and execute CONTROL lane JUnit regressions
+        run: bash scripts/verify-supervisor-control-lane-port.sh

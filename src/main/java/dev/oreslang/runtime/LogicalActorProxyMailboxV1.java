@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -134,7 +136,9 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
     private final int maxMessageBytes;
     private final long maxRetainedBytes;
 
-    private final ArrayDeque<Envelope> queued;
+    // Atomic receive-turn batch admission swaps a fully prepared private
+    // deque only after every payload and quota check has passed.
+    private ArrayDeque<Envelope> queued;
     private final Map<Long, Envelope> outstanding = new HashMap<>();
     private final TreeSet<Long> completedBeyondWatermark = new TreeSet<>();
 
@@ -229,6 +233,71 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             checkStructuralInvariantsLocked();
             lock.notifyAll();
             return envelope;
+        }
+    }
+
+    /**
+     * Admit one actor receive turn's outgoing DATA as an indivisible batch
+     * into this ONE logical mailbox. A successful receipt is mailbox admission
+     * only, never consumer processing or global exactly-once delivery.
+     *
+     * This is NOT multi-edge forward_all: cross-mailbox fan-out retains its
+     * per-edge, potentially partial-success result contract.
+     */
+    public List<Envelope> admitTurnAtomic(List<byte[]> payloads) {
+        Objects.requireNonNull(payloads, "payloads");
+        synchronized (lock) {
+            requireOpenLocked();
+            int count = payloads.size();
+            if (count == 0) return List.of();
+            if (count > maxMessages - retainedMessages)
+                throw new IllegalStateException("logical proxy mailbox message capacity exhausted");
+            if (count > Long.MAX_VALUE - nextMessageSequence)
+                throw new IllegalStateException("logical proxy message sequence exhausted");
+
+            long total = 0;
+            // Validate the complete batch before allocating a copy or
+            // changing any sequence or message/byte accounting.
+            for (byte[] payload : payloads) {
+                Objects.requireNonNull(payload, "batch DATA");
+                if (payload.length > maxMessageBytes)
+                    throw new IllegalArgumentException("message exceeds logical proxy per-message byte bound");
+                if (payload.length > maxRetainedBytes - retainedBytes - total)
+                    throw new IllegalStateException("logical proxy mailbox byte capacity exhausted");
+                total += payload.length;
+            }
+
+            ArrayList<Envelope> fresh = new ArrayList<>(count);
+            ArrayDeque<Envelope> prepared;
+            List<Envelope> receipt;
+            try {
+                // Build queue and immutable receipt entirely off to the side.
+                // No publication counter or live queue changes until every
+                // allocation and borrowed-buffer snapshot has succeeded.
+                prepared = new ArrayDeque<>(queued);
+                for (byte[] payload : payloads) {
+                    Envelope envelope = new Envelope(nextMessageSequence + fresh.size(), payload);
+                    fresh.add(envelope);
+                    prepared.addLast(envelope);
+                }
+                receipt = List.copyOf(fresh);
+            } catch (RuntimeException | Error failed) {
+                // Copies from failed preparation have never been admitted.
+                for (Envelope envelope : fresh)
+                    java.util.Arrays.fill(envelope.payload, (byte) 0);
+                throw failed;
+            }
+
+            // No fallible insertion/receipt copy beyond this point. All
+            // counters, queued bytes and publication become visible under
+            // the same exclusive mailbox lock.
+            queued = prepared;
+            nextMessageSequence += count;
+            retainedMessages += count;
+            retainedBytes += total;
+            checkStructuralInvariantsLocked();
+            lock.notifyAll();
+            return receipt;
         }
     }
 

@@ -9,28 +9,39 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class TypeAutoTraitsTest {
     @Test
-    void smartPointerCapabilitiesFollowCanonicalRules() {
+    void unloweredOwnershipAndAtomicTypesCannotGrantWorkerPrivileges() {
         var integer = Types.Primitive.INT;
-        var box = new Types.Named("Box", List.of(integer));
-        var boxCaps = TypeAutoTraits.inferClosed(box);
-        assertTrue(boxCaps.send());
-        assertTrue(boxCaps.sync());
-        assertFalse(boxCaps.share());
+        for (String intrinsic : List.of(
+                "Box", "Arc", "Weak", "Atomic", "AtomicRef",
+                "AtomicBool", "AtomicInt", "AtomicLong", "AtomicI8",
+                "AtomicI16", "AtomicI32", "AtomicI64", "AtomicU8",
+                "AtomicU16", "AtomicU32", "AtomicU64")) {
+            var type = new Types.Named(intrinsic, List.of(integer));
+            var capabilities = TypeAutoTraits.inferClosed(type);
+            assertFalse(capabilities.send(), intrinsic + " has no verified runtime Send ABI");
+            assertFalse(capabilities.sync(), intrinsic + " has no verified runtime Sync ABI");
+            assertFalse(capabilities.share(), intrinsic + " cannot mint actor-domain Share");
+            var nested = TypeAutoTraits.inferClosed(
+                    new Types.Named("Option", List.of(type)));
+            assertFalse(nested.send(), "Option must not launder " + intrinsic);
+            assertFalse(nested.sync(), "Option must not launder " + intrinsic);
+        }
+        var unloweredArcBox = TypeAutoTraits.inferClosed(new Types.Named(
+                "Arc", List.of(new Types.Named("Box", List.of(integer)))));
+        assertFalse(unloweredArcBox.send());
+        assertFalse(unloweredArcBox.sync());
+        assertFalse(unloweredArcBox.share());
 
-        var arcBox = TypeAutoTraits.inferClosed(
-                new Types.Named("Arc", List.of(box)));
-        assertTrue(arcBox.send());
-        assertTrue(arcBox.sync());
-        assertFalse(arcBox.share());
-
-        var arcInt = TypeAutoTraits.inferClosed(
-                new Types.Named("Arc", List.of(integer)));
-        assertTrue(arcInt.send());
-        assertTrue(arcInt.sync());
-        assertTrue(arcInt.share());
-
-        var rc = TypeAutoTraits.inferClosed(
-                new Types.Named("Rc", List.of(integer)));
+        // The independent abstract contract remains the correct future rule:
+        // a Box<int> can be movable without enabling shared actor allocations.
+        var scalar = AutoTraitRules.TypeModel.scalar();
+        var theoreticalBox = AutoTraitRules.infer(AutoTraitRules.TypeModel.wrapped(
+                AutoTraitRules.Kind.BOX, scalar, false));
+        assertTrue(theoreticalBox.send());
+        assertTrue(theoreticalBox.sync());
+        assertFalse(theoreticalBox.share());
+        // Non-atomic RC remains denied even by the abstract contract.
+        var rc = TypeAutoTraits.inferClosed(new Types.Named("Rc", List.of(integer)));
         assertFalse(rc.send());
         assertFalse(rc.sync());
         assertFalse(rc.share());
@@ -153,6 +164,57 @@ final class TypeAutoTraitsTest {
                 ThreadSafetyTraits.Trait.SEND,
                 (named, trait) -> false),
                 "a borrowed readonly alias must not be Send across threads");
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void closedAutoTraitsBoundDeepWideAndDagMetadata() {
+        Types.Type deep = Types.Primitive.INT;
+        for (int i = 0; i < 8_192; i++) {
+            deep = new Types.Named("Option", List.of(deep));
+        }
+        var limited = TypeAutoTraits.inferClosed(deep);
+        assertFalse(limited.send());
+        assertFalse(limited.sync());
+        assertFalse(limited.share());
+
+        var wide = new Types.Tuple(
+                java.util.Collections.nCopies(100_001, Types.Primitive.INT));
+        assertFalse(TypeAutoTraits.inferClosed(wide).send());
+
+        // Shared DAGs are not exponential: memoize by identity AND depth,
+        // preserving genuinely safe small/scalar structures.
+        Types.Type dag = Types.Primitive.INT;
+        for (int i = 0; i < 70; i++) {
+            dag = new Types.Tuple(List.of(dag, dag));
+        }
+        var safe = TypeAutoTraits.inferClosed(dag);
+        assertTrue(safe.send());
+        assertTrue(safe.sync());
+        assertTrue(safe.share());
+        assertTrue(TypeAutoTraits.inferClosed(Types.Primitive.INT).send(),
+                "failure in one proof cannot affect a later independent proof");
+    }
+
+    @Test
+    void malformedTypesAndNonValueNullDoNotMintWorkerCapabilities() {
+        for (Types.Type invalid : List.of(
+                Types.Primitive.NULL,
+                Types.Primitive.VOID,
+                new Types.StringLiteral(null),
+                new Types.Named(null, List.of(Types.Primitive.INT)),
+                new Types.Named("  ", List.of(Types.Primitive.INT)),
+                new Types.Named("x".repeat(1_025), List.of()),
+                new Types.Record(Map.of(" ", Types.Primitive.INT)))) {
+            var capabilities = TypeAutoTraits.inferClosed(invalid);
+            assertFalse(capabilities.send());
+            assertFalse(capabilities.sync());
+            assertFalse(capabilities.share());
+            var nested = TypeAutoTraits.inferClosed(
+                    new Types.Named("Option", List.of(invalid)));
+            assertFalse(nested.send(), "Option must not launder an invalid value");
+            assertFalse(nested.sync(), "Option must not launder an invalid value");
+        }
     }
 
     @Test

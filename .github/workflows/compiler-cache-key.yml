@@ -1,0 +1,50 @@
+name: Compiler cache key envelope conformance
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/CompilerCacheKey.java'
+      - 'src/main/java/dev/oreslang/compiler/PinnedNamespaceInventory.java'
+      - 'src/main/java/dev/oreslang/runtime/PinnedScalarNamespaceSession.java'
+      - 'src/test/java/dev/oreslang/PinnedNamespaceInventoryTest.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/imports/ImportRules.java'
+      - 'src/test/java/dev/oreslang/PackageNamespaceImportSyntaxTest.java'
+      - 'src/test/java/dev/oreslang/compiler/CompilerCacheKeyTest.java'
+      - 'src/main/java/dev/oreslang/compiler/CompilerArtifactReceipt.java'
+      - 'src/test/java/dev/oreslang/compiler/CompilerArtifactReceiptTest.java'
+      - 'src/main/java/dev/oreslang/compiler/CompilerCacheLedger.java'
+      - 'src/test/java/dev/oreslang/compiler/CompilerCacheLedgerTest.java'
+      - 'src/test/java/dev/oreslang/compiler/PersistentClassfileCacheTest.java'
+      - 'src/main/java/dev/oreslang/compiler/PersistentPrimitiveClassfileSession.java'
+      - 'src/test/java/dev/oreslang/IncrementalGuestDifferentialTest.java'
+      - 'src/test/java/dev/oreslang/IncrementalPackageLayoutIsolationTest.java'
+      - 'src/main/java/dev/oreslang/compiler/PackageLayout.java'
+      - 'src/test/java/dev/oreslang/IncrementalFileFallbackV1Test.java'
+      - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
+      - '.github/workflows/compiler-cache-key.yml'
+permissions:
+  contents: read
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact head and physical tree
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git write-tree)" = "$(git rev-parse HEAD^{tree})"
+          git diff --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+          git rev-parse HEAD HEAD^{tree}
+      - name: Compile production compiler and execute cache key tests
+        run: |
+          set -eu
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          mvn -B -Dtest=PinnedNamespaceInventoryTest,PackageNamespaceImportSyntaxTest,CompilerCacheKeyTest,CompilerArtifactReceiptTest,CompilerCacheLedgerTest,PersistentClassfileCacheTest,IncrementalFileFallbackV1Test,IncrementalGuestDifferentialTest,IncrementalPackageLayoutIsolationTest -Dsurefire.failIfNoSpecifiedTests=true test

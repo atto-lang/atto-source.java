@@ -1,0 +1,8 @@
+// Deterministic real guest: each independent Truffle context must see its own
+// explicitly supplied snapshot, and no JVM-global process PATH.
+import module std_env from "std/env";
+pub routine main(): void {
+  stdio.println(std_env.get_required("ATTO_CONTEXT_KEY").unwrap());
+  stdio.println(std_env.has("PATH"));
+  return;
+}

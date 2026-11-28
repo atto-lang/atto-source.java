@@ -3,8 +3,13 @@ package dev.oreslang.runtime;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.function.LongSupplier;
 
 /**
  * VM-only local virtual-actor identity and activation admission substrate.
@@ -20,14 +25,42 @@ import java.util.Objects;
 public final class VirtualActorActivationRegistry implements AutoCloseable {
     public record Identity(String domain, String declaration, String key) { }
 
+    /** Immutable point-in-time view; it contains no activation capability. */
+    public record Inspection(Identity identity, long latestIncarnation,
+                             boolean activationPresent, boolean published,
+                             int outstanding, boolean registryClosed) { }
+
+    /** Bounded immutable page over logical IDs; cursors are valid only at this revision. */
+    public record Page(List<Inspection> entries, long revision,
+                       Optional<Identity> nextAfter) {
+        public Page {
+            entries = List.copyOf(entries);
+            Objects.requireNonNull(nextAfter, "nextAfter");
+            if (revision < 0) throw new IllegalArgumentException("invalid directory revision");
+        }
+    }
+
+    public static final class StaleDirectoryPageException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+        public StaleDirectoryPageException() {
+            super("virtual actor directory changed; restart pagination from the first page");
+        }
+    }
+
     private static final int MAX_KEY_BYTES = 256;
     private final Object monitor = new Object();
     private final Map<Identity, Slot> slots = new HashMap<>();
     private final String domain;
     private final int maxIdentities;
     private final int mailboxCapacity;
+    private final LongSupplier generationSupplier;
     private long nextIncarnation;
+    private long directoryRevision;
     private boolean closed;
+
+    private void advanceRevision() {
+        directoryRevision = Math.addExact(directoryRevision, 1L);
+    }
 
     private static final class Slot {
         final Identity identity;
@@ -44,11 +77,17 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     }
 
     public VirtualActorActivationRegistry(String domain, int maxIdentities, int mailboxCapacity) {
+        this(domain, maxIdentities, mailboxCapacity, null);
+    }
+
+    VirtualActorActivationRegistry(String domain, int maxIdentities, int mailboxCapacity,
+                                   LongSupplier generationSupplier) {
         this.domain = requireName(domain, "domain");
         if (maxIdentities < 1 || mailboxCapacity < 1)
             throw new IllegalArgumentException("identity and mailbox bounds must be positive");
         this.maxIdentities = maxIdentities;
         this.mailboxCapacity = mailboxCapacity;
+        this.generationSupplier = generationSupplier;
     }
 
     private static void checkUnicode(String value, String kind) {
@@ -68,7 +107,9 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
 
     private static String requireName(String value, String kind) {
         Objects.requireNonNull(value, kind);
-        if (value.isBlank() || value.length() > 128)
+        if (value.isBlank() || value.length() > 128
+                || value.getBytes(StandardCharsets.UTF_8).length > 128
+                || !Normalizer.isNormalized(value, Normalizer.Form.NFC))
             throw new IllegalArgumentException("invalid virtual actor " + kind);
         checkUnicode(value, kind);
         return value;
@@ -104,10 +145,84 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 // Build the outward capability before consuming a bounded
                 // identity slot, so allocation failure leaves no orphan entry.
                 LogicalRef reference = new LogicalRef(slot);
+                advanceRevision();
                 slots.put(identity, slot);
                 return reference;
             }
             return new LogicalRef(slot);
+        }
+    }
+
+    /**
+     * Side-effect-free logical lookup for supervisor/diagnostic tooling.
+     * Unlike resolve(), this never allocates an identity slot or activation.
+     */
+    public Optional<Inspection> inspectIdentity(Identity identity) {
+        Objects.requireNonNull(identity, "identity");
+        synchronized (monitor) {
+            if (!domain.equals(identity.domain())) return Optional.empty();
+            Slot slot = slots.get(identity);
+            if (slot == null) return Optional.empty();
+            return Optional.of(snapshot(slot));
+        }
+    }
+
+    /** Side-effect-free inspection of a reference issued by this registry. */
+    public Inspection inspect(LogicalRef logical) {
+        Objects.requireNonNull(logical, "logical");
+        synchronized (monitor) {
+            if (logical.slot.owner != this)
+                throw new IllegalArgumentException("foreign virtual actor logical reference");
+            return snapshot(logical.slot);
+        }
+    }
+
+    private Inspection snapshot(Slot slot) {
+        return new Inspection(slot.identity, slot.incarnation, slot.active,
+                slot.active && slot.published, slot.outstanding, closed);
+    }
+
+    /** Remove only a newly resolved but never activated slot during failed owner admission. */
+    void discardUnactivated(LogicalRef logical) {
+        Objects.requireNonNull(logical, "logical");
+        synchronized (monitor) {
+            Slot slot = logical.slot;
+            if (slot.owner != this)
+                throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (slot.active || slot.published || slot.outstanding != 0)
+                throw new IllegalStateException("cannot discard an activated virtual actor identity");
+            if (slots.get(slot.identity) == slot) {
+                advanceRevision();
+                slots.remove(slot.identity, slot);
+            }
+        }
+    }
+
+    public Page listPage(int limit, long expectedRevision, Identity after) {
+        if (limit < 1 || limit > 256)
+            throw new IllegalArgumentException("virtual actor page size must be 1..256");
+        if (expectedRevision < -1 || (after != null && expectedRevision < 0))
+            throw new IllegalArgumentException("invalid virtual actor page cursor");
+        Comparator<Identity> order = Comparator.comparing(Identity::declaration)
+                .thenComparing(Identity::key);
+        synchronized (monitor) {
+            if (after != null && !domain.equals(after.domain()))
+                throw new IllegalArgumentException("foreign virtual actor page cursor");
+            if (expectedRevision >= 0 && expectedRevision != directoryRevision)
+                throw new StaleDirectoryPageException();
+            List<Slot> ordered = slots.values().stream()
+                    .filter(slot -> after == null || order.compare(slot.identity, after) > 0)
+                    .sorted(Comparator.comparing(slot -> slot.identity, order))
+                    .limit(limit + 1L)
+                    .toList();
+            boolean more = ordered.size() > limit;
+            int count = Math.min(limit, ordered.size());
+            List<Inspection> entries = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) entries.add(snapshot(ordered.get(i)));
+            Optional<Identity> next = more && count > 0
+                    ? Optional.of(ordered.get(count - 1).identity)
+                    : Optional.empty();
+            return new Page(entries, directoryRevision, next);
         }
     }
 
@@ -123,7 +238,6 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
 
         public boolean initializer() { return initializer; }
-
         public Identity identity() { return slot.identity; }
         public long incarnation() { return incarnation; }
         public boolean active() {
@@ -138,6 +252,10 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
 
     /**
      * Duplicate activation requests observe the same live incarnation.
+     * Only the caller performing initialization may publish the candidate.
+     */
+    /**
+     * Duplicate activation requests observe the same live incarnation.
      * Only the caller that performs actual actor initialization may publish
      * that incarnation to the runtime; this primitive tracks admission only.
      */
@@ -146,17 +264,23 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         synchronized (monitor) {
             if (closed) throw new IllegalStateException("virtual actor registry closed");
             Slot slot = logical.slot;
-            if (slot.owner != this) throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (slot.owner != this)
+                throw new IllegalArgumentException("foreign virtual actor logical reference");
             boolean initializer = !slot.active;
-            if (initializer && nextIncarnation == Long.MAX_VALUE)
+            if (initializer && generationSupplier == null && nextIncarnation == Long.MAX_VALUE)
                 throw new IllegalStateException("virtual actor incarnation budget exhausted");
-            long candidateIncarnation = initializer ? nextIncarnation + 1 : slot.incarnation;
+            long candidateIncarnation = initializer
+                    ? (generationSupplier == null ? nextIncarnation + 1 : generationSupplier.getAsLong())
+                    : slot.incarnation;
+            if (initializer && (candidateIncarnation <= slot.incarnation || candidateIncarnation <= 0))
+                throw new IllegalStateException("virtual actor generation is not monotonic");
             // Never mark an activation live before its capability is allocated.
             // Out-of-memory or constructor failure must not strand a slot as
             // active-but-unpublished with no initializer able to recover it.
             Activation candidate = new Activation(slot, candidateIncarnation, initializer);
             if (initializer) {
-                nextIncarnation = candidateIncarnation;
+                advanceRevision();
+                nextIncarnation = Math.max(nextIncarnation, candidateIncarnation);
                 slot.incarnation = candidateIncarnation;
                 slot.active = true;
                 slot.published = false;
@@ -173,10 +297,12 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             if (slot.owner != this || closed || !slot.active || slot.published ||
                     slot.incarnation != activation.incarnation || !activation.initializer)
                 throw new IllegalStateException("activation publication denied");
+            advanceRevision();
             slot.published = true;
         }
     }
 
+    /** A failed initializer fences all pending handles; its generation is burned. */
     /** A failed initializer fences all pending handles for that incarnation. */
     public void abort(Activation activation) {
         Objects.requireNonNull(activation, "activation");
@@ -185,6 +311,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             if (slot.owner != this || closed || !slot.active || slot.published ||
                     slot.incarnation != activation.incarnation || !activation.initializer)
                 throw new IllegalStateException("activation abort denied");
+            advanceRevision();
             slot.active = false;
         }
     }
@@ -219,6 +346,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 }
                 if (slot.outstanding < 1)
                     throw new IllegalStateException("virtual actor admission accounting corrupted");
+                advanceRevision();
                 disposition = result;
                 slot.outstanding--;
             }
@@ -234,10 +362,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                     slot.incarnation != activation.incarnation)
                 throw new IllegalStateException("inactive virtual actor activation");
             if (slot.outstanding == mailboxCapacity) return null;
-            // Construct the admission receipt BEFORE incrementing the accepted
-            // count. An allocation failure must not strand an unobservable
-            // outstanding credit that blocks shutdown and reincarnation.
             Admission receipt = new Admission(slot, slot.incarnation);
+            advanceRevision();
             slot.outstanding++;
             return receipt;
         }
@@ -253,6 +379,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
                 throw new IllegalStateException("stale virtual actor activation");
             if (slot.outstanding != 0)
                 throw new IllegalStateException("cannot deactivate with accepted work outstanding");
+            advanceRevision();
             slot.active = false;
         }
     }
@@ -301,7 +428,8 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
     public int outstanding(LogicalRef logical) {
         Objects.requireNonNull(logical, "logical");
         synchronized (monitor) {
-            if (logical.slot.owner != this) throw new IllegalArgumentException("foreign virtual actor logical reference");
+            if (logical.slot.owner != this)
+                throw new IllegalArgumentException("foreign virtual actor logical reference");
             return logical.slot.outstanding;
         }
     }
@@ -313,6 +441,7 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
             for (Slot slot : slots.values())
                 if (slot.outstanding != 0)
                     throw new IllegalStateException("cannot close with accepted work outstanding");
+            advanceRevision();
             closed = true;
             for (Slot slot : slots.values()) slot.active = false;
         }

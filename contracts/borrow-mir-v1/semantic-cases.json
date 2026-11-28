@@ -11,7 +11,10 @@
     "net",
     "wasm",
     "forge",
-    "cranelift"
+    "cranelift",
+    "js",
+    "rs",
+    "hdl"
   ],
   "evidence": {
     "java": {
@@ -50,6 +53,27 @@
       "guestReceipt": null
     },
     "cranelift": {
+      "status": "NOT_EXECUTED",
+      "sourceSha": null,
+      "treeSha": null,
+      "compilerReceipt": null,
+      "guestReceipt": null
+    },
+    "js": {
+      "status": "NOT_EXECUTED",
+      "sourceSha": null,
+      "treeSha": null,
+      "compilerReceipt": null,
+      "guestReceipt": null
+    },
+    "rs": {
+      "status": "NOT_EXECUTED",
+      "sourceSha": null,
+      "treeSha": null,
+      "compilerReceipt": null,
+      "guestReceipt": null
+    },
+    "hdl": {
       "status": "NOT_EXECUTED",
       "sourceSha": null,
       "treeSha": null,
@@ -909,6 +933,124 @@
                 "owner": 1,
                 "loan": 10,
                 "kind": "Shared"
+              },
+              {
+                "op": "Return"
+              }
+            ],
+            "successors": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "C23",
+      "category": "protocol-loan-lifecycle",
+      "expected": "accept",
+      "diagnostic": null,
+      "graph": {
+        "entry": 0,
+        "blocks": [
+          {
+            "id": 0,
+            "ops": [
+              {
+                "op": "Init",
+                "owner": 1,
+                "copy": false,
+                "send": false
+              },
+              {
+                "op": "Borrow",
+                "owner": 1,
+                "loan": 10,
+                "kind": "Shared"
+              },
+              {
+                "op": "Borrow",
+                "owner": 1,
+                "loan": 11,
+                "kind": "Shared"
+              },
+              {
+                "op": "Read",
+                "owner": 1
+              },
+              {
+                "op": "EndBorrow",
+                "loan": 11
+              },
+              {
+                "op": "EndBorrow",
+                "loan": 10
+              },
+              {
+                "op": "Borrow",
+                "owner": 1,
+                "loan": 12,
+                "kind": "Mutable"
+              },
+              {
+                "op": "WriteThrough",
+                "owner": 1,
+                "loan": 12
+              },
+              {
+                "op": "EndBorrow",
+                "loan": 12
+              },
+              {
+                "op": "Move",
+                "from": 1,
+                "into": 2
+              },
+              {
+                "op": "Read",
+                "owner": 2
+              },
+              {
+                "op": "Return"
+              }
+            ],
+            "successors": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "C24",
+      "category": "protocol-loan-lifecycle",
+      "expected": "reject",
+      "diagnostic": "E_BORROW_CONFLICT",
+      "graph": {
+        "entry": 0,
+        "blocks": [
+          {
+            "id": 0,
+            "ops": [
+              {
+                "op": "Init",
+                "owner": 1,
+                "copy": false,
+                "send": false
+              },
+              {
+                "op": "Borrow",
+                "owner": 1,
+                "loan": 10,
+                "kind": "Shared"
+              },
+              {
+                "op": "Borrow",
+                "owner": 1,
+                "loan": 11,
+                "kind": "Shared"
+              },
+              {
+                "op": "Borrow",
+                "owner": 1,
+                "loan": 12,
+                "kind": "Mutable"
               },
               {
                 "op": "Return"

@@ -41,14 +41,14 @@ final class MethodDeclarationSpellingTest {
     }
 
     @Test
-    void optionalMethodKeywordAndBareSpellingHaveSameDispatchKind() {
+    void optionalMtdKeywordAndBareSpellingHaveSameDispatchKind() {
         Ast.Program program = Parser.parse("""
                 define class Client as
                     fnc legacy(): int { return 1; }
-                    method explicit(): int { return 2; }
+                    mtd explicit(): int { return 2; }
                     bare(): int { return 3; }
-                    suspend method pending(): void { return; }
-                    method method(): int { return 4; }
+                    suspend mtd pending(): void { return; }
+                    mtd method(): int { return 4; }
                     static fnc callable(): int { return 5; }
                 end
                 """);
@@ -68,7 +68,7 @@ final class MethodDeclarationSpellingTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Counter as
                     fnc legacy(int value): int { return value + 1; }
-                    method explicit(int value): int { return value + 2; }
+                    mtd explicit(int value): int { return value + 2; }
                     static fnc independent(int value): int { return value + 3; }
                 end
                 """)));
@@ -77,8 +77,8 @@ final class MethodDeclarationSpellingTest {
     @Test
     void rejectsAmbiguousDoubleMarkers() {
         for (String declaration : new String[] {
-                "fnc method both(): int { return 1; }",
-                "method fnc both(): int { return 1; }"
+                "fnc mtd both(): int { return 1; }",
+                "mtd fnc both(): int { return 1; }"
         }) {
             assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse("define class C as " + declaration + " end"));
@@ -88,8 +88,8 @@ final class MethodDeclarationSpellingTest {
     @Test
     void forbidsStaticMethodMarkerAndKeepsStaticFnc() {
         for (String body : new String[] {
-                "static method wrong(): void { return; }",
-                "method static wrong(): void { return; }"
+                "static mtd wrong(): void { return; }",
+                "mtd static wrong(): void { return; }"
         }) {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
@@ -110,7 +110,7 @@ final class MethodDeclarationSpellingTest {
         Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class, Parser.parse("""
                 define actor ConnectionActor as
                     final rooms: Map<int, int>
-                    suspend method join_room(): void { return; }
+                    suspend mtd join_room(): void { return; }
                     final other: int
                     fnc leave_room(): void { return; }
                 end
@@ -136,7 +136,7 @@ final class MethodDeclarationSpellingTest {
         IllegalArgumentException bound = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define class Worker as
-                            pub method work(int value): int { return value; }
+                            pub mtd work(int value): int { return value; }
                             pub static fnc reusable(int value): int { return value; }
                         end
                         fnc apply(Fnc<int, int> action, int value): int {
@@ -150,7 +150,7 @@ final class MethodDeclarationSpellingTest {
         assertTrue(bound.getMessage().contains("direct-call-only"), bound::getMessage);
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Worker as
-                    pub method work(int value): int { return value; }
+                    pub mtd work(int value): int { return value; }
                     pub static fnc reusable(int value): int { return value; }
                 end
                 fnc apply(Fnc<int, int> action, int value): int {
@@ -185,7 +185,7 @@ final class MethodDeclarationSpellingTest {
         // typing, and explicit lambdas may capture their instance receiver.
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Worker as
-                    pub method work(int value): int { return value + 1; }
+                    pub mtd work(int value): int { return value + 1; }
                     pub static fnc reusable(int value): int { return value + 2; }
                 end
                 fnc valid(): int {
@@ -195,6 +195,18 @@ final class MethodDeclarationSpellingTest {
                     return static_callback(1) + instance_callback(2);
                 }
                 """)));
+    }
+
+    @Test
+    void obsoleteMethodIntroducerFailsWithoutReservingTheName() {
+        for (String declaration : new String[] {
+                "method run(): int { return 1; }",
+                "pub method method(): int { return 1; }",
+                "suspend method pending(): void { return; }"
+        }) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    Parser.parse("define class C as " + declaration + " end"), declaration);
+        }
     }
 
     @Test
@@ -349,7 +361,7 @@ final class MethodDeclarationSpellingTest {
                     mtd generic<T>(T value) -> T ::
                         return value;
                     end
-                    method mtd(int value): int { return value; }
+                    mtd mtd(int value): int { return value; }
                 end
                 """);
         Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
@@ -370,7 +382,7 @@ final class MethodDeclarationSpellingTest {
                             final int count = 1
                             mtd select(): int { return 2; }
                             final int other = 3
-                            method do() -> int ::
+                            mtd do() -> int ::
                                 return 4;
                             end
                             final int another = 5

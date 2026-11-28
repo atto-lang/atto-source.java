@@ -170,7 +170,7 @@ final class SealedActorStateAdmissionTest {
                 define actor Ledger as
                   critical suspends increment(): void { return; }
                 end
-                """, "expected method name");
+                """, "E_CALLABLE_MODIFIERS");
     }
 
     @Test void criticalCannotSuspendInsideNestedBodies() {
@@ -260,6 +260,11 @@ final class SealedActorStateAdmissionTest {
     }
 
     @Test void directAstCannotForgeCompilerOwnedHandleStateIntrinsic() {
+        for (String alias : java.util.List.of("handle_state", "state_ro", "state_w", "handle_state_ro", "handle_state_w"))
+            assertForgedIntrinsicRejected(alias);
+    }
+
+    private static void assertForgedIntrinsicRejected(String alias) {
         // Parser's reserved-name check is not enough: AST expansion and
         // linked compiler APIs can construct methods without re-parsing.
         var program = Parser.parse("""
@@ -271,7 +276,7 @@ final class SealedActorStateAdmissionTest {
         var actor = (dev.oreslang.ast.Ast.ClassDecl) module.declarations().getFirst();
         var method = actor.methods().getFirst();
         var forged = new dev.oreslang.ast.Ast.MethodDecl(
-                "handle_state", method.visibility(), method.isStatic(),
+                alias, method.visibility(), method.isStatic(),
                 method.isAbstract(), method.async(), method.suspends(),
                 method.structural(), method.explicitReceiverType(),
                 method.genericParameters(), method.parameters(), method.returnType(),
@@ -314,4 +319,16 @@ final class SealedActorStateAdmissionTest {
                 end
                 """));
     }
+    @Test void actorCriticalAstLaneCannotEnableGeneralCriticalModifiers() {
+        rejected("critical fnc f(): void { return; }", "E_CRITICAL_UNSUPPORTED");
+        rejected("define actor Ledger as critical fnc f(): void { return; } end",
+                "E_CRITICAL_UNSUPPORTED");
+        rejected("define actor Ledger as critical-read f(): void { return; } end",
+                "critical");
+        rejected("define actor Ledger as pub critical f(): void { return; } end",
+                "critical actor method cannot have modifiers");
+        rejected("define actor Ledger as critical increment(): void { rt cooperate; return; } end",
+                "critical state loan cannot await or cooperate");
+    }
+
 }

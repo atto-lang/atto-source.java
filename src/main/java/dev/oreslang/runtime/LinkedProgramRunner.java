@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.PackageLayout;
 import dev.oreslang.compiler.SourceUnitDiagnosticException;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.imports.ImportRules;
@@ -42,6 +43,54 @@ import java.util.Set;
 public final class LinkedProgramRunner {
     private LinkedProgramRunner() { }
 
+    /**
+     * Build an immutable, capability-filtered Graal environment snapshot.
+     * Keys denied by either coarse isolate policy or scoped permissions are
+     * never read from the supplied host map. Values are bounded before they
+     * cross into a guest context. The caller supplies the map; this method
+     * never calls System.getenv or infers ambient authority.
+     */
+    static Map<String, String> admittedGuestEnvironment(
+            IsolatePolicy policy, RuntimePermissions permissions,
+            Map<String, String> environment) {
+        java.util.Objects.requireNonNull(policy);
+        java.util.Objects.requireNonNull(permissions);
+        java.util.Objects.requireNonNull(environment);
+        if (!policy.capabilities().contains(IsolatePolicy.Capability.ENVIRONMENT)) {
+            return Map.of();
+        }
+
+        LinkedHashMap<String, String> selected = new LinkedHashMap<>();
+        long aggregateBytes = 0;
+        for (String name : environment.keySet()) {
+            // Unsupported spellings never become guest-visible, even if the
+            // embedding host supplied a broad allow wildcard.
+            if (name == null) continue;
+            try {
+                NativeIo.validateEnvName(name);
+            } catch (IllegalArgumentException invalidName) {
+                continue;
+            }
+            if (!permissions.allows(RuntimePermissions.Permission.ENV, name)) continue;
+            // Deliberately after both checks: do not invoke denied-key value
+            // lookups, which could be expensive or backed by host secrets.
+            String value = environment.get(name);
+            if (value == null) {
+                throw new IllegalArgumentException("environment snapshot contains a null authorized value");
+            }
+            NativeIo.validateEnvValue(value);
+            if (selected.size() >= 512) {
+                throw new IllegalArgumentException("environment snapshot key limit exceeded");
+            }
+            aggregateBytes += value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            if (aggregateBytes > 1024L * 1024L) {
+                throw new IllegalArgumentException("environment snapshot byte budget exceeded");
+            }
+            selected.put(name, value);
+        }
+        return Map.copyOf(selected);
+    }
+
     /** Host-owned exit status: embedding callers must never be forcibly terminated. */
     public record RunResult(IncrementalCompiler.BuildResult build, int exitStatus) { }
 
@@ -64,12 +113,17 @@ public final class LinkedProgramRunner {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
-        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
-        projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+        // The v2 legacy manifest is an explicit closed scalar namespace
+        // profile. Use the same compiler and policy-controlled runner below.
+        PackageLayout pinnedLayout= PinnedNamespaceFilePlan.loadIfPresent(entryFile, units, importResolutions);
+        if (pinnedLayout == null) {
+            OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+            projectConfig.requireStdJavaBackend();
+            collectImportClosure(entry, units, projectConfig, importResolutions,
+                    new SourceAdmissionBudget(), 0);
+        }
         ensureJavaEntryContainsOres(entry, units);
 
         if (policy != null) {
@@ -85,7 +139,7 @@ public final class LinkedProgramRunner {
 
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
-                new IncrementalCompiler().compile(sources, importResolutions);
+                new IncrementalCompiler().compile(sources, importResolutions, pinnedLayout == null ? PackageLayout.NONE : pinnedLayout);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         if (policy != null) {
             for (Ast.Program program : programs.values()) {
@@ -232,12 +286,17 @@ public final class LinkedProgramRunner {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
-        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
-        projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+        // The v2 legacy manifest is an explicit closed scalar namespace
+        // profile. Use the same compiler and policy-controlled runner below.
+        PackageLayout pinnedLayout= PinnedNamespaceFilePlan.loadIfPresent(entryFile, units, importResolutions);
+        if (pinnedLayout == null) {
+            OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+            projectConfig.requireStdJavaBackend();
+            collectImportClosure(entry, units, projectConfig, importResolutions,
+                    new SourceAdmissionBudget(), 0);
+        }
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
@@ -251,7 +310,7 @@ public final class LinkedProgramRunner {
 
         Map<String, String> sources = oresSources(units);
         IncrementalCompiler.BuildResult build =
-                new IncrementalCompiler().compile(sources, importResolutions);
+                new IncrementalCompiler().compile(sources, importResolutions, pinnedLayout == null ? PackageLayout.NONE : pinnedLayout);
         Map<String, Ast.Program> programs = parsePrograms(sources);
         int exitStatus = 0;
         String entryId = unitId(entry);
@@ -271,6 +330,10 @@ public final class LinkedProgramRunner {
                         effectiveHostClasses,
                         permissions,
                         permissionCheckMode);
+                // EnvironmentAccess.NONE stays set by the isolate policy.
+                // Bind only a bounded, authorized subset of the explicit host
+                // map, never inherit the JVM's ambient process environment.
+                builder.environment(admittedGuestEnvironment(policy, permissions, environment));
                 if (out != null) builder.out(forwardingStream(out));
                 if (err != null) builder.err(forwardingStream(err));
                 if (input != null) builder.in(new FilterInputStream(input) {
@@ -338,6 +401,7 @@ public final class LinkedProgramRunner {
                             Value entryPoint = parsedUnits.get(entryId);
                             if (entryPoint == null) throw new IllegalStateException("entry unit was not linked: " + entryId);
                             exitStatus = requireExitStatus(entryPoint.execute(OresEvalRootNode.MAIN_ONLY_COMMAND));
+                            entryPoint.execute(OresEvalRootNode.LINKED_EXIT_COMMAND);
                         }
                     }
                 }
@@ -473,6 +537,15 @@ public final class LinkedProgramRunner {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
 
+            if (CoreLibrarySources.isLayeredLibraryImport(imported.path())) {
+                CoreLibrarySources.LibraryUnit library =
+                        CoreLibrarySources.libraryUnit(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), library.unitId());
+                collectLayeredLibraryClosure(library, units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
+
             if (CoreLibrarySources.isStdImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
@@ -520,6 +593,51 @@ public final class LinkedProgramRunner {
         }
     }
 
+
+    /**
+     * Collects a layered core/alloc/std v1 unit and its library-only closure.
+     * A unit may import only compiler-owned units of its own or a lower layer.
+     */
+    private static void collectLayeredLibraryClosure(
+            CoreLibrarySources.LibraryUnit library,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
+        String id = library.unitId();
+        if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
+        String source = CoreLibrarySources.librarySource(library);
+        budget.admit(source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(id, library.fileName(), source);
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException(
+                    "compiler-owned library units must be native Atto: " + id);
+        }
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        java.util.List<CoreLibrarySources.LibraryUnit> dependencies = new java.util.ArrayList<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            if (!CoreLibrarySources.isLayeredLibraryImport(imported.path())) {
+                throw new IllegalArgumentException("compiler-owned atto."
+                        + library.layer().label() + " modules may import only atto.core/*, atto.alloc/* or atto.std/*: "
+                        + id + " -> " + imported.path());
+            }
+            CoreLibrarySources.LibraryUnit dependency =
+                    CoreLibrarySources.libraryUnit(imported.path());
+            if (!CoreLibrarySources.layerMayDependOn(library.layer(), dependency.layer())) {
+                throw new IllegalArgumentException("compiler-owned atto."
+                        + library.layer().label() + " modules may not depend on atto."
+                        + dependency.layer().label() + "/*: " + id + " -> " + imported.path());
+            }
+            dependencies.add(dependency);
+            recordImportResolution(importResolutions, id, imported.path(), dependency.unitId());
+        }
+        units.put(id, mixed);
+        for (CoreLibrarySources.LibraryUnit dependency : dependencies) {
+            collectLayeredLibraryClosure(dependency, units, importResolutions, budget, depth + 1);
+        }
+    }
 
     /**
      * Collects compiler-owned hosted source under ores.std/* (and the temporary
