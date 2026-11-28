@@ -1,0 +1,38 @@
+name: SharkBench native Bytes candidate admission
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/fixtures/sharkbench-admission/**'
+      - '.github/workflows/sharkbench-native-bytes.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  variant:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [boxed, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git rev-parse HEAD HEAD^{tree}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+      - name: Execute identical correctness probes for selected guest
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: bash tests/fixtures/sharkbench-admission/run.sh "$VARIANT"

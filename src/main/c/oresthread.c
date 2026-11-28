@@ -34,21 +34,21 @@ struct ores_carrier_pool {
     JavaVM *jvm;
     jobject executor;
     jmethodID carrier_loop;
+    jmethodID carriers_joined;
     pthread_t *threads;
     ores_carrier_arg *args;
     int max_threads;
     int desired_threads;
-    int created_threads;
-    size_t stack_bytes;
     int started;
     int shutdown;
-    int cleanup_started;
     int attach_ready_count;
     int attach_failures;
-    int java_ready_count;
-    unsigned char *java_ready_slots;
     pthread_mutex_t mutex;
     pthread_cond_t condition;
+    /* calloc() starts these at zero. Destroy only successfully initialized
+     * synchronization primitives on every pre-pthread error path. */
+    int mutex_initialized;
+    int condition_initialized;
 };
 
 static void throw_illegal_state(JNIEnv *env, const char *message) {
@@ -97,16 +97,6 @@ static void *carrier_main(void *raw) {
     (*env)->CallVoidMethod(env, pool->executor, pool->carrier_loop, (jint)arg->slot);
 
     if ((*env)->ExceptionCheck(env)) {
-        // If Java failed before nativeCarrierReady(), count this slot as a
-        // bootstrap failure so nativeStart() cannot wait forever.
-        pthread_mutex_lock(&pool->mutex);
-        if (!pool->java_ready_slots[arg->slot]) {
-            pool->java_ready_slots[arg->slot] = 1;
-            pool->java_ready_count++;
-            pool->attach_failures++;
-            pthread_cond_broadcast(&pool->condition);
-        }
-        pthread_mutex_unlock(&pool->mutex);
         // Surface an unexpected executor-boundary failure before detaching.
         // Actor turn failures should normally be contained in Java.
         (*env)->ExceptionDescribe(env);
@@ -123,11 +113,10 @@ static void free_pool(JNIEnv *env, ores_carrier_pool *pool) {
     if (pool->args != NULL) {
         for (int i = 0; i < pool->max_threads; i++) free(pool->args[i].name);
     }
-    free(pool->java_ready_slots);
     free(pool->args);
     free(pool->threads);
-    pthread_cond_destroy(&pool->condition);
-    pthread_mutex_destroy(&pool->mutex);
+    if (pool->condition_initialized) pthread_cond_destroy(&pool->condition);
+    if (pool->mutex_initialized) pthread_mutex_destroy(&pool->mutex);
     free(pool);
 }
 
@@ -161,9 +150,18 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     }
     pool->max_threads = (int)max_threads;
     pool->desired_threads = (int)desired_threads;
-    pool->stack_bytes = (size_t)stack_bytes;
-    pthread_mutex_init(&pool->mutex, NULL);
-    pthread_cond_init(&pool->condition, NULL);
+    if (pthread_mutex_init(&pool->mutex, NULL) != 0) {
+        free_pool(env, pool);
+        throw_illegal_state(env, "failed to initialize native carrier mutex");
+        return 0;
+    }
+    pool->mutex_initialized = 1;
+    if (pthread_cond_init(&pool->condition, NULL) != 0) {
+        free_pool(env, pool);
+        throw_illegal_state(env, "failed to initialize native carrier condition");
+        return 0;
+    }
+    pool->condition_initialized = 1;
 
     if ((*env)->GetJavaVM(env, &pool->jvm) != JNI_OK || pool->jvm == NULL) {
         free_pool(env, pool);
@@ -184,10 +182,18 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         return 0;
     }
     pool->carrier_loop = (*env)->GetMethodID(env, executor_class, "nativeCarrierLoop", "(I)V");
-    (*env)->DeleteLocalRef(env, executor_class);
     if (pool->carrier_loop == NULL) {
+        (*env)->DeleteLocalRef(env, executor_class);
         free_pool(env, pool);
         throw_illegal_state(env, "nativeCarrierLoop(int) JNI callback is missing");
+        return 0;
+    }
+    /* Physical retirement is published only after the pthread reaper joins. */
+    pool->carriers_joined = (*env)->GetMethodID(env, executor_class, "nativeCarriersJoined", "()V");
+    (*env)->DeleteLocalRef(env, executor_class);
+    if (pool->carriers_joined == NULL) {
+        free_pool(env, pool);
+        throw_illegal_state(env, "nativeCarriersJoined() JNI callback is missing");
         return 0;
     }
 
@@ -199,29 +205,51 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
 
     pool->threads = (pthread_t *)calloc((size_t)max_threads, sizeof(pthread_t));
     pool->args = (ores_carrier_arg *)calloc((size_t)max_threads, sizeof(ores_carrier_arg));
-    pool->java_ready_slots = (unsigned char *)calloc((size_t)max_threads, 1);
-    if (pool->threads == NULL || pool->args == NULL || pool->java_ready_slots == NULL) {
+    if (pool->threads == NULL || pool->args == NULL) {
         (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
         free_pool(env, pool);
         throw_illegal_state(env, "failed to allocate native carrier slots");
         return 0;
     }
 
-    // Cold throughput bootstrap allocates only bounded metadata and names.
-    // No pthread is created until nativeStart is requested by first runnable
-    // work (or an explicit warm/RT prestart).
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr) != 0) {
+        (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
+        free_pool(env, pool);
+        throw_illegal_state(env, "pthread_attr_init failed for native carrier");
+        return 0;
+    }
+    if (pthread_attr_setstacksize(&attr, (size_t)stack_bytes) != 0) {
+        pthread_attr_destroy(&attr);
+        (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
+        free_pool(env, pool);
+        throw_illegal_state(env, "failed to configure native carrier stack size");
+        return 0;
+    }
+
+    int created = 0;
     for (int i = 0; i < max_threads; i++) {
         pool->args[i].pool = pool;
         pool->args[i].slot = i;
         pool->args[i].name = copy_thread_name(prefix, i);
-        if (pool->args[i].name == NULL) {
+        if (pool->args[i].name == NULL
+                || pthread_create(&pool->threads[i], &attr, carrier_main, &pool->args[i]) != 0) {
+            pthread_mutex_lock(&pool->mutex);
+            pool->shutdown = 1;
+            pool->started = 1;
+            pthread_cond_broadcast(&pool->condition);
+            pthread_mutex_unlock(&pool->mutex);
+            for (int j = 0; j < created; j++) pthread_join(pool->threads[j], NULL);
+            pthread_attr_destroy(&attr);
             (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
             free_pool(env, pool);
-            throw_illegal_state(env, "failed to allocate native carrier thread name");
+            throw_illegal_state(env, "pthread_create failed for Oreslang carrier");
             return 0;
         }
+        created++;
     }
 
+    pthread_attr_destroy(&attr);
     (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
     return (jlong)(intptr_t)pool;
 }
@@ -233,68 +261,41 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeStart(
     ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
     if (pool == NULL) return;
 
+    /*
+     * This is the first JNI startup barrier, preceding Java's bounded
+     * carrierLoopsEntered.await(). An unbounded pthread_cond_wait here would
+     * defeat Java's timeout if AttachCurrentThreadAsDaemon stalled. Use an
+     * absolute CLOCK_REALTIME deadline as required by the default pthread
+     * condition variable clock. A failed or timed-out attachment is retired
+     * by Java's ensureStarted() finally via nativeShutdown(), never admitted.
+     */
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) {
+        throw_illegal_state(env, "failed to read native carrier startup clock");
+        return;
+    }
+    deadline.tv_sec += 30;
     pthread_mutex_lock(&pool->mutex);
-    if (pool->shutdown) {
-        pthread_mutex_unlock(&pool->mutex);
-        throw_illegal_state(env, "native carrier pool is shut down");
-        return;
-    }
-    if (pool->started) {
-        pthread_mutex_unlock(&pool->mutex);
-        return;
-    }
-    pthread_mutex_unlock(&pool->mutex);
-
-    pthread_attr_t attr;
-    if (pthread_attr_init(&attr) != 0) {
-        throw_illegal_state(env, "pthread_attr_init failed for native carrier");
-        return;
-    }
-    if (pthread_attr_setstacksize(&attr, pool->stack_bytes) != 0) {
-        pthread_attr_destroy(&attr);
-        throw_illegal_state(env, "failed to configure native carrier stack size");
-        return;
-    }
-
-    int created = 0;
-    for (int i = 0; i < pool->max_threads; i++) {
-        if (pthread_create(&pool->threads[i], &attr, carrier_main, &pool->args[i]) != 0) {
-            pthread_mutex_lock(&pool->mutex);
-            pool->created_threads = created;
-            pool->shutdown = 1;
-            pool->started = 1;
-            pthread_cond_broadcast(&pool->condition);
-            pthread_mutex_unlock(&pool->mutex);
-            for (int j = 0; j < created; j++) pthread_join(pool->threads[j], NULL);
-            pthread_mutex_lock(&pool->mutex);
-            pool->created_threads = 0;
-            pthread_mutex_unlock(&pool->mutex);
-            pthread_attr_destroy(&attr);
-            throw_illegal_state(env, "pthread_create failed for Oreslang carrier");
-            return;
-        }
-        created++;
-    }
-    pthread_attr_destroy(&attr);
-
-    pthread_mutex_lock(&pool->mutex);
-    pool->created_threads = created;
     pool->started = 1;
     pthread_cond_broadcast(&pool->condition);
-    while (!pool->shutdown && pool->attach_ready_count < pool->created_threads) {
-        pthread_cond_wait(&pool->condition, &pool->mutex);
-    }
-    // Attach success alone is not enough: Java publishes carrierThreads[slot]
-    // only after nativeCarrierLoop enters. Wait for that publication barrier
-    // (or an attach failure) before returning to first runnable admission.
-    while (!pool->shutdown
-            && pool->java_ready_count + pool->attach_failures < pool->created_threads) {
-        pthread_cond_wait(&pool->condition, &pool->mutex);
+    int wait_status = 0;
+    while (!pool->shutdown && pool->attach_ready_count < pool->max_threads) {
+        int rc = pthread_cond_timedwait(&pool->condition, &pool->mutex, &deadline);
+        if (rc != 0) {
+            wait_status = rc;
+            break;
+        }
     }
     int failures = pool->attach_failures;
+    int attached = pool->attach_ready_count;
+    int stopped = pool->shutdown;
     pthread_mutex_unlock(&pool->mutex);
-    if (failures != 0) {
-        throw_illegal_state(env, "one or more native carrier pthreads failed to attach to the JVM");
+    if (wait_status == ETIMEDOUT) {
+        throw_illegal_state(env, "native carrier JNI attachment timed out");
+    } else if (wait_status != 0) {
+        throw_illegal_state(env, "native carrier JNI attachment wait failed");
+    } else if (stopped || attached != pool->max_threads || failures != 0) {
+        throw_illegal_state(env, "native carrier pthread attachment incomplete or failed");
     }
 }
 
@@ -334,7 +335,7 @@ static void *carrier_reaper_main(void *raw) {
     // Joining happens off the runtime/control-plane caller. A carrier that is
     // still inside non-cooperative guest code may delay reclamation of this
     // retired pool, but can no longer block ActorRuntime.close()/shutdownNow().
-    for (int i = 0; i < pool->created_threads; i++) {
+    for (int i = 0; i < pool->max_threads; i++) {
         pthread_join(pool->threads[i], NULL);
     }
 
@@ -349,6 +350,14 @@ static void *carrier_reaper_main(void *raw) {
     jint status = (*jvm)->AttachCurrentThreadAsDaemon(
             jvm, (void **)&env, &attach);
     if (status == JNI_OK && env != NULL) {
+        /* All actor pthreads have been joined above. The executor may now
+         * report physical retirement, but not before this callback. Keep its
+         * JNI global reference rooted until the notification has returned. */
+        (*env)->CallVoidMethod(env, pool->executor, pool->carriers_joined);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
         free_pool(env, pool);
         (*jvm)->DetachCurrentThread(jvm);
     }
@@ -367,25 +376,12 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeShutdown(
     if (pool == NULL) return;
 
     pthread_mutex_lock(&pool->mutex);
-    if (pool->cleanup_started) {
-        pthread_mutex_unlock(&pool->mutex);
-        return;
-    }
-    pool->cleanup_started = 1;
     if (!pool->shutdown) {
         pool->shutdown = 1;
         pool->started = 1;
         pthread_cond_broadcast(&pool->condition);
     }
-    int created = pool->created_threads;
     pthread_mutex_unlock(&pool->mutex);
-
-    // A never-started cold pool has no guest/native stack to join, so teardown
-    // can reclaim its metadata synchronously without creating a reaper thread.
-    if (created == 0) {
-        free_pool(env, pool);
-        return;
-    }
 
     pthread_t reaper;
     if (pthread_create(&reaper, NULL, carrier_reaper_main, pool) == 0) {
@@ -398,22 +394,6 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeShutdown(
      * Leave this retired pool rooted until process teardown. Actor admission is
      * already closed and every parked/cooperative carrier has been woken.
      */
-}
-
-JNIEXPORT void JNICALL
-Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCarrierReady(
-        JNIEnv *env, jclass cls, jlong handle, jint slot) {
-    (void)env;
-    (void)cls;
-    ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
-    if (pool == NULL || slot < 0 || slot >= pool->max_threads) return;
-    pthread_mutex_lock(&pool->mutex);
-    if (!pool->java_ready_slots[slot]) {
-        pool->java_ready_slots[slot] = 1;
-        pool->java_ready_count++;
-        pthread_cond_broadcast(&pool->condition);
-    }
-    pthread_mutex_unlock(&pool->mutex);
 }
 
 JNIEXPORT jlong JNICALL
@@ -439,14 +419,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCarrierCpuTimeNanos(
     (void)cls;
     ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
     if (pool == NULL || slot < 0 || slot >= pool->max_threads) return 0;
-    pthread_mutex_lock(&pool->mutex);
-    if (slot >= pool->created_threads) {
-        pthread_mutex_unlock(&pool->mutex);
-        return 0;
-    }
-    pthread_t thread = pool->threads[slot];
-    pthread_mutex_unlock(&pool->mutex);
-    return (jlong)pthread_cpu_time_nanos(thread);
+    return (jlong)pthread_cpu_time_nanos(pool->threads[slot]);
 }
 
 static uint64_t pthread_cpu_time_nanos(pthread_t pthread) {

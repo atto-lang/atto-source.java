@@ -26,6 +26,16 @@ This directory documents the executable formal-methods layer for Oreslang runtim
 
 `FormalForceRevocationModelCheckTest` models hard kill as a two-phase protocol: fence, external revocation, then logical termination. It also explores failed/throwing revokers, mailbox rejection while fenced, overlapping hard-kill rejection, and fence clearing after failure.
 
+`FormalDurableWorkflowModelCheckTest` exhaustively explores the V1 durable
+workflow effect/delivery protocol: pending/claimed/ambiguous/completed/abandoned
+effects, retry-authority revocation, claim expiry, safe-to-retry versus completed
+reconciliation, phase-rejected delivery retry, exact duplicate delivery,
+conflicting delivery-id reuse, causal outcome retirement, and terminal
+cancellation. It proves terminal monotonicity, that revoked ambiguous work
+cannot return to PENDING, that duplicate/conflicting deliveries cannot mutate
+the effect lifecycle, and that accepted causal outcomes/cancellation revoke
+future execution authority.
+
 The checked invariants are:
 
 1. **At-most-once protocol settlement.** A reply is completed or cancelled, never both and never twice.
@@ -53,6 +63,9 @@ The checked invariants are:
 22. **Promoted storage outlives actor ownership.** Actor stop cannot reclaim storage rooted by a runtime-owned proxy; disposal of the final promoted root makes reclamation legal.
 23. **Proxy locks cannot span suspension or compose implicitly.** Read-to-write upgrades, cross-proxy nested locking, and suspension while locked fail closed in the bounded model; disposed proxies cannot be reacquired.
 
+24. **Durable workflow terminality is monotonic.** Cancellation cannot resurrect runnable pre-terminal effects; accepted causal outcomes retire or revoke their causal effect; expired claims become ambiguous; revoked ambiguous work cannot be reconciled back to pending.
+25. **Workflow delivery identity is non-mutating.** Exact duplicate, conflicting reuse, and phase-rejected deliveries cannot alter the external effect lifecycle; a rejected exact payload may later apply only through its legal causal transition.
+
 `FormalActorStorageLifetimeModelCheckTest` explores actor retirement versus promoted-root lifetime. `FormalProxySynchronizationModelCheckTest` explores two proxies, lock modes, suspension and disposal. These are bounded abstract contracts; they do not substitute for concrete runtime refinement tests.
 
 ## Relationship to runtime tests
@@ -61,13 +74,36 @@ This model is deliberately smaller than `ActorRuntime`. Its purpose is to make t
 
 The companion `async-testing` proof repo contains runtime refinement checks over real channels/select/actors. A runtime change is not considered fully verified merely because the model is green: both the model and implementation-level proofs should pass.
 
+## Independent TLA+/TLC tier
+
+`docs/formal/DurableWorkflowV1.tla` is an independently authored specification of the
+workflow effect/delivery crash window. It does **not** call into or translate
+the Java reducer. The model carries explicit claim generations, retry
+authority, ambiguity, reconciliation, delivery sealing, cancellation, and a
+settlement counter.
+
+`docs/formal/DurableWorkflowV1.cfg` asks TLC to exhaustively check a finite
+`MaxAttempts = 2` instance for type safety, terminal monotonicity,
+at-most-once settlement, claim-generation/ABA safety, and the key rule that
+revoked ambiguous authority can never become runnable again.
+
+This is deliberately a second authority beside
+`FormalDurableWorkflowModelCheckTest`: disagreement between the independent
+TLA+ model and the Java bounded model is a defect to investigate, not something
+to normalize away.
+
 ## Running
 
 ```sh
 mvn -B -Dtest='Formal*ModelCheckTest' test
 ```
 
-No additional model-checking dependency is required; the finite-state explorer is implemented with ordinary Java/JUnit so it runs anywhere the existing compiler/runtime test suite runs.
+No additional model-checking dependency is required for the Java finite-state explorer. The independent TLA+ tier is wired into the existing checksum-pinned TLA+ Tools v1.7.4 CI job. To run the same model manually:
+
+```sh
+cd docs/formal
+java -cp "$TLA2TOOLS_JAR" tlc2.TLC -workers 1 -config DurableWorkflowV1.cfg DurableWorkflowV1.tla
+```
 
 ## Next formal targets
 
@@ -134,3 +170,33 @@ that Java Oreslang lowering constructs complete or authenticated call edges.
 
 `RustScalarGuestParityTest` separately runs `40+2` in a Graal guest and
 checks the observed value `42`; it does not yet emit comparable effect IR.
+
+
+## Static-effect model checking (2026-10-19)
+
+`FormalEffectClosureModelCheckTest` independently enumerates all 512 three-function directed call graphs
+and 64 pairs of direct IO/PANIC effect assignments (32,768 configurations).
+A breadth-first reachability oracle checks the fixed-point effect summaries for
+every possible root, including recursive strongly connected components. It also
+checks rejection of over-budget graph input and proves via tests that the
+current trapping abstraction does not discard PANIC or unknown calls.
+
+**Scope boundary:** this is a finite-state proof of the graph summary library,
+not a proof that compiler-produced call edges, exception handlers, imports,
+or FFI effect labels are complete or authenticated. Source AST-to-effect-IR
+refinement remains an independent obligation.
+
+## Effect-model trust-boundary regression (2026-10-19 follow-up)
+
+`EffectGraphAdmissionBoundaryTest` verifies transitive unresolved-host effects
+through recursive call graphs, that trapping cannot swallow RAISE/PANIC or
+cancellation, and that rejected over-budget symbol/edge graphs do not mutate
+the accepted environment. The existing
+`FormalEffectClosureModelCheckTest` exhausts finite three-node effect graphs.
+
+Run both with `mvn -B -Dtest=FormalEffectClosureModelCheckTest,EffectGraphAdmissionBoundaryTest,TypeclassesAndEffectsFoundationTest test`.
+
+**Important:** all graph nodes and edges are supplied to the Java analysis
+library, not derived from the full Oreslang source frontend. A pass is a model
+property only; complete AST/HIR-to-effect-IR refinement, authenticated imports
+and dynamic dispatch effects are still unproved.

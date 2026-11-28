@@ -13,15 +13,22 @@ import java.util.List;
 final class TemplateLiterals {
     private static final int MAX_NESTING = 32;
     private static final int MAX_BRACE_NESTING = 256;
+    private static final int MAX_BLOCK_COMMENT_NESTING = 128;
     private static final int MAX_INTERPOLATIONS = 1024;
 
     private TemplateLiterals() { }
 
-    static int closingBacktick(String source, int from) {
-        return closingBacktick(source, from, 0);
+    // One bounded budget shared by every nested backtick/interpolation frame.
+    // Lowering each nested token independently must not reset the lexer cap.
+    private static final class ScanBudget {
+        int substitutions;
     }
 
-    private static int closingBacktick(String source, int from, int nesting) {
+    static int closingBacktick(String source, int from) {
+        return closingBacktick(source, from, 0, new ScanBudget());
+    }
+
+    private static int closingBacktick(String source, int from, int nesting, ScanBudget budget) {
         requireDepth(nesting);
         int at = from;
         while (at < source.length()) {
@@ -30,7 +37,10 @@ final class TemplateLiterals {
                 if (at + 1 >= source.length()) throw syntax("unterminated template escape");
                 at += 2;
             } else if (c == '$' && at + 1 < source.length() && source.charAt(at + 1) == '{') {
-                at = interpolationEnd(source, at + 2, nesting + 1) + 1;
+                if (++budget.substitutions > MAX_INTERPOLATIONS) {
+                    throw syntax("template interpolation count limit exceeded (1024)");
+                }
+                at = interpolationEnd(source, at + 2, nesting + 1, budget) + 1;
             } else if (c == 0x60) {
                 return at;
             } else {
@@ -41,6 +51,10 @@ final class TemplateLiterals {
     }
 
     private static int interpolationEnd(String source, int from, int nesting) {
+        return interpolationEnd(source, from, nesting, new ScanBudget());
+    }
+
+    private static int interpolationEnd(String source, int from, int nesting, ScanBudget budget) {
         requireDepth(nesting);
         int braces = 1;
         int at = from;
@@ -49,10 +63,13 @@ final class TemplateLiterals {
             if (c == '"' || c == '\'') {
                 at = skipQuoted(source, at + 1, c);
             } else if (c == 0x60) {
-                at = closingBacktick(source, at + 1, nesting + 1) + 1;
+                at = closingBacktick(source, at + 1, nesting + 1, budget) + 1;
             } else if (c == '/' && at + 1 < source.length() && source.charAt(at + 1) == '/') {
                 at += 2;
-                while (at < source.length() && source.charAt(at) != '\n') at++;
+                // Match the ordinary Java lexer: both LF and CR end a // comment.
+                // CR-only source must not hide a closing interpolation brace.
+                while (at < source.length() && source.charAt(at) != '\n'
+                        && source.charAt(at) != '\r') at++;
             } else if (c == '/' && at + 1 < source.length() && source.charAt(at + 1) == '*') {
                 at = skipBlockComment(source, at + 2);
             } else if (c == '{') {
@@ -88,7 +105,12 @@ final class TemplateLiterals {
         int nesting = 1;
         int at = from;
         while (at < source.length()) {
-            if (source.startsWith("/*", at)) { nesting++; at += 2; }
+            if (source.startsWith("/*", at)) {
+                if (++nesting > MAX_BLOCK_COMMENT_NESTING) {
+                    throw syntax("template block comment nesting limit exceeded (128)");
+                }
+                at += 2;
+            }
             else if (source.startsWith("*/", at)) {
                 at += 2;
                 if (--nesting == 0) return at;
@@ -136,6 +158,7 @@ final class TemplateLiterals {
             if (c == '$' && at < raw.length() && raw.charAt(at) == '{') {
                 if (++interpolations > MAX_INTERPOLATIONS)
                     throw syntax("template interpolation count limit exceeded");
+                validateDecodedUnicode(literal);
                 pieces.add(new Ast.LiteralExpr(literal.toString()));
                 literal.setLength(0);
                 int close = interpolationEnd(raw, at + 1, 0);
@@ -147,11 +170,26 @@ final class TemplateLiterals {
             }
             literal.append(c);
         }
+        validateDecodedUnicode(literal);
         pieces.add(new Ast.LiteralExpr(literal.toString()));
         Ast.Expr result = pieces.getFirst();
         for (int i = 1; i < pieces.size(); i++)
             result = new Ast.BinaryExpr("+", result, pieces.get(i));
         return result;
+    }
+
+    private static void validateDecodedUnicode(CharSequence value) {
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw syntax("template contains unpaired Unicode surrogate");
+                }
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw syntax("template contains unpaired Unicode surrogate");
+            }
+        }
     }
 
     private static void requireDepth(int nesting) {

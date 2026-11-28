@@ -78,6 +78,43 @@ final class ActorStateLoansTest {
         loans.close();
     }
 
+    @Test
+    void finalEpochRemainsValidButFailsEveryLaterQueuedHandler() throws Exception {
+        try (var loans = new ActorStateLoans(4)) {
+            Object activeOwner = new Object();
+            Object lastOwner = new Object();
+            Object strandedOne = new Object();
+            Object strandedTwo = new Object();
+
+            var active = loans.acquireAsync(activeOwner).join();
+            var last = loans.acquireAsync(lastOwner);
+            var one = loans.acquireAsync(strandedOne);
+            var two = loans.acquireAsync(strandedTwo);
+
+            var nextEpoch = ActorStateLoans.class.getDeclaredField("nextEpoch");
+            nextEpoch.setAccessible(true);
+            nextEpoch.setLong(loans, Long.MAX_VALUE - 1);
+
+            active.close();
+
+            var finalLoan = last.join();
+            assertEquals(Long.MAX_VALUE, finalLoan.epoch());
+            assertTrue(finalLoan.heldBy(lastOwner),
+                    "the final representable epoch must remain valid for its current handler");
+            assertTrue(loans.epochExhausted());
+            assertTrue(one.isCompletedExceptionally());
+            assertTrue(two.isCompletedExceptionally());
+            assertEquals(0, loans.pendingCount());
+
+            assertTrue(loans.acquireAsync(new Object()).isCompletedExceptionally(),
+                    "no handler may queue behind exhausted monotonic identity space");
+            assertTrue(finalLoan.heldBy(lastOwner),
+                    "admission exhaustion must not revoke the already-running final handler");
+            finalLoan.close();
+            assertEquals(0, loans.activeCount());
+        }
+    }
+
     @Test void completionCallbacksArePublishedOutsideTheLoanMonitor() throws Exception {
         try (var loans = new ActorStateLoans(1)) {
             var first = loans.acquireAsync(new Object()).join();
@@ -104,6 +141,82 @@ final class ActorStateLoansTest {
             first.close();
             assertTrue(completed.await(2, TimeUnit.SECONDS));
             assertEquals(0, loans.activeCount());
+        }
+    }
+
+    @Test void shutdownRejectsQueuedGrantThatHasNotYetBeenPublished() throws Exception {
+        var loans = new ActorStateLoans(2);
+        Object ownerA = new Object(), ownerB = new Object(), ownerC = new Object();
+        var held = loans.acquireAsync(ownerA).join();
+        var second = loans.acquireAsync(ownerB);
+        var third = loans.acquireAsync(ownerC);
+        var secondClosed = new CountDownLatch(1);
+        var continuePublication = new CountDownLatch(1);
+
+        // The producer publishes B, whose callback closes it (queueing a
+        // grant for C) and then holds publication before C is delivered.
+        second.whenCompleteRuntime((loan, failure) -> {
+            assertNull(failure);
+            loan.close();
+            secondClosed.countDown();
+            try {
+                assertTrue(continuePublication.await(5, TimeUnit.SECONDS),
+                        "test must not strand the grant publication thread");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        });
+
+        Thread publisher = Thread.ofPlatform().start(held::close);
+        try {
+            assertTrue(secondClosed.await(5, TimeUnit.SECONDS),
+                    "second grant never reached its completion callback");
+            // C is already an active but unpublished grant. Closing the
+            // actor must invalidate it, not deliver a stale success.
+            assertEquals(1, loans.activeCount());
+            loans.close();
+            assertTrue(third.isDone() == false);
+            continuePublication.countDown();
+            publisher.join(5_000);
+            assertFalse(publisher.isAlive(), "publisher did not drain");
+            assertTrue(third.isCompletedExceptionally(),
+                    "retirement must fail a queued but unpublished grant");
+            assertEquals(0, loans.activeCount(), "unpublished grant leaked");
+            assertEquals(0, loans.pendingCount());
+        } finally {
+            continuePublication.countDown();
+            loans.close();
+            publisher.join(5_000);
+        }
+    }
+
+    @Test void epochExhaustionFailsQueuedWaitersWithoutLeakingOwners() throws Exception {
+        try (var loans = new ActorStateLoans(3)) {
+            // Deterministic near-overflow fault injection. No loops over
+            // 2^63 grants, and no hidden production API for setting epochs.
+            var epoch = ActorStateLoans.class.getDeclaredField("nextEpoch");
+            epoch.setAccessible(true);
+            epoch.setLong(loans, Long.MAX_VALUE - 1);
+
+            Object firstOwner = new Object();
+            Object nextOwner = new Object();
+            Object lastOwner = new Object();
+            var first = loans.acquireAsync(firstOwner).join();
+            assertEquals(Long.MAX_VALUE, first.epoch());
+            var second = loans.acquireAsync(nextOwner);
+            var third = loans.acquireAsync(lastOwner);
+            assertEquals(2, loans.pendingCount());
+
+            assertDoesNotThrow(first::close, "epoch overflow cannot break close()");
+            assertTrue(second.isCompletedExceptionally());
+            assertTrue(third.isCompletedExceptionally());
+            assertEquals(0, loans.activeCount());
+            assertEquals(0, loans.pendingCount());
+
+            // Owners of failed waiters are released from the identity ledger.
+            assertTrue(loans.acquireAsync(nextOwner).isCompletedExceptionally());
+            assertTrue(loans.acquireAsync(lastOwner).isCompletedExceptionally());
         }
     }
 

@@ -1,0 +1,7 @@
+// Owned inline struct with Copy fields may MOVE to an independently scheduled Task.
+pub async fnc main(): void {
+  const Owned data = infer struct{value: 41};
+  let Future<int> worker = task { return data.value + 1; };
+  stdio.stdout.write(await worker);
+  return;
+}

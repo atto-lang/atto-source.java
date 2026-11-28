@@ -7,9 +7,9 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -25,12 +25,17 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * native carrier set; no actor owns a carrier and carrier identity is never
  * actor identity.</p>
  *
- * <p>The throughput profile allocates native pool metadata at construction but
- * creates no pthread until the first runnable turn (or an explicit prestart).
- * Once started, all bounded compensation slots for this executor are created
- * together so watchdog compensation never allocates another OS thread while
- * the runtime is already under pressure. Only {@code corePoolSize} carrier
- * slots are enabled at a time; extras remain parked in native code.</p>
+ * <p>Construction loads liboresthread but creates no pthread. The native pool
+ * is created on {@link #ensureStarted()}, which actor admission calls before
+ * an actor is published, or on the first {@link #execute(Runnable)} as a
+ * backstop. A runtime that never spawns an actor therefore never pays for
+ * actor carriers.</p>
+ *
+ * <p>Once started, all max carriers are created together so watchdog
+ * compensation never has to allocate an OS thread while the runtime is
+ * already under pressure. Only {@code corePoolSize} carrier slots are enabled
+ * at a time. Extra carriers are parked in native code and are enabled/disabled
+ * by the bounded compensation policy in {@link ActorRuntime}.</p>
  */
 public final class NativeCarrierExecutor extends AbstractExecutorService implements AutoCloseable {
     private static final String LIBRARY = "oresthread";
@@ -42,10 +47,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private static volatile boolean nativeLibraryLoaded;
 
     private final ArrayBlockingQueue<Runnable> queue;
-    // Enqueue and shutdown-drain share one short admission fence. A separate
-    // tryLock path keeps reactor submissions from waiting behind shutdown or
-    // an ordinary admission. Never perform nativeStart while holding this.
-    private final ReentrantLock queueAdmission = new ReentrantLock();
     private final int maximumPoolSize;
     private final long nativeStackBytes;
     private final AtomicInteger corePoolSize;
@@ -53,16 +54,22 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicInteger activeCount = new AtomicInteger();
     private final AtomicLong completedTaskCount = new AtomicLong();
     private final AtomicReferenceArray<Thread> carrierThreads;
+    /** A JNI attach is not yet a Java carrier-loop entry. */
+    private final CountDownLatch carrierLoopsEntered;
+    /** Signaled by the JNI reaper only after all associated pthread_join calls. */
+    private final CountDownLatch physicalRetirement = new CountDownLatch(1);
     private final AtomicBoolean shutdown = new AtomicBoolean();
-    private volatile boolean nativeStarted;
-    // Includes callers waiting to enter nativeLifecycleLock. Shutdown may
-    // publish its flag while pthread attach/publication is still in flight;
-    // termination observers must not mistake temporarily empty Java carrier
-    // slots for a completed native startup/shutdown barrier.
-    private final AtomicInteger bootstrapAdmissions = new AtomicInteger();
-    /** Serializes lazy native bootstrap and Java->native pool calls against retirement. */
+    /** Serializes Java->native pool calls against asynchronous native retirement. */
     private final Object nativeLifecycleLock = new Object();
-    private final long nativeHandle;
+    private final String threadPrefix;
+    /** 0 until the native pool is created; published before JNI workers enter. */
+    private volatile long nativeHandle;
+    /** Published only after every JNI carrier attachment has completed successfully. */
+    private volatile boolean startedSuccessfully;
+    /** Stops concurrent termination observation from preceding first JNI entry. */
+    private volatile boolean startupInProgress;
+    /** Failed JNI attachment/start cannot certify complete carrier retirement. */
+    private volatile boolean failedNativeStartup;
 
     public NativeCarrierExecutor(
             int corePoolSize,
@@ -82,41 +89,83 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         this.maximumPoolSize = maximumPoolSize;
         this.nativeStackBytes = configuredCarrierStackBytes();
         this.carrierThreads = new AtomicReferenceArray<>(maximumPoolSize);
+        this.carrierLoopsEntered = new CountDownLatch(maximumPoolSize);
         this.corePoolSize = new AtomicInteger(corePoolSize);
-        this.largestPoolSize = new AtomicInteger(corePoolSize);
-
-        long handle = nativeCreate(
-                this, maximumPoolSize, corePoolSize, threadPrefix, nativeStackBytes);
-        if (handle == 0L) throw new IllegalStateException("native carrier pool returned a null handle");
-        this.nativeHandle = handle;
-
-        // Throughput cold start deliberately stops here: nativeCreate owns only
-        // bounded pool metadata. First runnable admission calls nativeStart().
+        this.largestPoolSize = new AtomicInteger(0);
+        this.threadPrefix = threadPrefix;
     }
 
-    private boolean ensureNativeStarted() {
-        bootstrapAdmissions.incrementAndGet();
-        try {
-            synchronized (nativeLifecycleLock) {
-                if (shutdown.get()) {
-                    throw new RejectedExecutionException("native carrier executor is shut down");
-                }
-                if (nativeStarted) return false;
-                try {
-                    nativeStart(nativeHandle);
-                    nativeStarted = true;
-                    return true;
-                } catch (RuntimeException | Error failure) {
-                    // nativeStart may have created a partial/all carrier set
-                    // before an attach failure. Fence all further admission
-                    // and hand reclamation to native shutdown exactly once.
-                    shutdown.set(true);
-                    nativeShutdown(nativeHandle);
-                    throw failure;
-                }
+    /** True only once native startup/attachment has completed successfully. */
+    public boolean isStarted() {
+        return startedSuccessfully;
+    }
+
+    /**
+     * Create and start this pool's pthreads if that has not happened yet.
+     * Idempotent and safe under concurrent callers: exactly one successful
+     * native pool may be created. A fully rolled-back pthread_create failure
+     * may be retried; a partial JNI attach/start failure poisons the executor
+     * and must never leave zombie JVM-attached carriers eligible for reuse.
+     *
+     * @return true if this call created the pool, false if it already existed
+     * @throws RejectedExecutionException if the executor is shut down
+     * @throws IllegalStateException if the native pool could not be created
+     */
+    public boolean ensureStarted() {
+        // Shutdown must win over an already-published native handle. Serialize
+        // the check with both first creation and native retirement.
+        synchronized (nativeLifecycleLock) {
+            if (shutdown.get()) {
+                throw new RejectedExecutionException("native carrier executor is shut down");
             }
-        } finally {
-            bootstrapAdmissions.decrementAndGet();
+            if (nativeHandle != 0L) return false;
+            startupInProgress = true;
+            try {
+                int desired = corePoolSize.get();
+                long handle = nativeCreate(
+                        this, maximumPoolSize, desired, threadPrefix, nativeStackBytes);
+                if (handle == 0L) {
+                    throw new IllegalStateException("native carrier pool returned a null handle");
+                }
+                // Publish before nativeStart: carriers read nativeHandle in their loop.
+                nativeHandle = handle;
+                boolean started = false;
+                try {
+                    nativeStart(handle);
+                    // C reports successful JNI attachments before invoking Java.
+                    // A close/awaitTermination between those two operations
+                    // must not mistake all-null carrierThreads for retirement.
+                    try {
+                        if (!carrierLoopsEntered.await(30, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException(
+                                    "native carrier JNI loops did not all enter after attachment");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(
+                                "native carrier JNI startup interrupted", interrupted);
+                    }
+                    if (shutdown.get()) {
+                        throw new RejectedExecutionException(
+                                "native carrier executor closed during startup");
+                    }
+                    started = true;
+                } finally {
+                    if (!started) {
+                        // A subset of carriers may already have attached.
+                        // Reuse of this executor could overlap retired handles.
+                        shutdown.set(true);
+                        failedNativeStartup = true;
+                        nativeShutdown(handle);
+                        nativeHandle = 0L;
+                    }
+                }
+                largestPoolSize.accumulateAndGet(desired, Math::max);
+                startedSuccessfully = true;
+                return true;
+            } finally {
+                startupInProgress = false;
+            }
         }
     }
 
@@ -151,7 +200,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     private static long configuredCarrierStackBytes() {
-        long configured = Long.getLong("ores.actor.carrier-stack-bytes", 2L * 1024 * 1024);
+        long configured = Long.getLong("ores.actor.carrier-stack-bytes", LogicalStackQuota.CARRIER_STACK_BYTES);
         if (configured < 256L * 1024 || configured > 64L * 1024 * 1024) {
             throw new IllegalArgumentException(
                     "ores.actor.carrier-stack-bytes must be between 262144 and 67108864");
@@ -182,16 +231,18 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
      */
     @SuppressWarnings("unused") // invoked from JNI
     private void nativeCarrierLoop(int slot) {
+        // Guest frames on this pthread are bounded by its real stack size.
+        LogicalStackQuota.carrierBody(nativeStackBytes, () -> nativeCarrierLoopBody(slot)).run();
+    }
+
+    private void nativeCarrierLoopBody(int slot) {
         CURRENT_EXECUTOR.set(this);
         CURRENT_SLOT.set(slot);
         CURRENT_NATIVE_THREAD_ID.set(nativeCurrentThreadId());
         carrierThreads.set(slot, Thread.currentThread());
+        // Publish the Java callback registration before bootstrap can return.
+        carrierLoopsEntered.countDown();
         try {
-            // nativeStart() is the publication barrier for first runnable
-            // admission. Signal only after this Java Thread identity is
-            // visible so execute()/diagnostics/shutdown cannot observe an
-            // already-created pthread as "not started".
-            nativeCarrierReady(nativeHandle, slot);
             while (!shutdown.get()) {
                 nativeAwaitEnabled(nativeHandle, slot);
                 if (shutdown.get()) break;
@@ -233,6 +284,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
     }
 
+    /** Invoked by liboresthread's reaper after joining all native carriers. */
+    @SuppressWarnings("unused") // invoked through registered JNI reachability metadata
+    private void nativeCarriersJoined() {
+        physicalRetirement.countDown();
+    }
+
     private static void dispatchUncaught(Throwable failure) {
         Thread current = Thread.currentThread();
         Thread.UncaughtExceptionHandler handler = current.getUncaughtExceptionHandler();
@@ -247,64 +304,31 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
     }
 
-    /**
-     * Volatile publication fence, not a census of Java Thread identities.
-     *
-     * A pthread may have attached and published carrierThreads[slot] while
-     * nativeStart() is still waiting for the remaining pthreads under
-     * nativeLifecycleLock. Such a partially started pool is NOT eligible
-     * for reactor-originated host notification admission.
-     */
-    boolean readyForNoBootstrapAdmission() {
-        return nativeStarted && !shutdown.get();
-    }
-
-    /**
-     * Bounded host-only enqueue without JNI bootstrap or the native lifecycle
-     * monitor. The reactor caller must handle rejection by retaining its
-     * completion reservation and retrying after a carrier-capacity signal.
-     *
-     * The queue offer still uses ArrayBlockingQueue's short internal lock. It
-     * must NEVER call ensureNativeStarted(), nativeStart(), or start threads.
-     * This is not a wait-free queue and not a real-time hot-path guarantee.
-     */
-    void executeWithoutBootstrap(Runnable task) {
-        Objects.requireNonNull(task, "task");
-        if (!readyForNoBootstrapAdmission())
-            throw new RejectedExecutionException("native carrier has not finished bootstrap");
-        enqueueIfOpen(task, true);
-    }
-
-    /** Enqueue and shutdown drain are linearized by queueAdmission. This
-     * avoids removing the wrong runnable during rollback when different
-     * submitted tasks implement value-based equals(). An admission that wins
-     * before shutdown is accepted and will either run or be drained by
-     * shutdownNow(); no task can sneak in after its final drain.
-     */
-    private void enqueueIfOpen(Runnable task, boolean noParking) {
-        if (noParking) {
-            if (!queueAdmission.tryLock())
-                throw new RejectedExecutionException("native carrier admission is busy");
-        } else {
-            queueAdmission.lock();
-        }
-        try {
-            if (shutdown.get())
-                throw new RejectedExecutionException("native carrier executor is shut down");
-            if (!queue.offer(task))
-                throw new RejectedExecutionException("native carrier ready queue is full");
-        } finally {
-            queueAdmission.unlock();
-        }
-    }
-
     @Override
     public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
-        if (shutdown.get())
-            throw new RejectedExecutionException("native carrier executor is shut down");
-        ensureNativeStarted();
-        enqueueIfOpen(task, false);
+        // A published nativeHandle is not proof that JNI attachment finished.
+        // Hold the lifecycle lock across first start, admission and shutdown's
+        // drain so a partly started pool can never accept work.
+        synchronized (nativeLifecycleLock) {
+            if (shutdown.get()) throw new RejectedExecutionException(
+                    "native carrier executor is shut down");
+            if (!startedSuccessfully) {
+                try {
+                    ensureStarted();
+                } catch (IllegalStateException startFailure) {
+                    RejectedExecutionException rejected = new RejectedExecutionException(
+                            "native carrier executor could not start its carriers");
+                    rejected.initCause(startFailure);
+                    throw rejected;
+                }
+            }
+            if (shutdown.get() || !queue.offer(task)) {
+                throw new RejectedExecutionException(
+                        shutdown.get() ? "native carrier executor is shut down"
+                                : "native carrier ready queue is full");
+            }
+        }
     }
 
     public boolean remove(Runnable task) {
@@ -326,12 +350,14 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
      * active turn; once that turn unwinds, the carrier observes the shutdown
      * flag and exits through the native reaper path.
      */
-    void requestShutdownFromCarrier() {
+    List<Runnable> requestShutdownFromCarrier() {
         if (!isCurrentCarrierThread()) {
             throw new IllegalStateException(
                     "requestShutdownFromCarrier must run on this executor's native carrier");
         }
-        beginShutdown(false);
+        // Return never-started turns so a parent lane dispatcher can release
+        // their admission permits and account for every abandoned command.
+        return beginShutdown(false);
     }
 
     boolean isCurrentCarrierThread() {
@@ -341,12 +367,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private List<Runnable> beginShutdown(boolean interruptActiveCarriers) {
         if (!shutdown.compareAndSet(false, true)) return List.of();
         ArrayList<Runnable> abandoned = new ArrayList<>();
-        queueAdmission.lock();
-        try {
-            queue.drainTo(abandoned);
-        } finally {
-            queueAdmission.unlock();
-        }
 
         if (interruptActiveCarriers) {
             // Match ThreadPoolExecutor.shutdownNow(): signal any active carrier
@@ -359,37 +379,34 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
 
         synchronized (nativeLifecycleLock) {
+            // Take the same lock as execute(): every submitted task is either
+            // already claimed by a worker or returned in this exact drain.
+            queue.drainTo(abandoned);
             // Native shutdown is non-blocking: it marks the pool closed and
             // hands joins/reclamation to a native reaper so an uncooperative
-            // guest stack can never hold this caller hostage.
-            nativeShutdown(nativeHandle);
+            // guest stack can never hold this caller hostage. A pool that
+            // never started has no native state to release.
+            long handle = nativeHandle;
+            if (handle != 0L) nativeShutdown(handle);
         }
         return List.copyOf(abandoned);
     }
 
     /**
-     * Wait until every attached pthread carrier has exited its Java loop.
-     * Native shutdown itself is deliberately non-blocking; callers that own a
-     * scheduler can use this bounded observation without joining arbitrary
-     * guest stacks in native code.
+     * Await physical pthread joins, not merely the end of Java carrier loops.
+     * The native reaper signals physicalRetirement only after all pthread_join
+     * calls return. A failed reaper startup/VM reattachment must time out
+     * conservatively rather than falsely certify physical retirement.
      */
     @Override
     public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
         Objects.requireNonNull(unit, "unit");
         if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-        long nanos = unit.toNanos(timeout);
-        long deadline = System.nanoTime() + nanos;
-        for (;;) {
-            // Neither "no attached carriers" nor a finished Java loop alone
-            // suffices while nativeStart() is still inside its publication
-            // barrier. Await termination only after shutdown and the end of
-            // every potentially native-starting admission.
-            if (isTerminated()) return true;
-            if (nanos == 0L || System.nanoTime() >= deadline) return false;
-            long remaining = deadline - System.nanoTime();
-            long millis = Math.max(1L, Math.min(10L, TimeUnit.NANOSECONDS.toMillis(remaining)));
-            Thread.sleep(millis);
-        }
+        if (!shutdown.get()) return false;
+        // Pool construction and a nativeCreate() failure allocate no live JNI
+        // pool: no reaper will ever be required in these two cases.
+        if (!startupInProgress && nativeHandle == 0L && !failedNativeStartup) return true;
+        return physicalRetirement.await(timeout, unit);
     }
 
     public boolean isQueueEmpty() { return queue.isEmpty(); }
@@ -399,18 +416,19 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         shutdownNow();
     }
 
-    public int getActiveCount() { return activeCount.get(); }
-    public int getQueueSize() { return queue.size(); }
-    public long getCompletedTaskCount() { return completedTaskCount.get(); }
-    public int getLargestPoolSize() { return largestPoolSize.get(); }
-    /** Attached carrier count for diagnostics/tests; cold throughput startup is zero. */
-    public int getStartedCarrierCount() {
+    /** Host-only diagnostic: native Java-loop registrations, not pthread joins. */
+    int registeredCarrierCount() {
         int count = 0;
         for (int slot = 0; slot < carrierThreads.length(); slot++) {
             if (carrierThreads.get(slot) != null) count++;
         }
         return count;
     }
+
+    public int getActiveCount() { return activeCount.get(); }
+    public int getQueueSize() { return queue.size(); }
+    public long getCompletedTaskCount() { return completedTaskCount.get(); }
+    public int getLargestPoolSize() { return largestPoolSize.get(); }
     public int getMaximumPoolSize() { return maximumPoolSize; }
     public long getNativeStackBytes() { return nativeStackBytes; }
     public int getCorePoolSize() { return corePoolSize.get(); }
@@ -424,11 +442,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
 
     @Override
     public boolean isTerminated() {
-        if (!shutdown.get() || bootstrapAdmissions.get() != 0) return false;
-        for (int slot = 0; slot < carrierThreads.length(); slot++) {
-            if (carrierThreads.get(slot) != null) return false;
-        }
-        return true;
+        if (!shutdown.get() || startupInProgress) return false;
+        return (nativeHandle == 0L && !failedNativeStartup)
+                || physicalRetirement.getCount() == 0L;
     }
 
     public void setCorePoolSize(int value) {
@@ -442,17 +458,22 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                 throw new RejectedExecutionException("native carrier executor is shut down");
             }
             corePoolSize.set(value);
-            largestPoolSize.accumulateAndGet(value, Math::max);
-            nativeSetDesired(nativeHandle, value);
+            long handle = nativeHandle;
+            // Before start, the new size is simply used when the pool is created.
+            if (handle != 0L) {
+                largestPoolSize.accumulateAndGet(value, Math::max);
+                nativeSetDesired(handle, value);
+            }
         }
     }
 
     /**
-     * Explicit warm/RT preparation hook. Throughput mode normally leaves the
-     * pool cold until execute(); this starts the bounded native carrier set now.
+     * Starts the native pool if it has not started yet. All bounded
+     * compensation carriers are created together at that point, so once the
+     * pool exists there is nothing more to allocate here.
      */
     public boolean prestartCoreThread() {
-        return ensureNativeStarted();
+        return ensureStarted();
     }
 
     public static boolean isNativeCarrierThread() {
@@ -478,10 +499,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
 
     /** CPU consumed by a specific carrier slot in this pool, for watchdog accounting. */
     public long carrierCpuTimeNanos(int slot) {
-        if (slot < 0 || slot >= maximumPoolSize || shutdown.get() || !nativeStarted) return 0L;
+        if (slot < 0 || slot >= maximumPoolSize || shutdown.get() || nativeHandle == 0L) return 0L;
         synchronized (nativeLifecycleLock) {
-            if (shutdown.get()) return 0L;
-            return nativeCarrierCpuTimeNanos(nativeHandle, slot);
+            long handle = nativeHandle;
+            if (shutdown.get() || handle == 0L) return 0L;
+            return nativeCarrierCpuTimeNanos(handle, slot);
         }
     }
 
@@ -496,7 +518,6 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private static native void nativeAwaitEnabled(long handle, int slot);
     private static native void nativeShutdown(long handle);
     private static native long nativeCurrentThreadId();
-    private static native void nativeCarrierReady(long handle, int slot);
     private static native long nativeCurrentThreadCpuNanos();
     private static native long nativeCarrierCpuTimeNanos(long handle, int slot);
 }

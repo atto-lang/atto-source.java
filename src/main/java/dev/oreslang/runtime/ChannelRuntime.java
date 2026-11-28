@@ -12,7 +12,6 @@ import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -64,6 +63,9 @@ public final class ChannelRuntime {
         DEFAULT
     }
 
+    // Private-to-runtime marker, never a guest value or a channel payload.
+    enum CountedReadEnd { EOF }
+
     public record SelectResult(
             int index,
             SelectOperation operation,
@@ -75,6 +77,22 @@ public final class ChannelRuntime {
             }
             Objects.requireNonNull(operation, "operation");
         }
+    }
+
+    /**
+     * Compiler-owned selection retirement receipt. Unlike isDone(), this
+     * completes only after notification and cancellation cleanup has drained.
+     * No guest callback runs on the settling producer thread.
+     */
+    public static OresFuture<Void> selectionDrained(OresFuture<SelectResult> selection) {
+        Objects.requireNonNull(selection, "selection");
+        OresFuture<Void> receipt = new OresFuture<>(() -> false, () -> {});
+        selection.whenNotificationsDrainedRuntime(() -> {
+            Throwable failure = selection.cancellationHookFailureFromRuntime();
+            if (failure != null) receipt.failFromRuntime(failure);
+            else receipt.completeFromRuntime(null);
+        });
+        return receipt;
     }
 
     /** Admission exhaustion is distinct from closure; no waiter is retained. */
@@ -97,6 +115,151 @@ public final class ChannelRuntime {
     }
 
     /**
+     * One immediate owned-send attempt. Only COMMITTED consumes the payload.
+     * A rejected attempt returns exactly the supplied object, including when
+     * the channel was closed. The result intentionally contains no payload on
+     * COMMITTED, so a guest binding can implement affine ownership transfer.
+     *
+     * <p>Host Java references are not linear: a compiler/guest lowering must
+     * reject uses of the original binding after a committed send. This record
+     * must not be described as guest-level ownership enforcement.</p>
+     */
+    public enum OwnedWriteOutcome {
+        COMMITTED,
+        BACKPRESSURE,
+        CLOSED
+    }
+
+    public static final class OwnedTryWriteResult<T> {
+        // Only this runtime can mint admission receipts. Do not expose a
+        // publicly constructible record to a future guest ownership bridge.
+        private final OwnedWriteOutcome outcome;
+        private final T returnedPayload;
+
+        private OwnedTryWriteResult(
+                OwnedWriteOutcome outcome, T returnedPayload) {
+            this.outcome = Objects.requireNonNull(outcome, "outcome");
+            if (outcome == OwnedWriteOutcome.COMMITTED) {
+                if (returnedPayload != null) {
+                    throw new IllegalArgumentException(
+                            "a committed send cannot return a second payload owner");
+                }
+            } else {
+                Objects.requireNonNull(returnedPayload,
+                        "a rejected send must return its original payload");
+            }
+            this.returnedPayload = returnedPayload;
+        }
+
+        public OwnedWriteOutcome outcome() {
+            return outcome;
+        }
+
+        public T returnedPayload() {
+            return returnedPayload;
+        }
+
+        public boolean committed() {
+            return outcome == OwnedWriteOutcome.COMMITTED;
+        }
+
+        private static <T> OwnedTryWriteResult<T> accepted() {
+            return new OwnedTryWriteResult<>(OwnedWriteOutcome.COMMITTED, null);
+        }
+
+        private static <T> OwnedTryWriteResult<T> rejected(
+                OwnedWriteOutcome cause, T payload) {
+            if (cause == OwnedWriteOutcome.COMMITTED) {
+                throw new IllegalArgumentException(
+                        "a committed result cannot carry a rejected payload");
+            }
+            return new OwnedTryWriteResult<>(cause, payload);
+        }
+    }
+
+    /**
+     * Read-only channel capability. It cannot write, close, or expose the
+     * underlying bidirectional channel.
+     */
+    public static final class ReadChannel<T> {
+        private final Channel<T> channel;
+
+        private ReadChannel(Channel<T> channel) {
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        public Optional<T> tryRead() {
+            return channel.tryRead();
+        }
+
+        public OresFuture<T> readAsync() {
+            return channel.readAsync();
+        }
+
+        public boolean isClosed() {
+            return channel.isClosed();
+        }
+
+        private Channel<T> backingChannel() {
+            return channel;
+        }
+    }
+
+    /**
+     * Write-only channel capability. It cannot read, close, or expose the
+     * underlying bidirectional channel.
+     */
+    /**
+     * Recoverable, non-registering write probe. A rejected payload remains
+     * owned by the caller. The compiler must move its ownership into this
+     * result only on Full/Closed, and into the channel only on Accepted.
+     */
+    public sealed interface TryWriteResult<T>
+            permits TryWriteResult.Accepted, TryWriteResult.Full, TryWriteResult.Closed {
+        record Accepted<T>() implements TryWriteResult<T> { }
+        record Full<T>(T value) implements TryWriteResult<T> {
+            public Full { Objects.requireNonNull(value, "rejected payload"); }
+        }
+        record Closed<T>(T value) implements TryWriteResult<T> {
+            public Closed { Objects.requireNonNull(value, "rejected payload"); }
+        }
+    }
+
+    public static final class WriteChannel<T> {
+        private final Channel<T> channel;
+
+        private WriteChannel(Channel<T> channel) {
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        public boolean tryWrite(T value) {
+            return channel.tryWrite(value);
+        }
+
+        /** Directional capability for immediate, recoverable owned attempts. */
+        public OwnedTryWriteResult<T> tryWriteOwned(T value) {
+            return channel.tryWriteOwned(value);
+        }
+
+        /** Guest-facing typed immediate write result (source try writech). */
+        public TryWriteResult<T> tryWriteResult(T value) {
+            return channel.tryWriteResult(value);
+        }
+
+        public OresFuture<Void> writeAsync(T value) {
+            return channel.writeAsync(value);
+        }
+
+        public boolean isClosed() {
+            return channel.isClosed();
+        }
+
+        private Channel<T> backingChannel() {
+            return channel;
+        }
+    }
+
+    /**
      * Bounded MPMC channel. Capacity zero is a rendezvous channel.
      *
      * <p>Null is deliberately rejected because Oreslang has no standalone null
@@ -105,6 +268,8 @@ public final class ChannelRuntime {
     public static final class Channel<T> implements AutoCloseable {
         private final int capacity;
         private final int maxPendingRegistrations;
+        private final ReadChannel<T> output;
+        private final WriteChannel<T> input;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
@@ -130,6 +295,8 @@ public final class ChannelRuntime {
             }
             this.capacity = capacity;
             this.maxPendingRegistrations = maxPendingRegistrations;
+            this.output = new ReadChannel<>(this);
+            this.input = new WriteChannel<>(this);
         }
 
         public int capacity() {
@@ -169,6 +336,16 @@ public final class ChannelRuntime {
             } finally {
                 COORDINATOR.unlock();
             }
+        }
+
+        /** Stable write-only view; the full channel retains close authority. */
+        public WriteChannel<T> input() {
+            return input;
+        }
+
+        /** Stable read-only view; the full channel retains close authority. */
+        public ReadChannel<T> output() {
+            return output;
         }
 
         /**
@@ -230,6 +407,57 @@ public final class ChannelRuntime {
         }
 
         /**
+         * Immediate, non-parking send with a recoverable rejection result.
+         * Reuse tryWrite's select coordinator: a second queue or capacity
+         * pre-check would introduce a close/reader admission race.
+         *
+         * <p>The only recoverable terminal results here are BACKPRESSURE
+         * (no value committed) and CLOSED (closure won admission). The
+         * asynchronous writeAsync API remains non-recoverable until a
+         * separate cancellation-safe escrow and affine guest contract exist.
+         * Guest code uses {@link #tryWriteResult(Object)} instead.</p>
+         */
+        public OwnedTryWriteResult<T> tryWriteOwned(T value) {
+            requireValue(value);
+            try {
+                return tryWrite(value)
+                        ? OwnedTryWriteResult.accepted()
+                        : OwnedTryWriteResult.rejected(
+                                OwnedWriteOutcome.BACKPRESSURE, value);
+            } catch (java.util.concurrent.CompletionException failure) {
+                if (OresFuture.unwrap(failure) instanceof ChannelClosedException) {
+                    return OwnedTryWriteResult.rejected(
+                            OwnedWriteOutcome.CLOSED, value);
+                }
+                throw failure;
+            }
+        }
+
+        /**
+         * Typed immediate send result, sharing the existing linearizable
+         * select admission and returning the original payload on rejection.
+         * No waiter or pending write survives Full/Closed. Closed is decoded
+         * only from ChannelClosedException, not from arbitrary failures.
+         *
+         * This host primitive is also the guest interpreter's immediate
+         * write result path. Only the Java-host tryWrite(T) compatibility API
+         * remains Boolean; source try writech returns TryWriteResult<T>.
+         */
+        public TryWriteResult<T> tryWriteResult(T value) {
+            requireValue(value);
+            try {
+                return tryWrite(value)
+                        ? new TryWriteResult.Accepted<>()
+                        : new TryWriteResult.Full<>(value);
+            } catch (java.util.concurrent.CompletionException failure) {
+                if (OresFuture.unwrap(failure) instanceof ChannelClosedException) {
+                    return new TryWriteResult.Closed<>(value);
+                }
+                throw failure;
+            }
+        }
+
+        /**
          * Scheduler-friendly receive registration.
          */
         public OresFuture<T> readAsync() {
@@ -277,34 +505,17 @@ public final class ChannelRuntime {
          * re-arbitrate atomically across all of their cases.
          */
         public void close(Throwable cause) {
-            closeDeferred(cause).run();
-        }
-
-        /**
-         * Runtime-only two-phase close. The channel's terminal state and
-         * waiter arbitration are committed under the coordinator immediately,
-         * but Future/select callbacks are returned to the caller as one
-         * idempotent publication task. This lets lifecycle owners establish
-         * their authoritative state before arbitrary synchronous observers run.
-         *
-         * Ordinary source/host close() remains synchronous and unchanged.
-         */
-        Runnable closeDeferred(Throwable cause) {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
-                if (closed) return () -> { };
+                if (closed) return;
                 closed = true;
                 closeCause = cause;
                 pumpLocked(completions);
             } finally {
                 COORDINATOR.unlock();
             }
-            AtomicBoolean published = new AtomicBoolean();
-            return () -> {
-                if (published.compareAndSet(false, true))
-                    runCompletions(completions);
-            };
+            runCompletions(completions);
         }
     }
 
@@ -324,21 +535,61 @@ public final class ChannelRuntime {
         SelectCase selectNext();
     }
 
-    public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
-
-    public record ReadCase<T>(Channel<T> channel) implements SelectCase {
-        public ReadCase {
+    /**
+     * Canonical descriptor-only channel next-event source. It stores only a
+     * read capability: even a malicious caller cannot use this adapter to
+     * introduce producer-side writes or consume a value during description.
+     * The select winner coordinator performs the actual read exactly once.
+     */
+    public record ChannelReadSelectable<T>(ReadChannel<T> channel)
+            implements Selectable<T> {
+        public ChannelReadSelectable {
             Objects.requireNonNull(channel, "channel");
+        }
+
+        @Override
+        public SelectCase selectNext() {
+            return read(channel);
         }
     }
 
-    public record WriteCase<T>(Channel<T> channel, T value)
+    public static <T> ChannelReadSelectable<T> selectableRead(ReadChannel<T> channel) {
+        return new ChannelReadSelectable<>(channel);
+    }
+
+    public static <T> ChannelReadSelectable<T> selectableRead(Channel<T> channel) {
+        return selectableRead(Objects.requireNonNull(channel, "channel").output());
+    }
+
+    public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
+
+    /**
+     * Public select descriptors expose only their directional endpoint. The
+     * coordinator unwraps the shared channel privately for atomic arbitration.
+     */
+    public record ReadCase<T>(ReadChannel<T> channel) implements SelectCase {
+        public ReadCase {
+            Objects.requireNonNull(channel, "channel");
+        }
+
+        /** Source-compatible constructor for callers that own a full channel. */
+        public ReadCase(Channel<T> channel) {
+            this(Objects.requireNonNull(channel, "channel").output());
+        }
+    }
+
+    public record WriteCase<T>(WriteChannel<T> channel, T value)
             implements SelectCase {
         public WriteCase {
             Objects.requireNonNull(channel, "channel");
             Objects.requireNonNull(
                     value,
                     "Oreslang channels cannot carry null; use Option<T>");
+        }
+
+        /** Source-compatible constructor for callers that own a full channel. */
+        public WriteCase(Channel<T> channel, T value) {
+            this(Objects.requireNonNull(channel, "channel").input(), value);
         }
     }
 
@@ -359,7 +610,15 @@ public final class ChannelRuntime {
         return new ReadCase<>(channel);
     }
 
+    public static <T> ReadCase<T> read(ReadChannel<T> channel) {
+        return new ReadCase<>(channel);
+    }
+
     public static <T> WriteCase<T> write(Channel<T> channel, T value) {
+        return new WriteCase<>(channel, value);
+    }
+
+    public static <T> WriteCase<T> write(WriteChannel<T> channel, T value) {
         return new WriteCase<>(channel, value);
     }
 
@@ -374,6 +633,7 @@ public final class ChannelRuntime {
     public static final class SelectSet {
         private final List<SelectCase> cases;
         private final AtomicLong fairCursor;
+        private final boolean countedReadEnd;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -395,7 +655,24 @@ public final class ChannelRuntime {
         private SelectSet(
                 Collection<? extends SelectCase> cases,
                 AtomicLong sharedFairCursor) {
+            this(cases, sharedFairCursor, false);
+        }
+
+        // Host-only opt-in. Ordinary selects retain their closed-channel error
+        // semantics. A counted read needs an identifiable graceful EOF so it
+        // can retire that source without counting an event.
+        static SelectSet countedReads(Collection<? extends SelectCase> cases, long cursor) {
+            for (var candidate : cases) {
+                if (!(candidate instanceof ReadCase<?> || candidate instanceof FutureCase<?>))
+                    throw new SelectAdmissionException("counted selection requires read/Future cases");
+            }
+            return new SelectSet(cases, new AtomicLong(cursor), true);
+        }
+
+        private SelectSet(Collection<? extends SelectCase> cases,
+                          AtomicLong sharedFairCursor, boolean countedReadEnd) {
             Objects.requireNonNull(cases, "cases");
+            this.countedReadEnd = countedReadEnd;
             this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
@@ -449,9 +726,14 @@ public final class ChannelRuntime {
                 SelectCase operation = Objects.requireNonNull(
                         Objects.requireNonNull(selectable, "selectable source").selectNext(),
                         "selectNext must produce one operation");
-                if (operation instanceof DefaultCase) {
+                // A Selectable describes consumption of one NEXT event.
+                // Producer writes and select-control defaults are never
+                // admissible, even when returned by a trusted host adapter.
+                // Validate before registering or arbitrating any case.
+                if (!(operation instanceof ReadCase<?>)
+                        && !(operation instanceof FutureCase<?>)) {
                     throw new IllegalArgumentException(
-                            "Selectable<T> cannot reduce to a default arm");
+                            "Selectable<T> must reduce to a read or Future arm");
                 }
                 cases.add(operation);
             }
@@ -579,6 +861,30 @@ public final class ChannelRuntime {
      * invocations. Persistent waiter reuse is a separate optimization that
      * would require a stronger generation/winner protocol.</p>
      */
+    /**
+     * Persistent writes must never retain a mutable guest/host payload.
+     * This deliberately conservative Copy gate is not a substitute for
+     * compile-time ownership and lifetime checking.
+     */
+    private static boolean isExactImmutableScalar(Object value) {
+        if (value == null) return false;
+        Class<?> type = value.getClass();
+        return type == String.class || type == Boolean.class
+                || type == Character.class || type == Byte.class
+                || type == Short.class || type == Integer.class
+                || type == Long.class || type == Float.class
+                || type == Double.class || type == java.math.BigInteger.class
+                || type == java.math.BigDecimal.class || type == OresSymbol.class;
+    }
+
+    private static void requireReusableCase(SelectCase selectCase) {
+        if (selectCase instanceof WriteCase<?> write
+                && !isExactImmutableScalar(write.value())) {
+            throw new IllegalArgumentException(
+                    "reusable select write requires an immutable Copy payload");
+        }
+    }
+
     public static final class SelectPlan {
         private final SelectSet set;
 
@@ -588,6 +894,9 @@ public final class ChannelRuntime {
 
         private SelectPlan(SelectSet set) {
             this.set = Objects.requireNonNull(set, "set");
+            for (SelectCase selectCase : set.cases()) {
+                requireReusableCase(selectCase);
+            }
         }
 
         public static SelectPlan of(SelectCase... cases) {
@@ -604,6 +913,11 @@ public final class ChannelRuntime {
 
         public List<SelectCase> cases() {
             return set.cases();
+        }
+
+        /** The descriptor is reusable, but selection registrations never are. */
+        public SelectSet selectSetSnapshot() {
+            return set;
         }
 
         public OresFuture<SelectResult> selectAsync() {
@@ -653,6 +967,22 @@ public final class ChannelRuntime {
 
         public DynamicSelectPlan() { }
 
+        /** Lists become stable zero-based keyed dynamic cases. */
+        public static DynamicSelectPlan<Integer> fromList(
+                Iterable<? extends SelectCase> initial) {
+            Objects.requireNonNull(initial, "initial");
+            DynamicSelectPlan<Integer> plan = new DynamicSelectPlan<>();
+            int index = 0;
+            for (SelectCase selectCase : initial) {
+                if (index == MAX_SELECT_CASES) {
+                    throw new SelectAdmissionException(
+                            "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
+                }
+                plan.put(index++, Objects.requireNonNull(selectCase, "selectCase"));
+            }
+            return plan;
+        }
+
         public DynamicSelectPlan(Map<? extends K, ? extends SelectCase> initial) {
             Objects.requireNonNull(initial, "initial");
             for (Map.Entry<? extends K, ? extends SelectCase> entry : initial.entrySet()) {
@@ -661,12 +991,26 @@ public final class ChannelRuntime {
         }
 
         /**
+         * Admit only sealed immutable scalar key implementations. Never invoke
+         * user hashCode/equals while holding the plan monitor or retain mutable
+         * key identity in a pending snapshot. Exact classes also exclude
+         * subclasses of BigInteger/BigDecimal with overridden host behavior.
+         */
+        private static void requireStableKey(Object key) {
+            Objects.requireNonNull(key, "key");
+            if (!isExactImmutableScalar(key)) {
+                throw new IllegalArgumentException(
+                        "dynamic select key requires immutable scalar identity");
+            }
+        }
+
+        /**
          * Mutations publish a new generation. Replacements retain their key's
          * insertion position; failed duplicates and quota checks are atomic.
          */
         public synchronized void put(K key, SelectCase selectCase) {
-            Objects.requireNonNull(key, "key");
-            Objects.requireNonNull(selectCase, "selectCase");
+            requireStableKey(key);
+            requireReusableCase(Objects.requireNonNull(selectCase, "selectCase"));
             if (!entries.containsKey(key) && entries.size() >= MAX_SELECT_CASES) {
                 throw new SelectAdmissionException(
                         "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
@@ -689,7 +1033,7 @@ public final class ChannelRuntime {
 
         /** Existing in-flight selections keep their original snapshot. */
         public synchronized boolean remove(K key) {
-            Objects.requireNonNull(key, "key");
+            requireStableKey(key);
             if (!entries.containsKey(key)) return false;
             long nextVersion = Math.addExact(version, 1L);
             entries.remove(key);
@@ -786,8 +1130,8 @@ public final class ChannelRuntime {
         }
 
         private Channel<?> channel() {
-            if (selectCase instanceof ReadCase<?> read) return read.channel();
-            if (selectCase instanceof WriteCase<?> write) return write.channel();
+            if (selectCase instanceof ReadCase<?> read) return read.channel().backingChannel();
+            if (selectCase instanceof WriteCase<?> write) return write.channel().backingChannel();
             throw new IllegalStateException(
                     "only channel cases have channel registrations");
         }
@@ -807,7 +1151,7 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        /** Captured under COORDINATOR at admission, after preceding FAIR commits. */
+        /** Registration ticket order and fixed RANDOM/PRIORITY scan order. */
         private int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
@@ -1177,10 +1521,12 @@ public final class ChannelRuntime {
                     }
 
                     if (channel.closed) {
-                        commitFailureLocked(
-                                chosen,
-                                channel.closedFailure(),
-                                completions);
+                        if (selection.set.countedReadEnd && channel.closeCause == null) {
+                            commitSingleLocked(chosen, new SelectResult(chosen.index,
+                                    SelectOperation.READ, CountedReadEnd.EOF), completions);
+                        } else {
+                            commitFailureLocked(chosen, channel.closedFailure(), completions);
+                        }
                         progressed = true;
                         break;
                     }
@@ -1234,6 +1580,21 @@ public final class ChannelRuntime {
         } while (progressed);
     }
 
+    // COORDINATOR guards commits and each preference scan. FAIR must read
+    // the generation's current cursor on every scan, including rendezvous
+    // peer checks. RANDOM retains its original per-invocation permutation.
+    private static int fairStartLocked(SelectRegistration selection) {
+        return selection.policy == SelectPolicy.FAIR
+                ? Math.floorMod(selection.set.fairCursor.get(), selection.order.length)
+                : 0;
+    }
+
+    private static int scanIndex(SelectRegistration selection, int start, int offset) {
+        return selection.policy == SelectPolicy.FAIR
+                ? (start + offset) % selection.order.length
+                : selection.order[offset];
+    }
+
     private static CaseRegistration preferredCommittableCaseLocked(
             SelectRegistration selection) {
         if (selection.decided) return null;
@@ -1247,7 +1608,9 @@ public final class ChannelRuntime {
         // completion authorities, even when their values compare equal.
         // IdentityHashMap accepts null values so PENDING is cached too.
         java.util.IdentityHashMap<OresFuture<?>, Object> observedFutureStates = null;
-        for (int index : selection.order) {
+        int start = fairStartLocked(selection);
+        for (int offset = 0; offset < selection.order.length; offset++) {
+            int index = scanIndex(selection, start, offset);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -1304,10 +1667,12 @@ public final class ChannelRuntime {
         // COORDINATOR while we probe aliases of that producer: without an
         // identity snapshot, an earlier alias can see PENDING while a later
         // alias sees READY in the very same PRIORITY/FAIR preference pass.
-        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness =
-                new java.util.IdentityHashMap<>();
+        // Channel-only rendezvous probes need no Future observation map.
+        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness = null;
 
-        for (int index : selection.order) {
+        int start = fairStartLocked(selection);
+        for (int offset = 0; offset < selection.order.length; offset++) {
+            int index = scanIndex(selection, start, offset);
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
@@ -1316,6 +1681,9 @@ public final class ChannelRuntime {
             if (registration == null) continue;
 
             if (selectCase instanceof FutureCase<?> futureCase) {
+                if (observedFutureReadiness == null) {
+                    observedFutureReadiness = new java.util.IdentityHashMap<>();
+                }
                 OresFuture<?> producer = futureCase.future();
                 Boolean ready = observedFutureReadiness.get(producer);
                 if (ready == null) {
@@ -1471,8 +1839,8 @@ public final class ChannelRuntime {
     }
 
     private static Channel<?> channelOf(SelectCase selectCase) {
-        if (selectCase instanceof ReadCase<?> read) return read.channel();
-        if (selectCase instanceof WriteCase<?> write) return write.channel();
+        if (selectCase instanceof ReadCase<?> read) return read.channel().backingChannel();
+        if (selectCase instanceof WriteCase<?> write) return write.channel().backingChannel();
         throw new IllegalArgumentException(
                 "default select case has no channel");
     }

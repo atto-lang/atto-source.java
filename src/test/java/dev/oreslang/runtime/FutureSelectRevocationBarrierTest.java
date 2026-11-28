@@ -16,6 +16,47 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(15)
 final class FutureSelectRevocationBarrierTest {
     @Test
+    void ownedSelectionRetirementWaitsForPhysicalNotificationDrain() throws Exception {
+        var ch = new ChannelRuntime.Channel<Long>(1);
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.read(ch)).selectAsync();
+        assertEquals(1, ch.pendingRegistrations());
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var backgroundFailure = new AtomicReference<Throwable>();
+        selected.whenCompleteRuntime((value, failure) -> {
+            entered.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("drain test timed out");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        });
+        var drained = ChannelRuntime.selectionDrained(selected);
+        assertFalse(drained.isDone());
+        Thread canceller = Thread.startVirtualThread(() -> {
+            try { assertTrue(selected.cancel(false)); }
+            catch (Throwable failure) { backgroundFailure.set(failure); }
+        });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(selected.isCancelled());
+            assertFalse(drained.isDone());
+            assertEquals(0, ch.pendingRegistrations());
+            assertTrue(ch.tryWrite(42L));
+        } finally {
+            release.countDown();
+            canceller.join(5_000);
+        }
+        assertFalse(canceller.isAlive());
+        if (backgroundFailure.get() != null) throw new AssertionError(backgroundFailure.get());
+        assertTrue(drained.isDone());
+        drained.join();
+        assertEquals(42L, ch.tryRead().orElseThrow());
+    }
+
+    @Test
     void cancelledStateIsNotSelectableUntilRevocationHookCompletes() throws Exception {
         var insideRevocation = new CountDownLatch(1);
         var allowRevocation = new CountDownLatch(1);

@@ -81,6 +81,15 @@ of output strings.
 | `receive(ActorMail<T>)` | `void` | Lifecycle handler invoked once per incoming envelope, serialized and actor-local |
 | `rt cooperate` | `void` scheduling effect | Suspension/safepoint; no implicit publication or message delivery |
 
+Readiness failure has one canonical source type name: `ActorTerminated`.
+The Java host runtime currently materializes stop-before-ready as
+`ActorRuntime.ActorTerminatedException`; that JVM class is an implementation
+detail, not the source spelling. A source callable that directly awaits actor
+readiness must eventually expose `throws ActorTerminated` (or handle/trap the
+same typed effect) once executable checked-effect propagation is enabled.
+Parser retention of that type does not by itself claim executable throw
+lowering.
+
 `self.send(value)`, `self.end()`, and `self.endWithCleanup(...)` are **non-overridable runtime actor operations**. Actor classes may not declare instance methods named `send`, `end`, or `endWithCleanup`, and source code does not use `super.send(...)` to reach transport.
 This keeps quota checks, serialization, termination fences, and output-stream
 ordering outside user-overridable dispatch.

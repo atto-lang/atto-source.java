@@ -1,0 +1,7 @@
+Temporary PRIVATE OresLLM source mirror; DRAFT REVIEW ONLY. Do not merge mirrored code without independent approval.
+Source repo: ores-llm/ores-llm-models.ores
+Source PR: #5
+Source commit: 58bb3fe0229803d4ac66f1fb7c87906fb1462376
+Compiler parent: d5c8abac5dc83a894e4d91ae219aae427434b6f6
+src/llm_models.ores 02398b2d75f904d53a7104ebc95fe807d00d1306
+tests/native-contract-smoke.ores 2a4fb075a40b249303312fa3cac073a0418c5bf8

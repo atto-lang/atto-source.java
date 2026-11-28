@@ -49,7 +49,7 @@ final class MemberSuspensionLanguageTest {
                   }
                 end
                 """));
-        assertTrue(error.getMessage().contains("cannot await while an ordinary borrow is live"),
+        assertTrue(error.getMessage().contains("while an ordinary borrow is live"),
                 error.getMessage());
     }
 
@@ -86,13 +86,13 @@ final class MemberSuspensionLanguageTest {
                   }
                 end
                 """));
-        assertTrue(error.getMessage().contains("cannot await while an ordinary borrow is live"),
+        assertTrue(error.getMessage().contains("while an ordinary borrow is live"),
                 error.getMessage());
     }
 
     @Test
     void declaredFutureMethodsAndFunctionsRemainRegisterAndReturn() throws Exception {
-        assertEquals("42\n43", run("""
+        assertEquals("42\n43\n44\n45", run("""
                 define module app
                   fnc pending(Channel<int> input): Future<int> { return nb readch input; }
                   define class Reader as
@@ -109,6 +109,14 @@ final class MemberSuspensionLanguageTest {
                     val Future<int> second = pending(input);
                     writech input, 43;
                     stdio.println(await second);
+                    // Exercise both completed-analysis cache hits. Futures must
+                    // remain values, not become implicit blocking awaits.
+                    val Future<int> third = reader.pending();
+                    writech input, 44;
+                    stdio.println(await third);
+                    val Future<int> fourth = pending(input);
+                    writech input, 45;
+                    stdio.println(await fourth);
                     return;
                   }
                 end

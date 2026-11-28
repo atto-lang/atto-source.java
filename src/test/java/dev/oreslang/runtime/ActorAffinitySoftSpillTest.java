@@ -18,7 +18,8 @@ final class ActorAffinitySoftSpillTest {
     @Test
     void idleSoftLaneAcceptsOverflowWhilePreferredLaneIsBusy() throws Exception {
         ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
-                2, 4, new int[0], index -> Executors.newSingleThreadExecutor());
+                // Spill semantics in isolation: idle stealing off.
+                2, 4, new int[0], index -> Executors.newSingleThreadExecutor(), false, -1L);
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         CountDownLatch migrated = new CountDownLatch(1);
@@ -63,49 +64,42 @@ final class ActorAffinitySoftSpillTest {
     }
 
     @Test
-    void coldHostNioBootstrapPinsLaneZeroEvenWhenSoftSpillWouldPreferAnotherLane() {
-        // These synthetic lanes deliberately cannot prove readiness for
-        // selector-safe no-bootstrap admission. On a trusted non-reactor
-        // thread, executeHostOnWarmLane must instead bootstrap lane ZERO.
-        // Normal actor DATA dispatch may soft-spill; bootstrap may not.
-        class DeferredExecutor extends AbstractExecutorService {
-            private boolean closed;
-            private final List<Runnable> pending = new java.util.ArrayList<>();
-            @Override public void execute(Runnable command) {
-                if (closed) throw new RejectedExecutionException("closed");
-                pending.add(command);
-            }
-            @Override public void shutdown() { closed = true; }
-            @Override public List<Runnable> shutdownNow() {
-                closed = true;
-                return List.copyOf(pending);
-            }
-            @Override public boolean isShutdown() { return closed; }
-            @Override public boolean isTerminated() { return closed; }
-            @Override public boolean awaitTermination(long timeout, TimeUnit unit) {
-                return closed;
-            }
-        }
-        DeferredExecutor[] lanes = {new DeferredExecutor(), new DeferredExecutor()};
+    void physicalExecutionLaneIsReportedAfterIdleSteal() throws Exception {
         ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
-                2, 4, new int[0], index -> lanes[index]);
+                2, 8, new int[0], ignored -> Executors.newSingleThreadExecutor(),
+                false, TimeUnit.MICROSECONDS.toNanos(10));
+        CountDownLatch homeEntered = new CountDownLatch(1);
+        CountDownLatch releaseHome = new CountDownLatch(1);
+        CountDownLatch stolen = new CountDownLatch(1);
+        AtomicInteger actualLane = new AtomicInteger(-1);
+        AtomicInteger executions = new AtomicInteger();
         try {
-            // A threshold of 4/2=2 makes an ordinary third DATA request
-            // eligible to spill away from lane 0.
-            dispatcher.executeOnLane(0, () -> {});
-            dispatcher.executeOnLane(0, () -> {});
-            assertEquals(2, lanes[0].pending.size());
-            dispatcher.executeHostOnWarmLane(() -> {});
-            assertEquals(3, lanes[0].pending.size(),
-                    "first host NIO bootstrap must target lane zero");
-            assertTrue(lanes[1].pending.isEmpty(),
-                    "cold destination cannot inherit the first bootstrap");
-            assertEquals(0, dispatcher.softSpills(),
-                    "host bootstrap is not a DATA soft-spill");
-            assertEquals(3, dispatcher.queuedTaskCount());
+            dispatcher.executeOnLane(0, () -> {
+                homeEntered.countDown();
+                try {
+                    if (!releaseHome.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("home carrier did not release");
+                    }
+                } catch (InterruptedException interruption) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(homeEntered.await(5, TimeUnit.SECONDS));
+            // Submitted to lane 0, but lane 0 is held. Lane 1 is idle and
+            // must report its REAL execution identity after the steal grace.
+            assertEquals(0, dispatcher.executeOnLane(0, (int executingLane) -> {
+                actualLane.set(executingLane);
+                executions.incrementAndGet();
+                stolen.countDown();
+            }));
+            assertTrue(stolen.await(5, TimeUnit.SECONDS));
+            assertEquals(1, actualLane.get(), "hint must follow the winning carrier");
+            assertEquals(1, executions.get(), "steal and original queue race exactly once");
+            assertEquals(1, dispatcher.steals());
         } finally {
-            assertEquals(3, dispatcher.shutdownNow().size());
-            assertEquals(0, dispatcher.queuedTaskCount());
+            releaseHome.countDown();
+            dispatcher.shutdownNow();
+            assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
 
@@ -195,4 +189,34 @@ final class ActorAffinitySoftSpillTest {
             assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void preferredWorkerLaneIsReusedWhenUncontendedWithoutCpuIdentityPromise() throws Exception {
+        ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
+                2, 4, new int[0], index -> Executors.newSingleThreadExecutor());
+        AtomicReference<Thread> first = new AtomicReference<>();
+        AtomicReference<Thread> resumed = new AtomicReference<>();
+        CountDownLatch firstDone = new CountDownLatch(1);
+        CountDownLatch secondDone = new CountDownLatch(1);
+        try {
+            dispatcher.executeOnLane(0, () -> {
+                first.set(Thread.currentThread());
+                firstDone.countDown();
+            });
+            assertTrue(firstDone.await(5, TimeUnit.SECONDS));
+            dispatcher.executeOnLane(0, () -> {
+                resumed.set(Thread.currentThread());
+                secondDone.countDown();
+            });
+            assertTrue(secondDone.await(5, TimeUnit.SECONDS));
+            assertSame(first.get(), resumed.get(),
+                    "uncontended preferred lane should reuse its carrier worker");
+            assertEquals(0, dispatcher.softSpills());
+            // This asserts a worker-lane preference, NOT that the OS kept a CPU core.
+        } finally {
+            dispatcher.shutdown();
+            assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }

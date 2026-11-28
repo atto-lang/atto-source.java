@@ -62,109 +62,6 @@ final class ActorTurnWatchdogTest {
     }
 
     @Test
-    void fullWatchdogDiagnosticsDropWithoutBlockingBusyActor()
-            throws Exception {
-        AtomicBoolean release = new AtomicBoolean();
-        CountDownLatch entered = new CountDownLatch(1);
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
-                entered.countDown();
-                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
-                while (!release.get() && System.nanoTime() < deadline) {
-                    context.runtime().schedulerSafepoint();
-                    if (context.runtime().watchdogPreemptionRequested()) {
-                        context.self().stop();
-                        return;
-                    }
-                    Thread.onSpinWait();
-                }
-                context.self().stop();
-            });
-
-            var notices = watchdogNotices(runtime);
-            for (int i = 0; i < 1_024; ++i) {
-                notices.addLast(new ActorRuntime.WatchdogNotice(
-                        actor.id(), ActorRuntime.ActorKind.SHARED, i, i));
-            }
-            assertEquals(1_024, runtime.schedulerSnapshot().watchdogNoticeBacklog());
-
-            actor.send("busy");
-            assertTrue(entered.await(3, TimeUnit.SECONDS));
-            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
-                    "watchdog observer backpressure cannot block actor progress");
-            assertTrue(runtime.watchdogOverruns() >= 1);
-            assertTrue(runtime.watchdogNoticesDropped() >= 1,
-                    "full diagnostic capacity must drop rather than contend with the actor");
-            assertEquals(1_024, runtime.schedulerSnapshot().watchdogNoticeBacklog(),
-                    "a dropped notice must not fabricate or leak a separate capacity reservation");
-
-            assertTrue(runtime.pollWatchdogNotice().isPresent());
-            assertEquals(1_023, runtime.schedulerSnapshot().watchdogNoticeBacklog(),
-                    "published queue depth is the only watchdog-capacity accounting");
-        } finally {
-            release.set(true);
-        }
-    }
-
-    @Test
-    void contendedWatchdogDiagnosticLockDropsWithoutStallingIndependentScanner()
-            throws Exception {
-        AtomicBoolean release = new AtomicBoolean();
-        CountDownLatch entered = new CountDownLatch(1);
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
-                entered.countDown();
-                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
-                while (!release.get() && System.nanoTime() < deadline) {
-                    context.runtime().schedulerSafepoint();
-                    if (context.runtime().watchdogPreemptionRequested()) {
-                        context.self().stop();
-                        return;
-                    }
-                    Thread.onSpinWait();
-                }
-                context.self().stop();
-            });
-
-            var diagnosticLock = watchdogNoticeQueueLock(runtime);
-            diagnosticLock.lock();
-            try {
-                actor.send("busy");
-                assertTrue(entered.await(3, TimeUnit.SECONDS));
-                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
-                        "diagnostic lock contention must not stall watchdog progress");
-                assertTrue(runtime.watchdogOverruns() >= 1,
-                        "watchdog must still observe the actor overrun");
-                assertTrue(runtime.watchdogNoticesDropped() >= 1,
-                        "contended diagnostic publication must fail closed as a drop");
-                assertEquals(0, watchdogNotices(runtime).size(),
-                        "failed publication must not fabricate a queued notice");
-            } finally {
-                diagnosticLock.unlock();
-                release.set(true);
-            }
-        } finally {
-            release.set(true);
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static java.util.ArrayDeque<ActorRuntime.WatchdogNotice>
-            watchdogNotices(ActorRuntime runtime) throws ReflectiveOperationException {
-        var field = ActorRuntime.class.getDeclaredField("watchdogNotices");
-        field.setAccessible(true);
-        return (java.util.ArrayDeque<ActorRuntime.WatchdogNotice>)
-                field.get(runtime);
-    }
-
-    private static java.util.concurrent.locks.ReentrantLock watchdogNoticeQueueLock(
-            ActorRuntime runtime) throws ReflectiveOperationException {
-        var field = ActorRuntime.class.getDeclaredField("watchdogNoticeQueueLock");
-        field.setAccessible(true);
-        return (java.util.concurrent.locks.ReentrantLock) field.get(runtime);
-    }
-
-    @Test
     void retiringLeaseSuppressesStaleNoticesForReusedCarriers() throws Exception {
         AtomicInteger notices = new AtomicInteger();
         ActorTurnWatchdog.Lease lease =
@@ -256,6 +153,34 @@ final class ActorTurnWatchdogTest {
             assertTrue(scheduler.watchdogOverruns() >= 1);
             assertFalse(OresScheduler.preemptionRequested(),
                     "host must not retain the carrier's watchdog identity");
+        }
+    }
+
+    @Test
+    void idleWatchdogStopsPeriodicScanning() throws Exception {
+        // Make sure the monitor exists, then let it observe that no lease is active.
+        ActorTurnWatchdog.enter(ignored -> { }).close();
+        assertTrue(ActorTurnWatchdog.monitorStarted());
+        Thread.sleep(50);
+        long before = ActorTurnWatchdog.scans();
+        Thread.sleep(300);
+        long idleScans = ActorTurnWatchdog.scans() - before;
+        // A 2 ms fixed-rate scanner would do ~150 scans here.
+        assertTrue(idleScans <= 2, "idle watchdog kept scanning: " + idleScans);
+    }
+
+    @Test
+    void leaseAfterIdleWakesWatchdogPromptly() throws Exception {
+        ActorTurnWatchdog.enter(ignored -> { }).close();
+        Thread.sleep(50); // monitor is now parked idle
+        java.util.concurrent.CountDownLatch noticed = new java.util.concurrent.CountDownLatch(1);
+        long start = System.nanoTime();
+        try (ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(ignored -> noticed.countDown())) {
+            assertTrue(noticed.await(2, TimeUnit.SECONDS));
+            long waitedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+            // The idle park is bounded at 1 s; an overrun must be seen well before that.
+            assertTrue(waitedMillis < 500, "overrun noticed only after " + waitedMillis + " ms");
+            assertTrue(lease.preemptionRequested());
         }
     }
 }

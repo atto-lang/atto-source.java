@@ -1,0 +1,40 @@
+name: Java actor persistence integration (real ActorRuntime; not .ores compiler guest)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/**'
+      - 'src/test/java/dev/oreslang/runtime/persistence/**'
+      - '.github/workflows/persistence-actor-runtime-integration.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-java-runtime-actor-persistence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Full Java/Truffle runtime compilation and test classpath
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests test-compile
+          mvn -B -ntp dependency:build-classpath -Dmdep.outputFile=target/persistence-dependencies.txt
+      - name: Resolve pinned SQLite JDBC dependencies
+        run: |
+          set -euo pipefail
+          mvn -B -ntp dependency:get -Dartifact=org.xerial:sqlite-jdbc:3.53.4.0
+          mvn -B -ntp dependency:get -Dartifact=org.slf4j:slf4j-api:2.0.17
+      - name: Execute owner-checked actor-private memory persistence and restore
+        run: |
+          set -euo pipefail
+          JDBC="$HOME/.m2/repository/org/xerial/sqlite-jdbc/3.53.4.0/sqlite-jdbc-3.53.4.0.jar"
+          SLF4J="$HOME/.m2/repository/org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar"
+          sha256sum "$JDBC" "$SLF4J"
+          CP="target/classes:target/test-classes:$(cat target/persistence-dependencies.txt):$JDBC:$SLF4J"
+          java -ea -cp "$CP" dev.oreslang.runtime.persistence.ActorRuntimePersistenceIntegrationTestMain
+          java -ea -cp "$CP" dev.oreslang.runtime.persistence.ActorRuntimeCommandPersistenceIntegrationTestMain

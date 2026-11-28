@@ -1,0 +1,7 @@
+pub fnc main(): int {
+  val answer = sync task<int> {
+    do sync task<int> { return 8; };
+    return 42;
+  };
+  return answer;
+}

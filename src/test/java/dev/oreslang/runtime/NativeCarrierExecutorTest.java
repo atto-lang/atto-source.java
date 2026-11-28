@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -13,282 +15,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 final class NativeCarrierExecutorTest {
 
     @Test
-    void awaitTerminationRequiresShutdownEvenIfNoPthreadsEverStarted() throws Exception {
-        String os = System.getProperty("os.name", "")
-                .toLowerCase(java.util.Locale.ROOT);
-        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
-        var pool = new NativeCarrierExecutor(1, 1, 8, "ores-native-await-cold-");
-        try {
-            assertEquals(0, pool.getStartedCarrierCount());
-            assertFalse(pool.isTerminated());
-            assertFalse(pool.awaitTermination(0, TimeUnit.NANOSECONDS),
-                    "cold construction is not an executor termination event");
-        } finally {
-            pool.shutdownNow();
-            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
-            assertTrue(pool.isTerminated());
-        }
-    }
-
-    @Test
-    void shutdownCannotClaimTerminatedWhileNativeBootstrapAdmissionIsOutstanding()
-            throws Exception {
-        String os = System.getProperty("os.name", "")
-                .toLowerCase(java.util.Locale.ROOT);
-        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
-        var pool = new NativeCarrierExecutor(1, 1, 8, "ores-native-bootstrap-barrier-");
-        var field = NativeCarrierExecutor.class.getDeclaredField("bootstrapAdmissions");
-        field.setAccessible(true);
-        var attempts = (java.util.concurrent.atomic.AtomicInteger) field.get(pool);
-        // Force only the publication window, not a fake Java carrier. This
-        // pinpoints the exact false-positive that a pthread attach race
-        // previously introduced to isTerminated/awaitTermination.
-        attempts.incrementAndGet();
-        try {
-            pool.shutdownNow();
-            assertFalse(pool.isTerminated());
-            assertFalse(pool.awaitTermination(20, TimeUnit.MILLISECONDS));
-        } finally {
-            attempts.decrementAndGet();
-            pool.shutdownNow();
-            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
-            assertTrue(pool.isTerminated());
-        }
-    }
-
-    @Test
-    void noBootstrapAdmissionRejectsColdNativePoolAndRunsOnlyAfterPublication()
-            throws Exception {
-        String os = System.getProperty("os.name", "")
-                .toLowerCase(java.util.Locale.ROOT);
-        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
-        for (int round = 0; round < 24; ++round) {
-            var pool = new NativeCarrierExecutor(1, 1, 16, "ores-native-no-bootstrap-");
-            try {
-                assertFalse(pool.readyForNoBootstrapAdmission());
-                assertEquals(0, pool.getStartedCarrierCount());
-                assertThrows(java.util.concurrent.RejectedExecutionException.class,
-                        () -> pool.executeWithoutBootstrap(() -> {}));
-                assertEquals(0, pool.getStartedCarrierCount(),
-                        "rejected no-bootstrap admission must not create pthreads");
-
-                var first = new CountDownLatch(1);
-                pool.execute(first::countDown);
-                assertTrue(first.await(3, TimeUnit.SECONDS));
-                assertTrue(pool.readyForNoBootstrapAdmission());
-                assertEquals(1, pool.getStartedCarrierCount());
-
-                var later = new CountDownLatch(1);
-                pool.executeWithoutBootstrap(later::countDown);
-                assertTrue(later.await(3, TimeUnit.SECONDS));
-                assertEquals(1, pool.getStartedCarrierCount(),
-                        "host completion admission must reuse already published pthread");
-            } finally {
-                pool.shutdownNow();
-                assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
-                assertFalse(pool.readyForNoBootstrapAdmission());
-                assertThrows(java.util.concurrent.RejectedExecutionException.class,
-                        () -> pool.executeWithoutBootstrap(() -> {}));
-            }
-        }
-    }
-
-    @Test
-    void publishedPthreadIsNotEquivalentToCompletedNativeStartBarrier() throws Exception {
-        String os = System.getProperty("os.name", "")
-                .toLowerCase(java.util.Locale.ROOT);
-        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
-        var pool = new NativeCarrierExecutor(1, 1, 8, "ores-native-partial-attach-");
-        try {
-            var active = new CountDownLatch(1);
-            pool.execute(active::countDown);
-            assertTrue(active.await(3, TimeUnit.SECONDS));
-            assertEquals(1, pool.getStartedCarrierCount());
-
-            var ready = NativeCarrierExecutor.class.getDeclaredField("nativeStarted");
-            ready.setAccessible(true);
-            // Simulate the *real* JNI ordering window between the first
-            // carrierThreads[slot] publication and nativeStart() returning.
-            // A census-based warm check would incorrectly admit from the
-            // reactor in this state.
-            ready.setBoolean(pool, false);
-            try {
-                assertEquals(1, pool.getStartedCarrierCount());
-                assertFalse(pool.readyForNoBootstrapAdmission(),
-                        "a published Java carrier identity is not the final bootstrap fence");
-                assertThrows(java.util.concurrent.RejectedExecutionException.class,
-                        () -> pool.executeWithoutBootstrap(() -> {}));
-            } finally {
-                ready.setBoolean(pool, true);
-            }
-            var delivered = new CountDownLatch(1);
-            pool.executeWithoutBootstrap(delivered::countDown);
-            assertTrue(delivered.await(3, TimeUnit.SECONDS));
-        } finally {
-            pool.shutdownNow();
-            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
-        }
-    }
-
-    @Test
-    void noBootstrapAdmissionRejectsContendedFenceWithoutWaiting() throws Exception {
-        String os = System.getProperty("os.name", "")
-                .toLowerCase(java.util.Locale.ROOT);
-        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
-        var pool = new NativeCarrierExecutor(1, 1, 8, "ores-native-admission-lock-");
-        try {
-            var started = new CountDownLatch(1);
-            pool.execute(started::countDown);
-            assertTrue(started.await(3, TimeUnit.SECONDS));
-
-            var admission = NativeCarrierExecutor.class.getDeclaredField("queueAdmission");
-            admission.setAccessible(true);
-            var lock = (java.util.concurrent.locks.ReentrantLock) admission.get(pool);
-            var locked = new CountDownLatch(1);
-            var release = new CountDownLatch(1);
-            Thread blocker = Thread.ofPlatform().start(() -> {
-                lock.lock();
-                try {
-                    locked.countDown();
-                    try { release.await(3, TimeUnit.SECONDS); }
-                    catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                    }
-                } finally {
-                    lock.unlock();
-                }
-            });
-            try {
-                assertTrue(locked.await(2, TimeUnit.SECONDS));
-                long start = System.nanoTime();
-                assertThrows(java.util.concurrent.RejectedExecutionException.class,
-                        () -> pool.executeWithoutBootstrap(() -> {}),
-                        "selector-originated admission cannot wait for the queue-admission lock");
-                assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) < 1000,
-                        "contended admission must reject rather than park a selector");
-                assertEquals(1, pool.getStartedCarrierCount());
-            } finally {
-                release.countDown();
-                blocker.join(3000L);
-                assertFalse(blocker.isAlive());
-            }
-
-            var delivered = new CountDownLatch(1);
-            pool.executeWithoutBootstrap(delivered::countDown);
-            assertTrue(delivered.await(3, TimeUnit.SECONDS));
-        } finally {
-            pool.shutdownNow();
-            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
-        }
-    }
-
-    @Test
-    void shutdownDrainReturnsValueEqualDistinctQueuedTasksExactlyOnce() throws Exception {
-        String os = System.getProperty("os.name", "")
-                .toLowerCase(java.util.Locale.ROOT);
-        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
-        var pool = new NativeCarrierExecutor(1, 1, 4, "ores-native-equal-tasks-");
-        var occupied = new CountDownLatch(1);
-        var release = new CountDownLatch(1);
-        final class EqualRunnable implements Runnable {
-            private final int id;
-            private EqualRunnable(int id) { this.id = id; }
-            @Override public void run() { fail("queued task " + id + " must not run"); }
-            @Override public boolean equals(Object other) {
-                return other instanceof EqualRunnable;
-            }
-            @Override public int hashCode() { return 1; }
-        }
-        try {
-            pool.execute(() -> {
-                occupied.countDown();
-                try { release.await(3, TimeUnit.SECONDS); }
-                catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                }
-            });
-            assertTrue(occupied.await(3, TimeUnit.SECONDS));
-            Runnable first = new EqualRunnable(1);
-            Runnable second = new EqualRunnable(2);
-            pool.executeWithoutBootstrap(first);
-            pool.executeWithoutBootstrap(second);
-            var abandoned = pool.shutdownNow();
-            assertEquals(2, abandoned.size());
-            assertSame(first, abandoned.get(0),
-                    "native shutdown must not confuse value-equal task identities");
-            assertSame(second, abandoned.get(1));
-            assertThrows(java.util.concurrent.RejectedExecutionException.class,
-                    () -> pool.executeWithoutBootstrap(new EqualRunnable(3)));
-        } finally {
-            release.countDown();
-            pool.shutdownNow();
-            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
-        }
-    }
-
-    @Test
-    void noBootstrapAdmissionRespectsNativeReadyQueueSaturation() throws Exception {
-        String os = System.getProperty("os.name", "")
-                .toLowerCase(java.util.Locale.ROOT);
-        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
-        var pool = new NativeCarrierExecutor(1, 1, 1, "ores-native-no-bootstrap-full-");
-        var occupied = new CountDownLatch(1);
-        var release = new CountDownLatch(1);
-        try {
-            pool.execute(() -> {
-                occupied.countDown();
-                try { release.await(5, TimeUnit.SECONDS); }
-                catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                }
-            });
-            assertTrue(occupied.await(3, TimeUnit.SECONDS));
-            assertTrue(pool.readyForNoBootstrapAdmission());
-            var queued = new CountDownLatch(1);
-            pool.executeWithoutBootstrap(queued::countDown);
-            assertThrows(java.util.concurrent.RejectedExecutionException.class,
-                    () -> pool.executeWithoutBootstrap(() -> {}),
-                    "bounded native queue must reject without allocating a second carrier");
-            assertEquals(1, pool.getStartedCarrierCount());
-            release.countDown();
-            assertTrue(queued.await(3, TimeUnit.SECONDS));
-        } finally {
-            release.countDown();
-            pool.shutdownNow();
-            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
-        }
-    }
-
-    @Test
-    void firstAdmissionPublishesEveryNativeCarrierBeforeExecuteReturns() throws Exception {
-        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
-        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
-
-        for (int round = 0; round < 48; round++) {
-            NativeCarrierExecutor executor =
-                    new NativeCarrierExecutor(3, 3, 8, "ores-native-publish-");
-            try {
-                assertEquals(0, executor.getStartedCarrierCount());
-                executor.execute(() -> { });
-                assertEquals(3, executor.getStartedCarrierCount(),
-                        "nativeStart must not return before every pthread publishes its Java carrier identity");
-            } finally {
-                executor.shutdownNow();
-                assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS),
-                        "published native carriers must leave their Java loops during shutdown");
-                assertEquals(0, executor.getStartedCarrierCount());
-            }
-        }
-    }
-
-    @Test
     void manyLogicalTurnsMultiplexOntoOnePthreadCarrier() throws Exception {
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
         try (NativeCarrierExecutor executor =
                      new NativeCarrierExecutor(1, 1, 64, "ores-native-test-")) {
-            assertEquals(0, executor.getStartedCarrierCount(),
-                    "throughput constructor must not create a pthread before runnable work");
             CountDownLatch done = new CountDownLatch(32);
             Set<Long> pthreadIds = ConcurrentHashMap.newKeySet();
 
@@ -305,8 +36,6 @@ final class NativeCarrierExecutorTest {
             }
 
             assertTrue(done.await(5, TimeUnit.SECONDS));
-            assertEquals(1, executor.getStartedCarrierCount(),
-                    "first runnable work should start the bounded native carrier");
             assertEquals(1, pthreadIds.size(),
                     "logical Ores turns must multiplex over the configured pthread carrier");
 
@@ -317,6 +46,176 @@ final class NativeCarrierExecutorTest {
             }
             assertEquals(32L, executor.getCompletedTaskCount(),
                     "completion accounting must publish after each carrier turn returns");
+        }
+    }
+
+    @Test
+    void nativeStartupRegistersEveryCarrierAndShutdownWaitsForPthreadJoins() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        // core=1, max=4: three compensation pthreads are parked, but must
+        // still enter their registered JNI carrier loops before startup returns.
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 4, 32, "ores-native-reaper-proof-" + System.nanoTime() + "-");
+        try {
+            assertEquals(0, executor.registeredCarrierCount());
+            assertFalse(executor.isStarted());
+            assertFalse(executor.awaitTermination(0, TimeUnit.SECONDS),
+                    "awaitTermination must not succeed before shutdown");
+            assertTrue(executor.ensureStarted());
+            assertEquals(4, executor.registeredCarrierCount(),
+                    "all JNI callbacks must be entered before successful startup");
+            assertFalse(executor.isTerminated());
+            assertFalse(executor.awaitTermination(0, TimeUnit.SECONDS));
+        } finally {
+            executor.shutdownNow();
+        }
+
+        assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS),
+                "native reaper must join all four pthreads before reporting termination");
+        assertTrue(executor.isTerminated());
+        assertEquals(0, executor.registeredCarrierCount());
+        assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                executor::ensureStarted);
+    }
+
+    @Test
+    void shutdownWithoutFirstActorNeedsNoNativeReaper() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 2, 16, "ores-native-no-start-" + System.nanoTime() + "-");
+        assertFalse(executor.isStarted());
+        assertFalse(executor.isTerminated());
+        executor.shutdownNow();
+        assertTrue(executor.isTerminated());
+        assertTrue(executor.awaitTermination(0, TimeUnit.SECONDS));
+        assertEquals(0, executor.registeredCarrierCount());
+    }
+
+    @Test
+    void concurrentNativeStartAndShutdownAwaitActualPthreadJoins() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        for (int round = 0; round < 12; round++) {
+            NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                    1, 2, 32, "ores-native-start-close-" + round + "-");
+            var callers = Executors.newFixedThreadPool(2);
+            CountDownLatch go = new CountDownLatch(1);
+            try {
+                var bootstrap = callers.submit(() -> {
+                    go.await();
+                    try {
+                        executor.ensureStarted();
+                    } catch (RejectedExecutionException | IllegalStateException closed) {
+                        // Shutdown may win before the first native pool exists.
+                    }
+                    return null;
+                });
+                var close = callers.submit(() -> {
+                    go.await();
+                    executor.shutdownNow();
+                    return null;
+                });
+                go.countDown();
+                bootstrap.get(15, TimeUnit.SECONDS);
+                close.get(15, TimeUnit.SECONDS);
+
+                assertTrue(executor.isShutdown());
+                assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS),
+                        "physical pthreads must be joined before termination is certified");
+                assertTrue(executor.isTerminated());
+                assertEquals(0, executor.registeredCarrierCount());
+                assertThrows(RejectedExecutionException.class, executor::ensureStarted);
+            } finally {
+                go.countDown();
+                callers.shutdownNow();
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    void runningNoncooperativeTurnPreventsPrematurePthreadJoinReceipt() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 1, 8, "ores-native-inflight-retirement-");
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch leaveTurn = new CountDownLatch(1);
+        try {
+            executor.execute(() -> {
+                entered.countDown();
+                // Simulate an uncooperative guest turn: shutdownNow's
+                // interruption must not be mistaken for actual retirement.
+                while (leaveTurn.getCount() != 0L) {
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(1);
+                    } catch (InterruptedException ignored) {
+                        // Keep the turn active until the explicit test release.
+                    }
+                }
+            });
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(executor.shutdownNow().isEmpty());
+            assertFalse(executor.isTerminated(),
+                    "shutdown request is not a pthread_join receipt");
+            assertFalse(executor.awaitTermination(20, TimeUnit.MILLISECONDS),
+                    "an active native guest turn must fence physical retirement");
+        } finally {
+            leaveTurn.countDown();
+            executor.shutdownNow();
+        }
+        assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        assertTrue(executor.isTerminated());
+        assertEquals(0, executor.registeredCarrierCount());
+    }
+
+    @Test
+    void nativeCarrierSelfShutdownReturnsPendingWithoutSelfInterrupt()
+            throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 1, 8, "ores-native-self-close-");
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch closeAllowed = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(1);
+        var abandoned = new java.util.concurrent.atomic.AtomicReference<java.util.List<Runnable>>();
+        var failed = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var pendingRuns = new java.util.concurrent.atomic.AtomicInteger();
+        Runnable pending = pendingRuns::incrementAndGet;
+        try {
+            executor.execute(() -> {
+                entered.countDown();
+                try {
+                    if (!closeAllowed.await(3, TimeUnit.SECONDS)) {
+                        throw new AssertionError("self-close release was not delivered");
+                    }
+                    abandoned.set(executor.requestShutdownFromCarrier());
+                } catch (Throwable failure) {
+                    failed.set(failure);
+                } finally {
+                    done.countDown();
+                }
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            executor.execute(pending);
+            closeAllowed.countDown();
+            assertTrue(done.await(3, TimeUnit.SECONDS));
+            assertNull(failed.get(), () -> String.valueOf(failed.get()));
+            assertEquals(java.util.List.of(pending), abandoned.get());
+            assertEquals(0, pendingRuns.get());
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(executor.isTerminated());
+        } finally {
+            closeAllowed.countDown();
+            executor.shutdownNow();
         }
     }
 }

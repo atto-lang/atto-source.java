@@ -1,0 +1,4 @@
+fnc bad(): void {
+    const row = ~(...source);
+    return;
+}

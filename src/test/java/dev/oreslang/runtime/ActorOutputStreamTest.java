@@ -50,8 +50,6 @@ final class ActorOutputStreamTest {
                         ref.outputs().next().join();
                 assertFalse(first.done());
                 assertEquals(ref.id(), first.value().actorId());
-                assertEquals(ref.generation(), ref.outputs().generation());
-                assertEquals(ref.generation(), first.value().generation());
                 assertEquals(0L, first.value().sequence());
                 assertEquals(List.of("one"), first.value().value(),
                         "output transport must snapshot before later actor mutation");
@@ -59,7 +57,6 @@ final class ActorOutputStreamTest {
                 GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>> second =
                         ref.outputs().next().join();
                 assertFalse(second.done());
-                assertEquals(ref.generation(), second.value().generation());
                 assertEquals(1L, second.value().sequence());
                 assertEquals("two", second.value().value());
 
@@ -75,6 +72,82 @@ final class ActorOutputStreamTest {
     }
 
     @Test
+    void shutdownSealWinsBufferedOutputReadArbitration() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("buffered-1");
+                        turn.runtime().emitCurrentActorOutput("buffered-2");
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+            ref.send("go");
+            ref.done().join();
+
+            java.lang.reflect.Field lifecycle =
+                    ActorRuntime.class.getDeclaredField("runtimeLifecycleLock");
+            lifecycle.setAccessible(true);
+            Object lifecycleLock = lifecycle.get(runtime);
+
+            java.util.concurrent.atomic.AtomicReference<
+                    GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> observed =
+                            new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> readerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            Thread reader;
+            synchronized (lifecycleLock) {
+                reader = Thread.ofPlatform().daemon(true).start(() -> {
+                    try {
+                        observed.set(ref.outputs().next().get(
+                                5, java.util.concurrent.TimeUnit.SECONDS));
+                    } catch (Throwable failure) {
+                        readerFailure.set(failure);
+                    }
+                });
+
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while (reader.isAlive()
+                        && reader.getState() != Thread.State.BLOCKED
+                        && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(reader.isAlive(),
+                        "buffered output read must reach shutdown arbitration before publishing");
+                assertEquals(Thread.State.BLOCKED, reader.getState(),
+                        "output completion must linearize through runtimeLifecycleLock");
+
+                // Reentrant on this host thread. The waiting output completion
+                // observes the sealed runtime only after this monitor releases.
+                runtime.sealShutdownAdmission();
+            }
+
+            reader.join(java.util.concurrent.TimeUnit.SECONDS.toMillis(5));
+            assertFalse(reader.isAlive());
+            assertNull(readerFailure.get(), String.valueOf(readerFailure.get()));
+            assertNotNull(observed.get());
+            assertTrue(observed.get().done(),
+                    "shutdown winning arbitration must hide the buffered output");
+            assertNull(observed.get().value());
+            assertTrue(ref.outputs().isDone());
+
+            java.lang.reflect.Field streamsField =
+                    ActorRuntime.class.getDeclaredField("actorOutputStreams");
+            streamsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Set<ActorRuntime.ActorOutputStream<?>> streams =
+                    (java.util.Set<ActorRuntime.ActorOutputStream<?>>)
+                            streamsField.get(runtime);
+            assertTrue(streams.contains(ref.outputs()),
+                    "logical shutdown must retain physically buffered output for teardown");
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
     void outputStreamRejectsLiveActorCapabilitiesAtRuntimeBoundary() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
@@ -86,10 +159,11 @@ final class ActorOutputStreamTest {
 
             CompletionException failed =
                     assertThrows(CompletionException.class, () -> ref.done().join());
-            assertInstanceOf(IllegalArgumentException.class, failed.getCause());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failed.getCause());
+            assertInstanceOf(IllegalArgumentException.class, ref.failure().orElseThrow());
             assertTrue(
-                    failed.getCause().getMessage().contains("data values only"),
-                    failed.getCause().getMessage());
+                    ref.failure().orElseThrow().getMessage().contains("data values only"),
+                    ref.failure().orElseThrow().getMessage());
 
             CompletionException outputFailure =
                     assertThrows(
@@ -126,10 +200,11 @@ final class ActorOutputStreamTest {
 
             CompletionException failed =
                     assertThrows(CompletionException.class, () -> ref.done().join());
-            assertInstanceOf(IllegalArgumentException.class, failed.getCause());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failed.getCause());
+            assertInstanceOf(IllegalArgumentException.class, ref.failure().orElseThrow());
             assertTrue(
-                    failed.getCause().getMessage().contains("not Sendable"),
-                    failed.getCause().getMessage());
+                    ref.failure().orElseThrow().getMessage().contains("not Sendable"),
+                    ref.failure().orElseThrow().getMessage());
 
             CompletionException outputFailure =
                     assertThrows(
@@ -138,5 +213,246 @@ final class ActorOutputStreamTest {
             assertSame(failed.getCause(), outputFailure.getCause());
         }
     }
+
+    @Test
+    void immediateOutputPollCopiesFrozenDataAndDistinguishesEmptyFromEof() {
+        for (ActorRuntime.ActorKind kind :
+                List.of(ActorRuntime.ActorKind.PRIVATE, ActorRuntime.ActorKind.SHARED)) {
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                ActorRuntime.ActorRef<String> ref = switch (kind) {
+                    case PRIVATE -> runtime.spawnPrivate(context -> (message, turn) -> {
+                        ArrayList<String> mutable = new ArrayList<>();
+                        mutable.add("before");
+                        turn.runtime().emitCurrentActorOutput(mutable);
+                        mutable.add("after");
+                        turn.runtime().emitCurrentActorOutput("last");
+                        turn.runtime().endCurrentActor();
+                    });
+                    case SHARED -> runtime.spawnShared(context -> (message, turn) -> {
+                        ArrayList<String> mutable = new ArrayList<>();
+                        mutable.add("before");
+                        turn.runtime().emitCurrentActorOutput(mutable);
+                        mutable.add("after");
+                        turn.runtime().emitCurrentActorOutput("last");
+                        turn.runtime().endCurrentActor();
+                    });
+                    case UNTRUSTED -> throw new AssertionError("not part of this case");
+                };
+                ref.ready().join();
+                assertTrue(ref.outputs().tryNext().isEmpty(),
+                        "nonparking poll must not await a future message");
+                assertFalse(ref.outputs().isDone(), "open, empty output is not EOF");
+                ref.send("go");
+                ref.done().join();
+
+                var first = ref.outputs().tryNext().orElseThrow();
+                assertEquals(0L, first.sequence());
+                assertEquals(List.of("before"), first.value(),
+                        "poll must deliver a frozen, owned output snapshot");
+                var second = ref.outputs().tryNext().orElseThrow();
+                assertEquals(1L, second.sequence());
+                assertEquals("last", second.value());
+                assertTrue(ref.outputs().tryNext().isEmpty());
+                assertTrue(ref.outputs().isDone(), "EOF is visible only after drain");
+            }
+        }
+    }
+
+
+    /**
+     * Regression guard for a drained failed channel: tryRead() throws on
+     * exceptional closure, so the output stream must still leave the parent's
+     * retained-stream registry. This is host/JVM lifecycle evidence only.
+     */
+    @Test
+    void failedImmediateOutputPollDoesNotRetainDrainedStream() {
+        for (ActorRuntime.ActorKind kind :
+                List.of(ActorRuntime.ActorKind.PRIVATE, ActorRuntime.ActorKind.SHARED)) {
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                ActorRuntime.ActorRef<String> ref = switch (kind) {
+                    case PRIVATE -> runtime.spawnPrivate(context -> (message, turn) -> {
+                        throw new IllegalStateException("poll-failure-without-output");
+                    });
+                    case SHARED -> runtime.spawnShared(context -> (message, turn) -> {
+                        throw new IllegalStateException("poll-failure-without-output");
+                    });
+                    case UNTRUSTED -> throw new AssertionError("not part of this case");
+                };
+                ref.ready().join();
+                ref.send("go");
+                CompletionException terminated =
+                        assertThrows(CompletionException.class, () -> ref.done().join());
+                var stream = ref.outputs();
+                assertTrue(retainsOutputStream(runtime, stream),
+                        "before observation, the runtime retains the terminated stream");
+
+                CompletionException failed =
+                        assertThrows(CompletionException.class, stream::tryNext);
+                assertSame(terminated.getCause(), failed.getCause(),
+                        "nonparking poll must preserve the actual actor failure");
+                assertTrue(stream.isDone());
+                assertFalse(retainsOutputStream(runtime, stream),
+                        "failed nonparking poll must deregister drained actor output");
+            }
+        }
+    }
+
+    @Test
+    void immediatePollDrainsBufferedOutputBeforeSurfacingActorFailure() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("published-before-error");
+                        throw new IllegalArgumentException("actor-failed-after-publish");
+                    });
+            ref.ready().join();
+            ref.send("go");
+            CompletionException terminated =
+                    assertThrows(CompletionException.class, () -> ref.done().join());
+
+            var stream = ref.outputs();
+            var buffered = stream.tryNext().orElseThrow();
+            assertEquals("published-before-error", buffered.value());
+            assertEquals(0L, buffered.sequence());
+
+            CompletionException failed =
+                    assertThrows(CompletionException.class, stream::tryNext);
+            assertSame(terminated.getCause(), failed.getCause(),
+                    "buffered output must not hide the terminal actor failure");
+            assertTrue(stream.isDone());
+            assertFalse(retainsOutputStream(runtime, stream));
+        }
+    }
+
+    @Test
+    void immediatePollDoesNotStealOutputFromRegisteredAsyncReader() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnPrivate(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("one-output");
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+
+            var pending = ref.outputs().next();
+            assertTrue(ref.outputs().tryNext().isEmpty(),
+                    "poll of an open empty stream must not manufacture output");
+            ref.send("go");
+
+            var committed = pending.join();
+            assertFalse(committed.done());
+            assertEquals("one-output", committed.value().value());
+            assertEquals(0L, committed.value().sequence());
+            ref.done().join();
+
+            assertTrue(ref.outputs().tryNext().isEmpty(),
+                    "the same output must not be delivered a second time");
+            assertTrue(ref.outputs().isDone());
+        }
+    }
+
+    @Test
+    void cancellingPendingOutputReadLeavesNextOutputForRetry() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("retained");
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+            var pending = ref.outputs().next();
+            assertTrue(pending.cancel(false));
+            assertTrue(pending.isCancelled());
+            ref.send("go");
+            var next = ref.outputs().next().join();
+            assertFalse(next.done());
+            assertEquals("retained", next.value().value());
+            assertEquals(0L, next.value().sequence());
+            ref.done().join();
+            assertTrue(ref.outputs().next().join().done());
+        }
+    }
+
+    // Host-only instrumentation for the deterministic arbitration race.
+    // Keep the production BehaviorFactory capture boundary intact; never
+    // send a latch or Thread through the actor mailbox.
+    private static final class OutputArbitrationProbe {
+        static final java.util.concurrent.Semaphore exclusive = new java.util.concurrent.Semaphore(1);
+        static volatile java.util.concurrent.CountDownLatch entered;
+        static volatile java.util.concurrent.CountDownLatch release;
+        static volatile java.util.concurrent.atomic.AtomicReference<Thread> carrier;
+    }
+
+    @Test
+    void cancellationCannotStealCommittedOutputDuringShutdownArbitration() throws Exception {
+        assertTrue(OutputArbitrationProbe.exclusive.tryAcquire(5, java.util.concurrent.TimeUnit.SECONDS));
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var carrier = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        OutputArbitrationProbe.entered = entered;
+        OutputArbitrationProbe.release = release;
+        OutputArbitrationProbe.carrier = carrier;
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        OutputArbitrationProbe.carrier.set(Thread.currentThread());
+                        OutputArbitrationProbe.entered.countDown();
+                        if (!OutputArbitrationProbe.release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                            throw new AssertionError("test release deadline");
+                        turn.runtime().emitCurrentActorOutput("committed");
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+            var pending = ref.outputs().next();
+            ref.send("go");
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            var field = ActorRuntime.class.getDeclaredField("runtimeLifecycleLock");
+            field.setAccessible(true);
+            synchronized (field.get(runtime)) {
+                release.countDown();
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                boolean committedCallback = false;
+                while (System.nanoTime() < deadline) {
+                    var frames = carrier.get().getStackTrace();
+                    if (carrier.get().getState() == Thread.State.BLOCKED
+                            && java.util.Arrays.stream(frames).anyMatch(frame ->
+                                frame.getClassName().contains("ActorRuntime$ActorOutputStream")
+                                    && frame.getMethodName().startsWith("lambda$next$"))) {
+                        committedCallback = true;
+                        break;
+                    }
+                    Thread.onSpinWait();
+                }
+                assertTrue(committedCallback,
+                        "channel receipt must be committed and callback blocked before cancellation");
+                assertFalse(pending.cancel(false),
+                        "cancel must lose to already-committed channel read");
+            }
+            var delivered = pending.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertFalse(delivered.done());
+            assertEquals("committed", delivered.value().value());
+            ref.done().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(ref.outputs().next().get(5, java.util.concurrent.TimeUnit.SECONDS).done());
+        } finally {
+            release.countDown();
+            OutputArbitrationProbe.entered = null;
+            OutputArbitrationProbe.release = null;
+            OutputArbitrationProbe.carrier = null;
+            OutputArbitrationProbe.exclusive.release();
+        }
+    }
+
+    private static boolean retainsOutputStream(
+            ActorRuntime runtime, ActorRuntime.ActorOutputStream<?> stream) {
+        try {
+            var field = ActorRuntime.class.getDeclaredField("actorOutputStreams");
+            field.setAccessible(true);
+            return ((java.util.Set<?>) field.get(runtime)).contains(stream);
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError("cannot inspect output stream retention", failure);
+        }
+    }
+
 
 }

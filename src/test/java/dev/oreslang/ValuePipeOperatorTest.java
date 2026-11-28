@@ -434,4 +434,317 @@ final class ValuePipeOperatorTest {
                 """)));
     }
 
+
+    @Test
+    void inlineLambdaStagesMixWithNamedStagesAndExecuteLeftToRight() throws Exception {
+        String program = """
+                fnc fetch_users(): int {
+                  stdio.println("fetch");
+                  return 4;
+                }
+                fnc validate(int n): int { return n + 1; }
+                fnc filter(int users, int predicate): int { return users * predicate; }
+                fnc sort(int n): int { return n + 2; }
+                fnc take(int sorted, int count): int { return sorted - count; }
+                pub fnc main(): void {
+                  stdio.println(fetch_users()
+                    |> validate
+                    |> |users| -> filter(users, 3)
+                    |> sort
+                    |> |sorted| -> take(sorted, 5));
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(program);
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+        Ast.FunctionDecl main = (Ast.FunctionDecl) parsed.modules().getFirst().declarations().get(5);
+        Ast.CallExpr print = assertInstanceOf(Ast.CallExpr.class,
+                ((Ast.ExprStmt) main.body().getFirst()).expression());
+        Ast.CallExpr lastStage = assertInstanceOf(Ast.CallExpr.class, print.arguments().getFirst());
+        assertEquals(Ast.CallOrigin.VALUE_PIPE_ARGUMENT, lastStage.origin());
+        assertInstanceOf(Ast.LambdaExpr.class, lastStage.callee());
+        assertEquals("sorted", ((Ast.LambdaExpr) lastStage.callee()).parameters().getFirst().name());
+        Ast.CallExpr sort = assertInstanceOf(Ast.CallExpr.class, lastStage.arguments().getFirst());
+        assertEquals("sort", ((Ast.NameExpr) sort.callee()).name());
+        assertInstanceOf(Ast.LambdaExpr.class,
+                ((Ast.CallExpr) sort.arguments().getFirst()).callee());
+
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-inline-lambda.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("fetch", "12"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void inlineLambdaPipelineEvaluatesUpstreamOnceEvenWhenReadTwice() throws Exception {
+        String program = """
+                fnc once(): int {
+                  stdio.println("once");
+                  return 7;
+                }
+                fnc increment(int n): int { return n + 1; }
+                pub fnc main(): void {
+                  stdio.println(once() |> |n| -> n + n |> increment);
+                  stdio.println(2 |> |n| -> (n |> increment) |> increment);
+                  stdio.println(3 |> nlex |n| -> n + 1);
+                  stdio.println(2 |> |n| -> n + 1 |> |m| -> m * 2);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-lambda-once.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("once", "15", "4", "4", "6"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void inlinePipelineLambdaBlocksReturnTypedValuesNotImplicitStatementResults() throws Exception {
+        String program = """
+                fnc increment(int n): int { return n + 1; }
+                pub fnc main(): void {
+                  stdio.println(2 |> |n| -> { return n * 3; } |> increment);
+                  stdio.println(2 |> |n| -> int { return n * 4; } |> increment);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-lambda-block.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("7", "9"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void inlinePipelineLambdaRejectsBadArityInputTypeAndUnknownBlockResult() {
+        IllegalArgumentException empty = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): int { return 2 |> || -> 3; }
+                    """)));
+        assertTrue(empty.getMessage().contains("at least one parameter"), empty::toString);
+
+        IllegalArgumentException many = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): int { return 2 |> |x, y| -> x + y; }
+                    """)));
+        assertTrue(many.getMessage().contains("statically known Tuple"), many::toString);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): string { return 2 |> |string s| -> s; }
+                    """)));
+
+        IllegalArgumentException block = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): int {
+                      return 2 |> |n| -> { val x = n + 1; x; };
+                    }
+                    """)));
+        assertTrue(block.getMessage().contains("explicit result type")
+                || block.getMessage().contains("block lambda"), block::toString);
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc broken(): int { return 2 |> |n| -> n + 1 |> 99; }
+                """));
+    }
+
+    @Test
+    void inlinePipelineLambdaOwnershipRejectsRepeatedMovesAndBorrowEscape() {
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    define class Box as
+                    end
+                    fnc broken(): int {
+                      val Option<Box> owned = None;
+                      val int first = owned |> |box| -> 1;
+                      return owned |> |box| -> 2;
+                    }
+                    """)));
+        assertTrue(moved.getMessage().contains("moved value"), moved::toString);
+
+        IllegalArgumentException borrowed = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): int {
+                      val int num = 3;
+                      return (rt borrow num) |> |n| -> 1;
+                    }
+                    """)));
+        assertTrue(borrowed.getMessage().contains("inline pipeline lambda cannot consume a borrow"),
+                borrowed::toString);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc broken(): &int {
+                      val int num = 3;
+                      return num |> |n| -> rt borrow n;
+                    }
+                    """)));
+    }
+
+    @Test
+    void tuplePipelineDestructuresNamedReturnTypesAndPreservesTupleOutputs() throws Exception {
+        String program = """
+                fnc fetch_users(): Tuple[int, int, int] {
+                  stdio.println("fetch");
+                  return tuple(4, 2, 3);
+                }
+                fnc validate(Tuple[int, int, int] input): Tuple[int, int, int] {
+                  return input;
+                }
+                fnc filter(int users, int active): Tuple[int, int, int] {
+                  return tuple(users + active, 10, 20);
+                }
+                fnc sort(Tuple[int, int, int] values): Tuple[int, int, int] {
+                  return values;
+                }
+                fnc take(int sorted, int count): Tuple[int, int] {
+                  return tuple(sorted, count);
+                }
+                fnc calculate(): Tuple[int, int] {
+                  return fetch_users()
+                    |> validate
+                    |> |users, x, y| -> filter(users, x + y)
+                    |> sort
+                    |> |sorted, a, b| -> take(sorted, a + b);
+                }
+                pub fnc main(): void {
+                  stdio.println(calculate() |> |one, two| -> one + two);
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(program);
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-tuple-return.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("fetch", "39"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void tuplePipelineOneBinderReceivesWholeValueAndMultibinderSplitsOnlyOneLevel()
+            throws Exception {
+        String program = """
+                fnc swapped(): Tuple[int, int] {
+                  return tuple(8, 2)
+                    |> |whole| -> whole
+                    |> |x, y| -> tuple(y, x);
+                }
+                fnc nested(): Tuple[Tuple[int, int], int] {
+                  return tuple(tuple(1, 2), 3)
+                    |> |pair, z| -> tuple(pair, z);
+                }
+                pub fnc main(): void {
+                  stdio.println(swapped() |> |x, y| -> x - y);
+                  stdio.println(nested() |> |pair, z| -> z + 5);
+                  stdio.println(tuple(5, 7) |> |x, y| -> Tuple[int, int] {
+                    return tuple(x + 1, y + 1);
+                  } |> |x, y| -> x + y);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-tuple-nesting.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("-6", "8", "14"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void tuplePipelineRejectsNonTupleShapeArityAndSlotTypeMismatch() {
+        String[] invalid = {
+                // More than one lambda parameter demands a real tuple.
+                "fnc bad(): int { return 3 |> |a, b| -> a + b; }",
+                "fnc bad(): int { return arr[1, 2] |> |a, b| -> a + b; }",
+                "fnc bad(Tuple[int, int] pair): int { return pair |> |a, b, c| -> a; }",
+                "fnc bad(): int { return tuple(1, 2, 3) |> |a, b| -> a; }",
+                // A fixed-array/list shape is not a tuple.
+                "fnc bad(FixedArray[2 of int] values): int { "
+                  + "return values |> |a, b| -> a + b; }",
+                // An explicit parameter type must match its tuple slot.
+                "fnc bad(): int { return tuple(1, 2) "
+                  + "|> |string a, int b| -> b; }",
+                // Tuple return shapes cannot be silently widened.
+                "fnc bad(): Tuple[int, string] { "
+                  + "return tuple(1, 2) |> |a, b| -> tuple(a, b); }",
+                // A function named as a stage still receives a SINGLE tuple.
+                "fnc add(int a, int b): int { return a + b; } "
+                  + "fnc bad(): int { return tuple(1, 2) |> add; }",
+                "fnc bad(): int { return tuple(1, 2) |> || -> 1; }"
+        };
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
+    @Test
+    void tuplePipelineDoesNotDuplicateMoveOnlyElementsAcrossStages() {
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    define class Box as
+                    end
+                    fnc bad(): int {
+                      val Tuple[Box, int] owned = tuple(new Box(), 7);
+                      val int first = owned |> |box, n| -> n;
+                      return owned |> |box, n| -> n;
+                    }
+                    """)));
+        assertTrue(moved.getMessage().contains("moved value"), moved::toString);
+    }
+
+    @Test
+    void tupleLambdaResultCanFeedNextTupleLambdaWithoutErasingScalarTypes()
+            throws Exception {
+        String program = """
+                fnc chained(): Tuple[int, int] {
+                  return tuple(4, 2)
+                    |> |a, b| -> tuple(a + b, b * 2)
+                    |> |x, y| -> tuple(x + 1, y + 1);
+                }
+                fnc identity(Tuple[int] one): Tuple[int] { return one; }
+                fnc first(Tuple[int] one): int { return one[0]; }
+                fnc typed(): Tuple[string, int] { return tuple("Ada", 3); }
+                pub fnc main(): void {
+                  stdio.println(chained() |> |x, y| -> x + y);
+                  stdio.println(tuple(9) |> |whole| -> identity(whole) |> first);
+                  stdio.println(typed() |> |string name, int count| -> count + 1);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-tuple-propagation.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("12", "9", "4"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
 }

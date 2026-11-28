@@ -1,0 +1,94 @@
+// Region lifetime policy in native Atto source. Never mints borrow authority.
+// The runtime must authenticate owner, incarnation, lifetime loan, and task;
+// the compiler must enforce non-escape and exactly-once reverse Drop.
+// No runtime should free backing storage based on caller-supplied counters.
+define module region as
+  // Every counter comes from trusted native/compiled provenance.
+  pub fnc quiescent(int turns, int loans, int continuations,
+                    int io_leases, int producers, int children): bool {
+    if turns < 0 || loans < 0 || continuations < 0 then return false; fi
+    if io_leases < 0 || producers < 0 || children < 0 then return false; fi
+    return turns == 0 && loans == 0 && continuations == 0 &&
+           io_leases == 0 && producers == 0 && children == 0;
+  }
+
+  pub fnc can_reclaim(bool admission_sealed, bool drops_complete,
+                      int turns, int loans, int continuations,
+                      int io_leases, int producers, int children): bool {
+    return admission_sealed && drops_complete &&
+           quiescent(turns, loans, continuations, io_leases, producers, children);
+  }
+
+  pub fnc same_owner(int origin_owner, int origin_incarnation,
+                     int expected_owner, int expected_incarnation): bool {
+    if origin_owner <= 0 || origin_incarnation <= 0 then return false; fi
+    return origin_owner == expected_owner &&
+           origin_incarnation == expected_incarnation;
+  }
+
+  // Epoch recycling is forbidden on wrap, to prevent stale-offset ABA.
+  pub fnc next_epoch(int epoch, int maximum): int {
+    if epoch < 1 || maximum < 2 || epoch >= maximum then return -1; fi
+    return epoch + 1;
+  }
+
+  // A local lifecycle tracker for trusted allocator adapters; it is NOT a
+  // cross-actor capability and cannot replace runtime provenance checks.
+  pub define class Lifecycle as
+    let int owner;
+    let int incarnation;
+    let mut int epoch = 1;
+    let mut bool sealed = false;
+    let mut bool drops_complete = false;
+    let mut bool reclaimed = false;
+
+    pub constructor(int owner_id, int owner_generation) {
+      if owner_id <= 0 || owner_generation <= 0 then
+        rt fail("alloc/region: invalid owner");
+      fi
+      self.owner = owner_id;
+      self.incarnation = owner_generation;
+    }
+
+    pub owner_id(): int { return self.owner; }
+    pub owner_generation(): int { return self.incarnation; }
+    pub region_epoch(): int { return self.epoch; }
+    pub is_retired(): bool { return self.sealed; }
+    pub is_reclaimed(): bool { return self.reclaimed; }
+
+    pub belongs_to(int owner_id, int owner_generation): bool {
+      return same_owner(self.owner, self.incarnation, owner_id, owner_generation);
+    }
+
+    pub request_retire(mut self)(): bool {
+      if self.sealed || self.reclaimed then return false; fi
+      self.sealed = true;
+      return true;
+    }
+
+    // Only the compiler-generated reverse-drop completion path calls this.
+    pub mark_drops_complete(mut self)(): bool {
+      if !self.sealed || self.drops_complete || self.reclaimed then return false; fi
+      self.drops_complete = true;
+      return true;
+    }
+
+    // Policy transition ONLY. Runtime must independently verify physical
+    // quiescence, scrub and release before publishing reclamation.
+    pub try_mark_reclaimed(mut self)(int turns, int loans, int continuations,
+                                     int io_leases, int producers,
+                                     int children): bool {
+      if self.reclaimed then return false; fi
+      if !can_reclaim(self.sealed, self.drops_complete, turns, loans,
+                      continuations, io_leases, producers, children) then
+        return false;
+      fi
+      self.reclaimed = true;
+      return true;
+    }
+  end
+
+  pub fnc lifecycle(int owner_id, int owner_generation): Lifecycle {
+    return new Lifecycle(owner_id, owner_generation);
+  }
+end

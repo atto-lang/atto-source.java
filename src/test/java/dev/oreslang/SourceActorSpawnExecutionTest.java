@@ -6,7 +6,10 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -122,6 +125,20 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void actorPrivateActorRefFieldOwnsChildAndSurvivesReceiveAwait() throws Exception {
+        String program = resource("/parity/actorref-child-capability-v1.ores");
+        assertEquals(
+                "599d1366b5926e5afc567cb7832d4769ebef6c43cd19b8010aeca22fdf83b585",
+                sha256(program),
+                "fixture bytes must match common-source ActorRef child capability v1");
+
+        assertEquals(
+                "42",
+                run(program, "actorref-child-capability-v1.ores"),
+                "actor-private ActorRef fields must retain a structured child capability across await");
+    }
+
+    @Test
     void readyFailsWhenOnStartLeavesActorStateUninitialized() throws Exception {
         String program = """
                 define actor Worker as
@@ -149,7 +166,9 @@ final class SourceActorSpawnExecutionTest {
                         PolyglotException.class,
                         () -> run(program, "source-actor-startup-failure.ores"));
         assertTrue(
-                failure.getMessage().contains("did not initialize field 'required'"),
+                // #1223: the spawning guest sees the cause-free snapshot, not the
+                // child's diagnostic text.
+                failure.getMessage().contains("terminated: FAILURE"),
                 failure.getMessage());
     }
 
@@ -276,7 +295,7 @@ final class SourceActorSpawnExecutionTest {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
                 () -> run(program, "source-await-spawn-failure.ores"));
-        assertTrue(error.getMessage().contains("did not initialize field 'required'"),
+        assertTrue(error.getMessage().contains("terminated: FAILURE"),
                 error.getMessage());
     }
 
@@ -403,6 +422,56 @@ final class SourceActorSpawnExecutionTest {
                     () -> run(source, "source-actor-bad-lifecycle-access.ores"),
                     forbidden + " must not be accepted");
         }
+    }
+
+    @Test
+    void emptyGroupedSpawnUsesRealActorReadinessReceiveAndTermination() throws Exception {
+        String source = """
+                define actor Worker as
+                  let int initialized;
+                  on_start(): void {
+                    self.initialized = 42;
+                    return;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.send(self.initialized);
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = await spawn Worker() OPTIONS;
+                  worker.send("run");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        for (String options : java.util.List.of("", "with {}", "with { schedule {} resources {} init {} }")) {
+            assertEquals("42", run(source.replace("OPTIONS", options), "grouped-spawn-empty.ores"));
+        }
+        for (String options : java.util.List.of(
+                "with { schedule { max_parallelism = 1; } }",
+                "with { resources { heap_size = 1024; } }",
+                "with { init { seed = 42; } }")) {
+            assertThrows(PolyglotException.class,
+                    () -> run(source.replace("OPTIONS", options), "grouped-spawn-nonempty.ores"));
+        }
+    }
+
+    private static String resource(String path) throws Exception {
+        try (InputStream input =
+                SourceActorSpawnExecutionTest.class.getResourceAsStream(path)) {
+            assertNotNull(input, "missing test resource " + path);
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static String sha256(String value) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256")
+                        .digest(value.getBytes(StandardCharsets.UTF_8)));
     }
 
     private static String run(String sourceText, String name) throws Exception {

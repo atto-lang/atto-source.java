@@ -1,0 +1,13 @@
+// Compiler-negative: core/cell policy helpers never revive a moved owner.
+import module cell from "core/cell";
+define class Box as
+  pub let int value = 7;
+end
+pub fnc main(): int {
+  let Box box = new Box();
+  val Box consumed = rt take box;
+  if cell.may_move_owner(0); do
+    return box.value;
+  fi
+  return 0;
+}

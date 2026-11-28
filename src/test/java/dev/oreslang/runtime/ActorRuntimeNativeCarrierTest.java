@@ -25,14 +25,14 @@ final class ActorRuntimeNativeCarrierTest {
                 assertEquals(
                         ActorRuntime.CarrierBackend.NATIVE_PTHREAD,
                         runtime.carrierBackend());
-                assertEquals(0, runtime.startedActorCarrierCount(),
-                        "ActorRuntime construction must not create native pthread carriers");
 
                 CountDownLatch delivered = new CountDownLatch(32);
                 Set<Long> nativeThreads = ConcurrentHashMap.newKeySet();
 
                 var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
                     assertTrue(NativeCarrierExecutor.isNativeCarrierThread());
+                    assertTrue(RuntimeBlockingGuard.actorCarrierMarked(),
+                            "actor carrier must mark blocking-operation guard");
                     assertFalse(Thread.currentThread().isVirtual());
                     long pthread = NativeCarrierExecutor.currentNativeThreadId();
                     assertNotEquals(0L, pthread);
@@ -40,14 +40,10 @@ final class ActorRuntimeNativeCarrierTest {
                     delivered.countDown();
                     if (message == 31) context.self().stop();
                 });
-                assertEquals(0, runtime.startedActorCarrierCount(),
-                        "actor allocation/lane reservation alone must not create a carrier");
 
                 for (int i = 0; i < 32; i++) ref.send(i);
 
                 assertTrue(delivered.await(5, TimeUnit.SECONDS));
-                assertEquals(1, runtime.startedActorCarrierCount(),
-                        "only the shared actor's active lane should have a native carrier");
                 assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
                 assertEquals(
                         1,

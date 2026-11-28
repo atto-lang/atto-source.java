@@ -1,0 +1,12 @@
+// Negative: a private heap-backed Box must not silently become an actor
+// message payload merely because sender and receiver execute the same code.
+define actor Sink as
+  receive(ActorMail<Box<int>> mail): void {
+    self.end();
+    return;
+  }
+end
+
+pub fnc main(): void {
+  return;
+}

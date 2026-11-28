@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>dev.oreslang</groupId>
   <artifactId>oreslang-source</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.0-hotload-SNAPSHOT</version>
   <name>Oreslang</name>
   <description>Oreslang reference implementation on GraalVM Truffle</description>
 
@@ -15,6 +15,8 @@
     <graalvm.version>25.3.4.1</graalvm.version>
     <junit.version>5.11.4</junit.version>
     <tomlj.version>1.1.1</tomlj.version>
+    <sqlite.jdbc.version>3.53.4.0</sqlite.jdbc.version>
+    <jackson.core.version>2.22.4</jackson.core.version>
     <!-- Override with -Pnative-size to favor executable size over throughput. -->
     <native.image.optimization>-O2</native.image.optimization>
     <!-- Native Image uses 32-bit Java references by default in Oreslang.
@@ -23,6 +25,16 @@
   </properties>
 
   <dependencies>
+    <dependency>
+      <groupId>org.xerial</groupId>
+      <artifactId>sqlite-jdbc</artifactId>
+      <version>${sqlite.jdbc.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-core</artifactId>
+      <version>${jackson.core.version}</version>
+    </dependency>
     <dependency>
       <groupId>org.tomlj</groupId>
       <artifactId>tomlj</artifactId>
@@ -68,12 +80,46 @@
     <resources>
       <resource><directory>src/main/resources</directory></resource>
       <resource>
+        <directory>library</directory>
+        <targetPath>dev/oreslang/lib</targetPath>
+        <includes>
+          <include>**/*.atto</include>
+        </includes>
+      </resource>
+      <resource>
         <directory>stdlib</directory>
         <targetPath>dev/oreslang/std</targetPath>
-        <includes><include>**/*.ores</include></includes>
+        <includes>
+          <include>**/*.atto</include>
+          <include>**/*.ores</include>
+        </includes>
+        <excludes><exclude>alloc/**</exclude></excludes>
+      </resource>
+      <!-- Candidate generic allocation units: package the original Atto bytes,
+           not host-language replacements or a second source copy. -->
+      <resource>
+        <directory>stdlib/alloc</directory>
+        <targetPath>dev/oreslang/lib/alloc</targetPath>
+        <includes>
+          <include>box.atto</include>
+          <include>vec.atto</include>
+          <include>string.atto</include>
+        </includes>
+      </resource>
+      <!-- The alloc tier has a separate closed, compiler-owned registry. -->
+      <resource>
+        <directory>stdlib/alloc</directory>
+        <targetPath>dev/oreslang/alloc</targetPath>
+        <includes><include>*.atto</include></includes>
       </resource>
     </resources>
     <plugins>
+      <!-- Avoid newer default plugin metadata resolution varying by runner/mirror. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.3.1</version>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
@@ -167,7 +213,7 @@
                 <configuration>
                   <executable>${env.JAVA_HOME}/bin/native-image</executable>
                   <classpathScope>runtime</classpathScope>
-                  <commandlineArgs>${native.image.optimization} ${native.image.reference.args} -p %classpath --initialize-at-build-time=dev.oreslang.runtime.NativeBuildMode -Dores.native.build-mode=hybrid --shared --features=com.oracle.svm.truffle.PolyglotIsolateGuestFeature -H:APIFunctionPrefix=truffle_isolate_ -H:+CopyLanguageResources -H:+UnlockExperimentalVMOptions -H:-InitializeVM -H:-UnlockExperimentalVMOptions -Dgraalvm.locatorDisabled=true -o ${project.build.directory}/oresvm</commandlineArgs>
+                  <commandlineArgs>${native.image.optimization} ${native.image.reference.args} -p %classpath --initialize-at-build-time=dev.oreslang.runtime.NativeBuildMode '--initialize-at-run-time=dev.oreslang.runtime.TraceParent$RuntimeEntropy' -Dores.native.build-mode=hybrid --shared --features=com.oracle.svm.truffle.PolyglotIsolateGuestFeature -H:APIFunctionPrefix=truffle_isolate_ -H:+CopyLanguageResources -H:+UnlockExperimentalVMOptions -H:-InitializeVM -H:-UnlockExperimentalVMOptions -Dgraalvm.locatorDisabled=true -o ${project.build.directory}/oresvm</commandlineArgs>
                 </configuration>
               </execution>
             </executions>
@@ -192,7 +238,7 @@
                 <configuration>
                   <executable>${env.JAVA_HOME}/bin/native-image</executable>
                   <classpathScope>runtime</classpathScope>
-                  <commandlineArgs>${native.image.optimization} ${native.image.reference.args} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dtruffle.UseFallbackRuntime=true --initialize-at-build-time=dev.oreslang.runtime.NativeBuildMode -Dores.native.build-mode=aot --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-aot</commandlineArgs>
+                  <commandlineArgs>${native.image.optimization} ${native.image.reference.args} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dtruffle.UseFallbackRuntime=true --initialize-at-build-time=dev.oreslang.runtime.NativeBuildMode '--initialize-at-run-time=dev.oreslang.runtime.TraceParent$RuntimeEntropy' -Dores.native.build-mode=aot --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-aot</commandlineArgs>
                 </configuration>
               </execution>
             </executions>
@@ -217,7 +263,7 @@
                 <configuration>
                   <executable>${env.JAVA_HOME}/bin/native-image</executable>
                   <classpathScope>runtime</classpathScope>
-                  <commandlineArgs>${native.image.optimization} ${native.image.reference.args} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true --initialize-at-build-time=dev.oreslang.runtime.NativeBuildMode -Dores.native.build-mode=hybrid --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-hybrid</commandlineArgs>
+                  <commandlineArgs>${native.image.optimization} ${native.image.reference.args} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true --initialize-at-build-time=dev.oreslang.runtime.NativeBuildMode '--initialize-at-run-time=dev.oreslang.runtime.TraceParent$RuntimeEntropy' -Dores.native.build-mode=hybrid --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-hybrid</commandlineArgs>
                 </configuration>
               </execution>
             </executions>

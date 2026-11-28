@@ -411,6 +411,57 @@ final class FutureChannelSelectTest {
         }
     }
 
+    @Test
+    void futureWinnerDetachesLosingWriteBeforeCapacityReopens() throws Exception {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        assertTrue(channel.tryWrite(10));
+        var producer = new OresFuture<Integer>();
+
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.write(channel, 20),
+                ChannelRuntime.await(producer))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+        assertFalse(selected.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+
+        assertTrue(producer.completeFromRuntime(99));
+        var winner = selected.get(5, TimeUnit.SECONDS);
+        assertEquals(1, winner.index());
+        assertEquals(ChannelRuntime.SelectOperation.FUTURE, winner.operation());
+        assertEquals(99, winner.value());
+        assertEquals(0, channel.pendingRegistrations());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+
+        // Reopening capacity after the Future winner must not resurrect the
+        // losing write registration or publish its value.
+        assertEquals(10, channel.tryRead().orElseThrow());
+        assertTrue(channel.tryRead().isEmpty());
+        assertTrue(channel.tryWrite(30));
+        assertEquals(30, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void cancellingPendingWriteSelectionCannotPublishAfterCapacityReopens() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        assertTrue(channel.tryWrite(41));
+
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.write(channel, 42)).selectAsync();
+        assertFalse(selected.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+
+        assertTrue(selected.cancel(false));
+        assertTrue(selected.isCancelled());
+        assertEquals(0, channel.pendingRegistrations());
+
+        assertEquals(41, channel.tryRead().orElseThrow());
+        assertTrue(channel.tryRead().isEmpty(),
+                "cancelled losing write was published after capacity reopened");
+    }
+
+
     private static void awaitStart(CountDownLatch gate) {
         try {
             if (!gate.await(5, TimeUnit.SECONDS)) {

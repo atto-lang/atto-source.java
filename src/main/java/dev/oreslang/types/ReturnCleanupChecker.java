@@ -82,6 +82,10 @@ public final class ReturnCleanupChecker {
         for (Ast.Param param : params) scope.define(param.name());
         State state = new State();
         statements(statements, scope, false, false, true, state);
+        validatePendingReturns(state);
+    }
+
+    private static void validatePendingReturns(State state) {
         // Deferred callbacks are invoked on scope exit, not when registered.
         // Earlier static scans cannot authorize a later-replaced closure.
         for (Binding callback : state.deferredLocalCallbacks) {
@@ -139,8 +143,6 @@ public final class ReturnCleanupChecker {
                     if (returned != null) state.returned.add(returned);
                 }
                 expression(ret.value(), scope, inDefer, state);
-            } else if (stmt instanceof Ast.TerminalEffectStmt effect) {
-                expression(effect.value(), scope, inDefer, state);
             } else if (stmt instanceof Ast.YieldStmt yielded) {
                 expression(yielded.value(), scope, inDefer, state);
             } else if (stmt instanceof Ast.DeferStmt deferred) {
@@ -164,10 +166,23 @@ public final class ReturnCleanupChecker {
                 }
             } else if (stmt instanceof Ast.BlockStmt block) {
                 statements(block.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+                statements(taskScope.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.UsingBorrowStmt loan) {
+                expression(loan.resource(), scope, inDefer, state);
+                Scope scoped = new Scope(scope);
+                scoped.define(loan.binding());
+                statements(loan.body(), scoped, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.UsingTelemetrySpanStmt span) {
+                expression(span.name(), scope, inDefer, state);
+                Scope scoped = new Scope(scope);
+                scoped.define(span.binding());
+                statements(span.body(), scoped, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
-                    expression(branch.condition(), scope, inDefer, state);
-                    statements(branch.body(), scope, inFinally, inDefer, trackReturns, state);
+                    Scope branchScope = new Scope(scope);
+                    expression(branch.condition(), branchScope, inDefer, state);
+                    statements(branch.body(), branchScope, inFinally, inDefer, trackReturns, state);
                 }
                 statements(conditional.elseBody(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.MatchStmt matched) {
@@ -188,7 +203,7 @@ public final class ReturnCleanupChecker {
             } else if (stmt instanceof Ast.TryStmt attempted) {
                 statements(attempted.body(), scope, inFinally, inDefer, trackReturns, state);
                 Scope caught = new Scope(scope);
-                caught.define(attempted.errorName());
+                if (attempted.hasCatch()) caught.define(attempted.errorName());
                 statements(attempted.catchBody(), caught, inFinally, inDefer, trackReturns, state);
                 int enclosingLoops = state.loopsInsideFinally;
                 state.loopsInsideFinally = 0;
@@ -222,6 +237,12 @@ public final class ReturnCleanupChecker {
                 expression(loop.condition(), loopScope, inDefer, state);
                 expression(loop.update(), loopScope, inDefer, state);
                 loopBody(loop.body(), loopScope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.DoWhileStmt loop) {
+                // The post-test loop is still a lexical cleanup/control-flow
+                // region. Its body cannot hide a return from finally, and
+                // its condition may contain deferred effects.
+                loopBody(loop.body(), scope, inFinally, inDefer, trackReturns, state);
+                expression(loop.condition(), scope, inDefer, state);
             } else if (stmt instanceof Ast.LoopStmt loop) {
                 loopBody(loop.body(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.SelectStmt select) {
@@ -260,6 +281,15 @@ public final class ReturnCleanupChecker {
         else if (pattern instanceof Ast.StructuralPattern p && p.binding() != null) scope.define(p.binding());
         else if (pattern instanceof Ast.TuplePattern p) p.elements().forEach(e -> bindPattern(e, scope));
         else if (pattern instanceof Ast.ConstructorPattern p) p.arguments().forEach(e -> bindPattern(e, scope));
+        else if (pattern instanceof Ast.RecordPattern p) p.fields().forEach(f -> bindPattern(f.value(), scope));
+        else if (pattern instanceof Ast.SequencePattern p) {
+            for (Ast.SequenceElement element : p.elements()) {
+                if (element.binding() != null && !element.binding().equals("_")) {
+                    scope.define(element.binding());
+                }
+            }
+            if (p.tail() != null && !p.tail().equals("_")) scope.define(p.tail());
+        }
     }
 
     private static void deferredLambda(Ast.LambdaExpr lambda, Scope definingScope, State state) {
@@ -305,14 +335,45 @@ public final class ReturnCleanupChecker {
             expression(conditional.condition(), scope, inDefer, state);
             expression(conditional.whenTrue(), scope, inDefer, state);
             expression(conditional.whenFalse(), scope, inDefer, state);
+        } else if (expr instanceof Ast.WithExpr with) {
+            expression(with.source(), scope, inDefer, state);
+            with.changes().forEach(field -> expression(field.value(), scope, inDefer, state));
+        } else if (expr instanceof Ast.MatchExpr matched) {
+            expression(matched.subject(), scope, inDefer, state);
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                Scope armScope = new Scope(scope);
+                bindPattern(arm.pattern(), armScope);
+                expression(arm.guard(), armScope, inDefer, state);
+
+                // ARM_RESULT has its own cleanup boundary. Do not add its
+                // returned binding to the enclosing callable's FUNCTION_RETURN
+                // ledger: an outer defer runs only after this match has already
+                // published its result.
+                State armState = new State();
+                statements(arm.loweringBody(), armScope, false, inDefer, true, armState);
+                validatePendingReturns(armState);
+
+                // If the entire MatchExpr itself executes from an enclosing
+                // defer, mutations performed by the selected arm are still
+                // deferred mutations of the enclosing callable and must remain
+                // visible to its pending FUNCTION_RETURN check.
+                if (inDefer) {
+                    state.reboundInDefer.addAll(armState.reboundInDefer);
+                }
+            }
         } else if (expr instanceof Ast.TypeTestExpr test) {
             expression(test.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.PatternTestExpr test) {
             expression(test.value(), scope, inDefer, state);
+        } else if (expr instanceof Ast.CaptureExpr capture) {
+            expression(capture.value(), scope, inDefer, state);
+            scope.define(capture.name(), capture.value() instanceof Ast.LambdaExpr lambda ? lambda : null, scope);
         } else if (expr instanceof Ast.CastExpr cast) {
             expression(cast.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.SpreadExpr spread) {
             expression(spread.expression(), scope, inDefer, state);
+        } else if (expr instanceof Ast.NamedArgExpr named) {
+            expression(named.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.CallExpr call) {
             if (inDefer && call.callee() instanceof Ast.NameExpr name) {
                 Binding target = scope.resolve(name.name());
@@ -346,6 +407,10 @@ public final class ReturnCleanupChecker {
             constructor.arguments().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.AwaitExpr awaited) {
             expression(awaited.expression(), scope, inDefer, state);
+        } else if (expr instanceof Ast.TaskExpr task) {
+            // Return/finally/defer rules inside a Task belong to that Task,
+            // never to the enclosing caller.
+            callable(task.body(), List.of(), scope);
         } else if (expr instanceof Ast.ChannelOpExpr channel) {
             expression(channel.channel(), scope, inDefer, state);
             expression(channel.value(), scope, inDefer, state);
@@ -358,6 +423,14 @@ public final class ReturnCleanupChecker {
             tuple.elements().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.ObjectExpr object) {
             object.fields().forEach(f -> expression(f.value(), scope, inDefer, state));
+        } else if (expr instanceof Ast.LocalAggregateConstructExpr aggregate) {
+            aggregate.positionalArguments().forEach(e -> expression(e, scope, inDefer, state));
+            aggregate.namedArguments().forEach(f -> expression(f.value(), scope, inDefer, state));
+        } else if (expr instanceof Ast.MapLiteralExpr map) {
+            for (Ast.MapLiteralEntry entry : map.entries()) {
+                expression(entry.key(), scope, inDefer, state);
+                expression(entry.value(), scope, inDefer, state);
+            }
         }
     }
 }

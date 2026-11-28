@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresScheduler;
 import org.junit.jupiter.api.Test;
@@ -696,7 +698,9 @@ final class ActorRuntimeTest {
             ActorRuntime.ActorTerminatedException terminated = assertThrows(
                     ActorRuntime.ActorTerminatedException.class,
                     () -> ref.send("after-failure"));
-            assertSame(ref.failure().orElseThrow(), terminated.getCause());
+            // The raw cause stays on the trusted host path (ActorRef.failure());
+            // an exception thrown into another actor never carries it (#1223).
+            assertNull(terminated.getCause());
         }
     }
 
@@ -916,8 +920,11 @@ final class ActorRuntimeTest {
             assertFalse(closer.isAlive(), "runtime close must not wait for user code holding a SyncCell lock");
             assertInstanceOf(IllegalStateException.class, closeFailure.get());
             assertTrue(closeFailure.get().getMessage().contains("full actor termination"));
-            assertTrue(cell.closed());
-            assertEquals(0L, runtime.sharedMemoryBytes());
+            assertTrue(cell.closed(), "logical SyncCell close must publish before physical actor exit");
+            assertThrows(IllegalStateException.class, cell::snapshot,
+                    "closed SyncCell must reject new readers without waiting on the held update lock");
+            assertTrue(runtime.sharedMemoryBytes() > 0L,
+                    "a still-running actor retains the original memory charge until physical retirement");
         } finally {
             release.countDown();
             closer.join(2000);
@@ -925,6 +932,8 @@ final class ActorRuntimeTest {
 
         assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
         assertDoesNotThrow(runtime::close);
+        assertEquals(0L, runtime.sharedMemoryBytes(),
+                "after physical retirement and successful close, the memory budget is released");
     }
 
 
@@ -1623,15 +1632,156 @@ final class ActorRuntimeTest {
             assertEquals(List.of("factory", "message"), captured);
         }
 
-        IsolatePolicy adversarialShared = IsolatePolicy.strictFaas()
-                .withCapabilities(IsolatePolicy.Capability.SHARED_MEMORY);
-        try (ActorRuntime runtime = new ActorRuntime(adversarialShared)) {
+        // The adversarial permission ceiling forbids SHARED_MEMORY outright,
+        // so an adversarial shared-trusted policy cannot even be constructed.
+        IllegalArgumentException ceiling = assertThrows(
+                IllegalArgumentException.class,
+                () -> IsolatePolicy.strictFaas()
+                        .withCapabilities(IsolatePolicy.Capability.SHARED_MEMORY));
+        assertTrue(ceiling.getMessage().contains("adversarial"), ceiling.getMessage());
+
+        // An adversarial runtime still refuses the trusted shared factory.
+        IsolatePolicy adversarial = IsolatePolicy.strictFaas();
+        try (ActorRuntime runtime = new ActorRuntime(adversarial)) {
             SecurityException failure = assertThrows(
                     SecurityException.class,
                     () -> runtime.<String>spawnSharedTrusted(
-                            adversarialShared,
+                            adversarial,
                             factoryContext -> (message, context) -> { }));
-            assertTrue(failure.getMessage().contains("adversarial"));
+            assertTrue(failure.getMessage().contains("adversarial")
+                            || failure.getMessage().contains("SHARED_MEMORY"),
+                    failure.getMessage());
+        }
+    }
+
+
+    @Test
+    void actorStopCancelsOwnedPendingSelectBeforeDoneAndDropsItsContinuation()
+            throws Exception {
+        AtomicReference<ChannelRuntime.Channel<Integer>> channelRef = new AtomicReference<>();
+        AtomicReference<OresFuture<ChannelRuntime.SelectResult>> selectRef = new AtomicReference<>();
+        AtomicInteger callbacks = new AtomicInteger();
+        CountDownLatch armed = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                var channel = new ChannelRuntime.Channel<Integer>(0);
+                var pending = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+
+                channelRef.set(channel);
+                selectRef.set(pending);
+                context.runtime().ownCurrentActorFuture(pending);
+                var target = context.runtime().captureCurrentContinuationTarget();
+                context.runtime().enqueueOnCompletion(
+                        pending,
+                        target,
+                        (selected, failure) -> callbacks.incrementAndGet());
+                armed.countDown();
+            });
+
+            ref.send("arm");
+            assertTrue(armed.await(2, TimeUnit.SECONDS));
+            assertEquals(1, channelRef.get().pendingRegistrations());
+            assertFalse(selectRef.get().isDone());
+
+            ref.stop();
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+
+            assertTrue(selectRef.get().isCancelled(),
+                    "STOP must cancel the actor-owned pending select");
+            assertEquals(0, channelRef.get().pendingRegistrations(),
+                    "DONE must not publish while a select waiter remains registered");
+            assertEquals(0, callbacks.get(),
+                    "a cancelled nb-select continuation must not run after STOP");
+        }
+    }
+
+    @Test
+    void stopVersusSelectWinnerRaceLeavesNoWaiterAndRunsContinuationAtMostOnce()
+            throws Exception {
+        for (int round = 0; round < 32; round++) {
+            AtomicReference<ChannelRuntime.Channel<Integer>> channelRef = new AtomicReference<>();
+            AtomicReference<OresFuture<ChannelRuntime.SelectResult>> selectRef =
+                    new AtomicReference<>();
+            AtomicInteger callbacks = new AtomicInteger();
+            AtomicBoolean wrongActorContext = new AtomicBoolean();
+            CountDownLatch armed = new CountDownLatch(1);
+
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                AtomicReference<ActorRuntime.ActorRef<String>> actorRef = new AtomicReference<>();
+                var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                    var channel = new ChannelRuntime.Channel<Integer>(0);
+                    var pending = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                            .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+                    channelRef.set(channel);
+                    selectRef.set(pending);
+                    context.runtime().ownCurrentActorFuture(pending);
+                    var target = context.runtime().captureCurrentContinuationTarget();
+                    context.runtime().enqueueOnCompletion(
+                            pending,
+                            target,
+                            (selected, failure) -> {
+                                callbacks.incrementAndGet();
+                                if (!ActorRuntime.currentActorId()
+                                        .map(id -> id.equals(actorRef.get().id()))
+                                        .orElse(false)) {
+                                    wrongActorContext.set(true);
+                                }
+                            });
+                    armed.countDown();
+                });
+                actorRef.set(ref);
+
+                ref.send("arm");
+                assertTrue(armed.await(2, TimeUnit.SECONDS), "arm timed out: " + round);
+
+                CountDownLatch race = new CountDownLatch(1);
+                AtomicReference<Throwable> workerFailure = new AtomicReference<>();
+                Thread writer = Thread.startVirtualThread(() -> {
+                    try {
+                        if (!race.await(2, TimeUnit.SECONDS)) {
+                            throw new AssertionError("race gate timed out");
+                        }
+                        channelRef.get().tryWrite(42);
+                    } catch (Throwable failure) {
+                        workerFailure.compareAndSet(null, failure);
+                    }
+                });
+                Thread stopper = Thread.startVirtualThread(() -> {
+                    try {
+                        if (!race.await(2, TimeUnit.SECONDS)) {
+                            throw new AssertionError("race gate timed out");
+                        }
+                        ref.stop();
+                    } catch (Throwable failure) {
+                        workerFailure.compareAndSet(null, failure);
+                    }
+                });
+
+                race.countDown();
+                writer.join(5_000);
+                stopper.join(5_000);
+                assertFalse(writer.isAlive(), "writer stalled: " + round);
+                assertFalse(stopper.isAlive(), "stopper stalled: " + round);
+                if (workerFailure.get() != null) {
+                    throw new AssertionError("stop/select race failed: " + round,
+                            workerFailure.get());
+                }
+                assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS),
+                        "actor did not terminate: " + round);
+                assertTrue(selectRef.get().isDone(), "select remained pending: " + round);
+                assertEquals(0, channelRef.get().pendingRegistrations(),
+                        "retained channel select waiter: " + round);
+                assertTrue(callbacks.get() <= 1,
+                        "select continuation ran more than once: " + round);
+                assertFalse(wrongActorContext.get(),
+                        "select continuation escaped the actor lane: " + round);
+
+                int callbacksAtDone = callbacks.get();
+                assertEquals(callbacksAtDone, callbacks.get(),
+                        "actor DONE is the terminal continuation barrier: " + round);
+            }
         }
     }
 

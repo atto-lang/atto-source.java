@@ -12,22 +12,10 @@ public record ActorMail<Out>(
         ActorRuntime.ActorId actor,
         ActorRuntime.ActorGroupId group,
         long sequence,
-        Out message,
-        long actorGeneration) {
-    public ActorMail(
-            ActorRuntime.ActorId actor,
-            ActorRuntime.ActorGroupId group,
-            long sequence,
-            Out message) {
-        this(actor, group, sequence, message, 0L);
-    }
-
+        Out message) {
     public ActorMail {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(group, "group");
-        if (actorGeneration < 0) {
-            throw new IllegalArgumentException("actorGeneration must be >= 0");
-        }
         if (sequence < 0) {
             throw new IllegalArgumentException("sequence must be >= 0");
         }

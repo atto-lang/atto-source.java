@@ -1,0 +1,77 @@
+name: Atto UDP exact-head Java 25 compiled guest
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/AsyncNioUdp.java'
+      - 'src/main/java/dev/oreslang/runtime/UdpDatagramKernel.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/AttoAsyncUdpGuestTest.java'
+      - 'src/test/java/dev/oreslang/AttoUdpNamespaceImportGuestTest.java'
+      - 'src/test/java/dev/oreslang/runtime/UdpDatagramKernelTest.java'
+      - 'src/test/java/dev/oreslang/runtime/UdpSendAuthorityBoundaryTest.java'
+      - 'stdlib/net/udp_loopback.atto'
+      - 'tests/host/udp/**'
+      - '.github/workflows/atto-udp-jdk25-exact-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-java25-udp-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout authored commit without credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Prove exact Git head and tree without replace-ref substitution
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          export GIT_NO_REPLACE_OBJECTS=1
+          test "$(git --no-replace-objects rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "UDP_COMPILER_HEAD=$EXPECTED_HEAD"
+          echo "UDP_COMPILER_TREE=$(git --no-replace-objects rev-parse HEAD^{tree})"
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Verify JDK and execute exact-source real UDP host harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)" = 25
+          bash tests/host/udp/run.sh
+          echo "UDP_HOST_SHIM_TEST=true"
+          echo "UDP_HOST_SHIM_TEST_IS_NOT_REAL_GUEST=true"
+      - name: Compile Java compiler and run real UDP JUnit/Truffle guest suites
+        shell: bash
+        env:
+          MAVEN_OPTS: '-Xmx3g'
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=UdpDatagramKernelTest,UdpSendAuthorityBoundaryTest,AttoAsyncUdpGuestTest,AttoUdpNamespaceImportGuestTest -DfailIfNoTests=true test
+      - name: Reject missing, skipped or zero-case test reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          for entry in dev.oreslang.runtime.UdpDatagramKernelTest dev.oreslang.runtime.UdpSendAuthorityBoundaryTest dev.oreslang.AttoAsyncUdpGuestTest dev.oreslang.AttoUdpNamespaceImportGuestTest; do
+            report="target/surefire-reports/${entry}.txt"
+            test -s "$report"
+            grep -E '^Tests run: [1-9][0-9]*, Failures: 0, Errors: 0, Skipped: 0' "$report"
+          done
+          echo "UDP_JAVA_REAL_GUEST_SUITE_VERIFIED=true"
+      - name: Upload reports even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-udp-jdk25-junit-reports
+          path: target/surefire-reports/
+          if-no-files-found: warn

@@ -1,0 +1,48 @@
+name: Inverted column Java runtime regression
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/InvertedColumnStore.java'
+      - 'src/test/java/dev/oreslang/runtime/InvertedColumnStoreTest.java'
+      - '.github/workflows/inverted-column-runtime-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  junit-exact-head:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        java-version: ['21', '25']
+    steps:
+      - name: Checkout exact PR head without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Validate exact source commit
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "ATTO_EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
+          git diff --quiet --exit-code
+      - name: Set up selected JDK
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java-version }}
+          cache: maven
+      - name: Execute original InvertedColumnStore JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=InvertedColumnStoreTest test
+          echo ATTO_JUNIT_TEST=EXECUTED

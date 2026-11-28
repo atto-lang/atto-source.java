@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
-          test "$(git hash-object stdlib/compute.ores)" = "a23eb7feff83028225317c246be8ec516856c29f"
+          test "$(git hash-object stdlib/compute.ores)" = "b8e11db5f8701fbceb1e2afd39cad06662d0e8be"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends z3
           z3 -version

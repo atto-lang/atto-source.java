@@ -1,0 +1,38 @@
+name: Maybe and keyword try exact-head Java guest gate
+on:
+  push:
+    branches:
+      - 'integration/**'
+      - 'ci/**'
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/test/java/dev/oreslang/**'
+      - 'tests/fixtures/maybe-result-defer-v1/**'
+      - '.github/workflows/maybe-try-exact-head.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-maybe-try:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout local repository only (no cross-org token)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Record exact commit and Git tree (not a passing test)
+        run: |
+          printf 'commit=%s\n' "$(git rev-parse HEAD)"
+          printf 'tree=%s\n' "$(git rev-parse HEAD^{tree})"
+          git status --porcelain
+      - name: Prepare JDK 25
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Compile and run targeted real Java guest tests
+        run: mvn -B -ntp -Dtest=MaybeAdmissionFenceTest,MaybeTryKeywordIntegrationTest,KeywordTryStatementTest test
+      - name: Full compiler verification
+        run: mvn -B -ntp verify

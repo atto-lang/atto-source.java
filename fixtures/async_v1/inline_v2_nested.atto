@@ -1,0 +1,15 @@
+pub fnc main(): int {
+  val offset = 2;
+  do sync task<void> {
+    val local = 7;
+    do sync task { return; };
+  };
+  val result = sync task<int> {
+    val inner = sync task<int> {
+      val seed = 5 * 8;
+      return seed;
+    };
+    return inner + offset;
+  };
+  return result;
+}

@@ -92,9 +92,9 @@ public final class ActorShardColumns extends ActorShardBacking implements AutoCl
     @Override
     void revokeBackingFromLease() {
         double[] old = storage;
-        storage = null; // detach first: a retained shard cannot pin usable backing
         if (old != null) {
             java.util.Arrays.fill(old, 0.0);
+            storage = null;
         }
     }
 
@@ -117,9 +117,8 @@ public final class ActorShardColumns extends ActorShardBacking implements AutoCl
         // safe; post-close data access is rejected by the lease.
         if (storage != null) {
             reservation.requireOwner();
-            double[] old = storage;
+            java.util.Arrays.fill(storage, 0.0);
             storage = null;
-            java.util.Arrays.fill(old, 0.0);
         }
         reservation.close();
     }

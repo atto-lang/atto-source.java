@@ -1,0 +1,31 @@
+// Canonical Bytes guest type, independent of HTTP and host microbenchmarks.
+fnc workload(): int {
+  let int checksum = 0;
+  for (let int i = 0; i < 1000; i = i + 1) {
+    val first = Bytes.from_string("aé");
+    val second = Bytes.from_string("😀z");
+    val combined = first.concat(second);
+    if combined.to_utf8().unwrap() == "aé😀z"; then
+      checksum = checksum + combined.size();
+    fi
+    first.close();
+    second.close();
+    combined.close();
+  }
+  return checksum;
+}
+
+pub fnc main(): void {
+  // Warm up within the same JVM, not separate short-lived processes.
+  for (let int i = 0; i < 5; i = i + 1) {
+    stdio.println(workload());
+  }
+  for (let int i = 0; i < 7; i = i + 1) {
+    val int start = process.monotonic_ns();
+    val int checksum = workload();
+    val int elapsed = process.monotonic_ns() - start;
+    stdio.println(checksum);
+    stdio.println(elapsed);
+  }
+  return;
+}

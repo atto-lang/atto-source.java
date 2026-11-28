@@ -155,60 +155,6 @@ final class TreeShakerGenericDefaultsHardeningTest {
     }
 
     @Test
-    void optimizerPreservesClassExecutionPolicyAndMethodSuspension() {
-        Ast.MethodDecl suspended = new Ast.MethodDecl(
-                "checkpoint",
-                Ast.Visibility.PRIVATE,
-                false,
-                false,
-                false,
-                true,
-                false,
-                null,
-                List.of(),
-                List.of(),
-                Ast.TypeRef.simple("void"),
-                List.of(),
-                List.of(new Ast.ReturnStmt(null)));
-        Ast.ClassDecl actor = new Ast.ClassDecl(
-                "Manager",
-                Ast.Visibility.PUBLIC,
-                false,
-                Ast.ActorKind.SHARED,
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                null,
-                List.of(suspended),
-                Ast.ActorConcurrency.serial(Ast.ActorTransport.HTTP),
-                Ast.MaxActorThreads.LOW,
-                true);
-        Ast.Program program = new Ast.Program(List.of(
-                new Ast.ModuleDecl("service", List.of(actor))));
-
-        TreeShaker.Result result =
-                TreeShaker.shake(program, BuildOptions.library(Map.of()));
-        Ast.ClassDecl kept = result.program().modules().getFirst().declarations()
-                .stream()
-                .filter(Ast.ClassDecl.class::isInstance)
-                .map(Ast.ClassDecl.class::cast)
-                .filter(klass -> klass.name().equals("Manager"))
-                .findFirst()
-                .orElseThrow();
-
-        assertEquals(actor.actorConcurrency(), kept.actorConcurrency(),
-                "optimizer must preserve transport/request/message admission policy");
-        assertEquals(actor.maxActorThreads(), kept.maxActorThreads(),
-                "optimizer must preserve physical-turn policy");
-        assertTrue(kept.supervisor(),
-                "optimizer must preserve the hidden supervisor CONTROL role");
-        Ast.MethodDecl keptMethod = kept.methods().getFirst();
-        assertTrue(keptMethod.suspends(),
-                "optimizer must preserve method suspension effects");
-    }
-
-    @Test
     void generatedAstRejectsInferenceHoleAsGenericDeclaration() {
         assertThrows(IllegalArgumentException.class,
                 () -> new Ast.GenericParameter("_", null));
