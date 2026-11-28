@@ -7,11 +7,9 @@ import java.util.concurrent.Semaphore;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -55,17 +53,7 @@ public final class OresTimers implements AutoCloseable {
     static int availableGlobalIntervalSlots() {
         return GLOBAL_INTERVAL_SLOTS.availablePermits();
     }
-    private static final ScheduledThreadPoolExecutor CLOCK = createClock();
-
-    private static ScheduledThreadPoolExecutor createClock() {
-        AtomicInteger ids = new AtomicInteger();
-        ScheduledThreadPoolExecutor clock = new ScheduledThreadPoolExecutor(2,
-                runnable -> Thread.ofPlatform().daemon(true)
-                        .name("ores-monotonic-timer-" + ids.incrementAndGet())
-                        .unstarted(runnable));
-        clock.setRemoveOnCancelPolicy(true);
-        return clock;
-    }
+    private static final MonotonicTimerDriver CLOCK = MonotonicTimerDriver.shared();
 
     private final Object admission = new Object();
     private final Set<OresFuture<Void>> active = new HashSet<>();
@@ -82,10 +70,10 @@ public final class OresTimers implements AutoCloseable {
         // Measure from before registration. Never add delayNanos to an
         // arbitrary System.nanoTime() origin: signed overflow is legal there.
         final long startedNs = System.nanoTime();
-        AtomicReference<ScheduledFuture<?>> scheduled = new AtomicReference<>();
+        AtomicLong scheduled = new AtomicLong();
         OresFuture<Void> future = new OresFuture<>(() -> {
-            ScheduledFuture<?> event = scheduled.getAndSet(null);
-            if (event != null) event.cancel(false);
+            long event = scheduled.getAndSet(0);
+            if (event != 0) CLOCK.cancel(event);
         });
         synchronized (admission) {
             if (closed) throw new RejectedExecutionException("timer owner closed");
@@ -108,30 +96,29 @@ public final class OresTimers implements AutoCloseable {
                 });
                 registeredCleanup = true;
                 active.add(future);
-                // A scheduler or platform timer may fire before its nominal
-                // deadline. Recheck the same monotonic origin before settling.
-                // Rescheduling is only an implementation detail of the host
-                // timer; it never executes a guest continuation on CLOCK.
+                // The wheel checks absolute deadlines; retain the current-main
+                // elapsed-time guard even at the driver's saturated horizon.
+                // Publication and cancellation share the admission monitor so
+                // an immediate retry cannot overwrite a newer registration.
                 Runnable expire = new Runnable() {
                     @Override public void run() {
                         IN_CLOCK_THREAD.set(Boolean.TRUE);
                         try {
-                            if (future.isDone()) return;
-                            long elapsedNs = System.nanoTime() - startedNs;
-                            if (elapsedNs < 0 || elapsedNs < delayNanos) {
-                                long remainingNs = elapsedNs < 0
-                                        ? delayNanos : delayNanos - elapsedNs;
-                                try {
-                                    ScheduledFuture<?> retry = CLOCK.schedule(
-                                            this, remainingNs, TimeUnit.NANOSECONDS);
-                                    scheduled.set(retry);
-                                    // Cancellation may win between the first
-                                    // isDone() and storing the new registration.
-                                    if (future.isDone()) retry.cancel(false);
-                                } catch (RejectedExecutionException unavailable) {
-                                    future.failFromRuntime(unavailable);
+                            synchronized (admission) {
+                                if (future.isDone()) return;
+                                long elapsedNs = System.nanoTime() - startedNs;
+                                if (elapsedNs < 0 || elapsedNs < delayNanos) {
+                                    long remainingNs = elapsedNs < 0
+                                            ? delayNanos : delayNanos - elapsedNs;
+                                    try {
+                                        long retry = CLOCK.armAfter(remainingNs, this);
+                                        scheduled.set(retry);
+                                        if (future.isDone()) CLOCK.cancel(retry);
+                                    } catch (RejectedExecutionException unavailable) {
+                                        future.failFromRuntime(unavailable);
+                                    }
+                                    return;
                                 }
-                                return;
                             }
                             future.completeFromRuntime(null);
                         } finally {
@@ -139,10 +126,9 @@ public final class OresTimers implements AutoCloseable {
                         }
                     }
                 };
-                ScheduledFuture<?> first = CLOCK.schedule(
-                        expire, delayNanos, TimeUnit.NANOSECONDS);
+                long first = CLOCK.armAfter(delayNanos, expire);
                 scheduled.set(first);
-                if (future.isDone()) first.cancel(false);
+                if (future.isDone()) CLOCK.cancel(first);
             } catch (RuntimeException | Error failure) {
                 // No Future escapes before this block exits. Settle it to
                 // run the same exact-once cleanup on failed admission.
