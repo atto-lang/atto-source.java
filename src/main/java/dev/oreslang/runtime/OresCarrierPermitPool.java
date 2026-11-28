@@ -111,10 +111,14 @@ final class OresCarrierPermitPool {
             }
         }
 
+        // Construct the handle before committing counters, just as the bulk
+        // reservation path does. If allocation fails (e.g. OutOfMemoryError),
+        // the pool must not retain a permit that no caller can release.
+        Permit permit = new Permit(this, domain);
         held.put(domain, current + 1);
         total++;
         verifyLocked();
-        return new Permit(this, domain);
+        return permit;
     }
 
     /**
@@ -126,21 +130,33 @@ final class OresCarrierPermitPool {
         Objects.requireNonNull(domain, "domain");
         if (count < 1) throw new IllegalArgumentException("permit count must be positive");
 
-        Permit[] permits = new Permit[count];
-        for (int i = 0; i < count; i++) {
-            Permit permit = tryAcquire(domain);
-            if (permit == null) {
-                // Roll back through the same idempotent ownership objects that
-                // successful callers receive. Never repair counters behind live
-                // Permit instances: a future refactor retaining one of those
-                // objects could otherwise double-release unrelated capacity.
-                for (int acquired = i - 1; acquired >= 0; --acquired)
-                    permits[acquired].close();
-                verifyLocked();
-                return null;
-            }
-            permits[i] = permit;
+        // Reject impossible requests before allocating count-sized storage.
+        // This also prevents a hostile Integer.MAX_VALUE request from turning
+        // bounded admission into an OutOfMemoryError.
+        if (count > maximum - total) {
+            deniedCapacity = saturatingIncrement(deniedCapacity);
+            return null;
         }
+
+        // Every successful batch gives this domain at least one permit.
+        // Preserve all other domains' unmet protected reserves in one check.
+        // No speculative permits or accounting state are mutated on denial.
+        int unmetOtherReserves = 0;
+        for (Domain other : Domain.values()) {
+            if (other != domain && held.get(other) == 0) unmetOtherReserves++;
+        }
+        if (maximum - (total + count) < unmetOtherReserves) {
+            deniedReserveProtection = saturatingIncrement(deniedReserveProtection);
+            return null;
+        }
+
+        // Construct every handle before committing counters. Even allocation
+        // failure leaves the synchronized pool unchanged and leak-free.
+        Permit[] permits = new Permit[count];
+        for (int i = 0; i < count; i++) permits[i] = new Permit(this, domain);
+        held.put(domain, held.get(domain) + count);
+        total += count;
+        verifyLocked();
         return permits;
     }
 

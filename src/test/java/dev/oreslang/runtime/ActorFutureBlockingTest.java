@@ -89,4 +89,109 @@ final class ActorFutureBlockingTest {
             assertTrue(actor.isAlive());
         }
     }
+
+    @Test
+    void blockingFutureBridgesRejectPendingReadsInsideSchedulerTurns() throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                try {
+                    assertTrue(resume.initial());
+                    assertSame(scheduler, OresScheduler.current());
+                    assertThrows(IllegalStateException.class, pending::get);
+                    assertThrows(IllegalStateException.class,
+                            () -> pending.get(30, TimeUnit.SECONDS));
+                    assertThrows(IllegalStateException.class, pending::join);
+                    assertThrows(IllegalStateException.class,
+                            () -> AsyncRuntime.await(pending));
+                    assertEquals(0, pending.pendingRuntimeWaiterCount(),
+                            "rejected root-scheduler blocking reads must not retain waiters");
+                    return OresScheduler.done(42);
+                } catch (Throwable thrown) {
+                    failure.compareAndSet(null, thrown);
+                    return OresScheduler.done(-1);
+                }
+            });
+
+            try {
+                assertEquals(42, task.get(2, TimeUnit.SECONDS),
+                        "single scheduler carrier must not park on a pending Future");
+                assertNull(failure.get());
+            } finally {
+                // A regression may have parked the only carrier; release it so
+                // test teardown cannot itself hang indefinitely.
+                pending.completeFromRuntime(7);
+            }
+        }
+    }
+
+    @Test
+    void settledFutureReadsRemainAvailableInsideSchedulerTurns() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                OresFuture<Integer> settled = OresFuture.completed(43);
+                assertEquals(43, settled.get());
+                assertEquals(43, settled.get(1, TimeUnit.SECONDS));
+                assertEquals(43, settled.join());
+                assertEquals(43, AsyncRuntime.await(settled));
+                return OresScheduler.done(44);
+            });
+            assertEquals(44, task.get(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void cancellationRevocationInProgressCannotResumeSchedulerTurn() throws Exception {
+        CountDownLatch revokerEntered = new CountDownLatch(1);
+        CountDownLatch releaseRevoker = new CountDownLatch(1);
+        OresFuture<Integer> cancelling = new OresFuture<>(
+                () -> true,
+                () -> {
+                    revokerEntered.countDown();
+                    try {
+                        if (!releaseRevoker.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("cancel revoker release timed out");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                });
+
+        AtomicReference<Throwable> cancelFailure = new AtomicReference<>();
+        Thread canceller = Thread.startVirtualThread(() -> {
+            try {
+                assertTrue(cancelling.cancel(false));
+            } catch (Throwable failure) {
+                cancelFailure.set(failure);
+            }
+        });
+        assertTrue(revokerEntered.await(5, TimeUnit.SECONDS));
+        assertTrue(cancelling.isCancelled(),
+                "cancellation CAS is visible before revocation completes");
+
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                assertThrows(IllegalStateException.class, cancelling::get);
+                assertThrows(IllegalStateException.class,
+                        () -> cancelling.get(30, TimeUnit.SECONDS));
+                assertThrows(IllegalStateException.class, cancelling::join);
+                assertThrows(IllegalStateException.class,
+                        () -> AsyncRuntime.await(cancelling));
+                assertThrows(TimeoutException.class,
+                        () -> cancelling.get(0, TimeUnit.NANOSECONDS));
+                return OresScheduler.done(1);
+            });
+            assertEquals(1, task.get(2, TimeUnit.SECONDS),
+                    "cancellation revocation must not park the scheduler carrier");
+        } finally {
+            releaseRevoker.countDown();
+            canceller.join(5_000);
+        }
+        assertFalse(canceller.isAlive());
+        assertNull(cancelFailure.get());
+        assertThrows(CancellationException.class, cancelling::join);
+    }
+
 }
