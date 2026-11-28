@@ -1,0 +1,14 @@
+import module cpu_budget_policy from "atto.std/cpu_budget_policy.atto";
+pub routine main(): void {
+  stdio.println(cpu_budget_policy.clamp_processors(8, 4, 6));
+  stdio.println(cpu_budget_policy.clamp_processors(0, -1, 0));
+  stdio.println(cpu_budget_policy.quota_ceil(150000, 100000));
+  stdio.println(cpu_budget_policy.quota_ceil(200000, 100000));
+  stdio.println(cpu_budget_policy.quota_ceil(-1, 100));
+  stdio.println(cpu_budget_policy.private_workers(8));
+  stdio.println(cpu_budget_policy.shared_workers(8));
+  stdio.println(cpu_budget_policy.untrusted_workers(8));
+  stdio.println(cpu_budget_policy.private_workers(2));
+  stdio.println(cpu_budget_policy.shared_workers(2));
+  return;
+}

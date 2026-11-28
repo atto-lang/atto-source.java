@@ -1,0 +1,6 @@
+// A trapped Result can also contain Error, which the narrower type cannot represent.
+fnc result_value(): Result<int, String> { return Err("keep-payload"); }
+fnc invalid(): void {
+  val Result<int, String> discarded = trap result_value();
+  return;
+}

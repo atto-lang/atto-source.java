@@ -1,0 +1,6 @@
+pub suspends fnc main(): void {
+  val group = actor.group("typed");
+  val topic = group.topic<String>("events", "reliable", 4);
+  await topic.publish(42);
+  return;
+}

@@ -735,4 +735,34 @@ final class ReturnedDestructuringTest {
         assertTrue(text.contains("true"));
     }
 
+    @Test
+    void borrowedScalarArraySnapshotExecutesWithIndependentRest() throws Exception {
+        String program = """
+                define class Holder as
+                  pub val Array<int> values;
+                end
+                fnc snapshot(borrow Holder holder): Array<int> {
+                  const [first, ...rest] = holder.values;
+                  return rest;
+                }
+                pub fnc main(): void {
+                  val Holder holder = new Holder([10, 20, 30]);
+                  let mut Array<int> tail = snapshot(rt borrow holder);
+                  tail[0] = 99;
+                  stdio.println(tail[0]);
+                  stdio.println(holder.values[1]);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "borrowed-snapshot.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        org.junit.jupiter.api.Assertions.assertEquals(
+                java.util.List.of("99", "20"),
+                output.toString(StandardCharsets.UTF_8).lines().map(String::strip)
+                        .filter(line -> !line.isEmpty()).toList());
+    }
 }

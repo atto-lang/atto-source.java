@@ -33,12 +33,63 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests package
           mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Execute exact-head borrow and Task ownership JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Tests execute against the exact checked-out PR head verified above.
+          # Including the real guest test is mandatory: host-only trait tests
+          # cannot independently establish .atto source behavior.
+          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true \
+            -Dtest=AutoTraitRulesTest,TaskCaptureAdmissionIdentityTest,TaskBorrowBoundaryV2Test,LogicalBorrowCompilerGuestTest \
+            test
+      - name: Fail closed unless each required JUnit suite actually executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Surefire can match a subset of a comma-separated -Dtest filter.
+          # Exact file existence and nonzero executed tests per suite prevent
+          # a missing/misnamed required class from silently counting as green.
+          for suite in \
+            dev.oreslang.types.AutoTraitRulesTest \
+            dev.oreslang.TaskCaptureAdmissionIdentityTest \
+            dev.oreslang.TaskBorrowBoundaryV2Test \
+            dev.oreslang.LogicalBorrowCompilerGuestTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report" || { echo "MISSING_REQUIRED_JUNIT_REPORT $suite" >&2; exit 1; }
+            grep -Eq 'tests="[1-9][0-9]*"' "$report" || {
+              echo "NO_EXECUTED_JUNIT_TESTS $suite" >&2; exit 1;
+            }
+            if grep -Eq '(<skipped|<failure|<error|skipped="[1-9]|failures="[1-9]|errors="[1-9])' "$report"; then
+              echo "UNACCEPTED_JUNIT_SKIP_OR_FAILURE $suite" >&2
+              exit 1
+            fi
+            echo "EXACT_HEAD_JUNIT_SUITE_PASS $suite"
+          done
       - name: Static shell syntax and Bash expansion admission
         shell: bash
         run: |
           set -euo pipefail
           bash -n scripts/test-source-task-v1-java.sh
+          bash -n scripts/test-task-record-capture-v1-java.sh
           if grep -Fq '\${' scripts/test-source-task-v1-java.sh; then echo 'Escaped Bash expansion detected' >&2; exit 1; fi
+          if grep -Fq '\${' scripts/test-task-record-capture-v1-java.sh; then echo 'Escaped Bash expansion detected' >&2; exit 1; fi
+      - name: Compiler-owned Task record capture JUnit (including actual scalar guest)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=TaskRecordCaptureGuestV1Test -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.TaskRecordCaptureGuestV1Test.xml
+      - name: Exact-head readonly record Task semantic gate
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/test-task-record-capture-v1-java.sh | tee target/task-record-capture-v1.log
+          test "$(grep -c '^JAVA_TASK_RECORD_COMPILER_ACCEPT|' target/task-record-capture-v1.log)" = 2
+          test "$(grep -c '^JAVA_TASK_RECORD_GUEST_PASS|' target/task-record-capture-v1.log)" = 1
+          test "$(grep -c '^JAVA_TASK_RECORD_COMPILER_REJECT|' target/task-record-capture-v1.log)" = 1
       - name: Execute actual .atto source guest (backend-specific slice only)
         shell: bash
         env:
@@ -52,5 +103,8 @@ jobs:
         if: always()
         with:
           name: task-v1-java-source-local
-          path: target/task-v1-guest.log
+          path: |
+            target/task-v1-guest.log
+            target/task-record-capture-v1.log
+            target/surefire-reports/TEST-dev.oreslang.TaskRecordCaptureGuestV1Test.xml
           if-no-files-found: ignore

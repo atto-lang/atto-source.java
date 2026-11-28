@@ -1,0 +1,78 @@
+name: Deterministic actor dispatch — real JVM runtime turns
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/DeterministicActorDispatchTest.java'
+      - 'contracts/v1/DETERMINISTIC_ACTOR_DISPATCH_V1.md'
+      - '.github/workflows/deterministic-actor-dispatch-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jvm-host-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout PR commit without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact commit and inspect source/test object identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+          git hash-object src/main/java/dev/oreslang/runtime/ActorRuntime.java
+          git hash-object src/test/java/dev/oreslang/runtime/DeterministicActorDispatchTest.java
+      - name: Configure pinned GraalVM 25 JDK
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Execute real ActorRuntime mailbox-turn tests
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=10s 900s mvn -B -ntp \
+            -Dtest=DeterministicActorDispatchTest \
+            -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+      - name: Require five executed JVM host-runtime tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/CheckActorReceipt.java" <<'JAVA'
+          import javax.xml.XMLConstants;
+          import javax.xml.parsers.DocumentBuilderFactory;
+          import java.nio.file.Path;
+          class CheckActorReceipt {
+              public static void main(String[] args) throws Exception {
+                  var f = DocumentBuilderFactory.newInstance();
+                  f.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+                  f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+                  f.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+                  f.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+                  var root = f.newDocumentBuilder().parse(Path.of(args[0]).toFile()).getDocumentElement();
+                  if (!root.getTagName().equals("testsuite")
+                      || !root.getAttribute("tests").equals("5")
+                      || !root.getAttribute("failures").equals("0")
+                      || !root.getAttribute("errors").equals("0")
+                      || !root.getAttribute("skipped").equals("0")) {
+                      throw new IllegalStateException("INCOMPLETE_JVM_TEST_RECEIPT");
+                  }
+                  System.out.println("FIVE_REAL_ACTOR_RUNTIME_JVM_TESTS_PASSED (HOST ONLY)");
+                  System.out.println("COMPILED_ATTO_GUEST_NOT_EXECUTED");
+                  System.out.println("GRAALVM_NATIVE_IMAGE_NOT_EXECUTED");
+              }
+          }
+          JAVA
+          java "$RUNNER_TEMP/CheckActorReceipt.java" target/surefire-reports/TEST-dev.oreslang.runtime.DeterministicActorDispatchTest.xml

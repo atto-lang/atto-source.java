@@ -1,0 +1,28 @@
+name: Runner evidence collector tests
+
+on:
+  pull_request:
+    paths:
+      - 'tools/ci/runner_evidence.py'
+      - 'tools/ci/test_runner_evidence.py'
+      - '.github/workflows/runner-evidence-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-evidence-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: runner-evidence-unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Run collector unit tests
+        working-directory: tools/ci
+        run: python3 -m unittest -v test_runner_evidence.py

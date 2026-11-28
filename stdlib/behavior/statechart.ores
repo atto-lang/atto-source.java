@@ -1,0 +1,118 @@
+// Symbol-keyed deterministic Statechart V0, written in Oreslang.
+// Hosted alloc/userland facade: NOT freestanding core and not an actor.
+// No hidden scheduler, clock, reflection, dynamic registration or I/O.
+//
+// V0 intentionally supports one active leaf, acyclic parents and unique
+// (source,event) rules. Unhandled events stutter. Arrays remain caller-owned;
+// therefore validate on EVERY step: a constructor cannot prove deep immutability.
+// Future compiled immutable Region stores can validate once under safe loans.
+
+pub define class Chart as
+  pub val Array<Symbol> states;
+  pub val Array<int> parent_index;
+  pub val Array<Symbol> sources;
+  pub val Array<Symbol> event_keys;
+  pub val Array<Symbol> targets;
+end
+
+fnc index_of(Array<Symbol> states, Symbol target): int {
+  for (let i = 0; i < states.size; i = i + 1) {
+    if states.get(i) eq target {
+      return i;
+    } fi
+  }
+  return -1;
+}
+
+pub fnc validate(&Chart chart): void {
+  val int count = chart.states.size;
+  val int edges = chart.sources.size;
+
+  if count < 1 | count > 256 {
+    rt fail("Statechart: invalid state count");
+  } fi
+  if chart.parent_index.size != count {
+    rt fail("Statechart: parent/state cardinality mismatch");
+  } fi
+  if edges > 1024 | chart.event_keys.size != edges | chart.targets.size != edges {
+    rt fail("Statechart: invalid transition tables");
+  } fi
+
+  for (let i = 0; i < count; i = i + 1) {
+    for (let j = 0; j < i; j = j + 1) {
+      if chart.states.get(i) eq chart.states.get(j) {
+        rt fail("Statechart: duplicate state Symbol");
+      } fi
+    }
+
+    // Every ancestor chain terminates at -1 in at most count hops.
+    let cursor = i;
+    let hops = 0;
+    while cursor != -1 {
+      if cursor < 0 | cursor >= count {
+        rt fail("Statechart: unknown parent index");
+      } fi
+      cursor = chart.parent_index.get(cursor);
+      hops = hops + 1;
+      if hops > count {
+        rt fail("Statechart: cyclic parent hierarchy");
+      } fi
+    }
+  }
+
+  for (let i = 0; i < edges; i = i + 1) {
+    if index_of(chart.states, chart.sources.get(i)) == -1 |
+       index_of(chart.states, chart.targets.get(i)) == -1 {
+      rt fail("Statechart: unknown source or target");
+    } fi
+    for (let j = 0; j < i; j = j + 1) {
+      if chart.sources.get(i) eq chart.sources.get(j) {
+        if chart.event_keys.get(i) eq chart.event_keys.get(j) {
+          rt fail("Statechart: duplicate state/event transition");
+        } fi
+      } fi
+    }
+  }
+  return;
+}
+
+pub fnc checked(
+  Array<Symbol> states,
+  Array<int> parent_index,
+  Array<Symbol> sources,
+  Array<Symbol> event_keys,
+  Array<Symbol> targets
+): Chart {
+  val Chart chart = new Chart(states, parent_index, sources, event_keys, targets);
+  validate(&chart);
+  return chart;
+}
+
+pub fnc step(&Chart chart, Symbol active, Symbol event): Symbol {
+  validate(&chart); // fail closed even when raw arrays are mutated after checked()
+  // Resolve active state without consuming this move-sensitive Symbol: it
+  // must remain available for the stutter result on an unhandled event.
+  let cursor = -1;
+  for (let i = 0; i < chart.states.size; i = i + 1) {
+    if chart.states.get(i) eq active {
+      cursor = i;
+      break;
+    } fi
+  }
+  if cursor == -1 {
+    rt fail("Statechart: active state is undeclared");
+  } fi
+
+  while cursor != -1 {
+    val Symbol candidate = chart.states.get(cursor);
+    for (let i = 0; i < chart.sources.size; i = i + 1) {
+      if chart.sources.get(i) eq candidate {
+        if chart.event_keys.get(i) eq event {
+          return chart.targets.get(i);
+        } fi
+      } fi
+    }
+    cursor = chart.parent_index.get(cursor);
+  }
+  return active;
+}

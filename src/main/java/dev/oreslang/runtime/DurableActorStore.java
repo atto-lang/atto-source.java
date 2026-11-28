@@ -3,12 +3,10 @@ package dev.oreslang.runtime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
- * Experimental persistence port for the checked scalar actor bridge only.
- * General guest durable actor lowering is not installed. Providers must
- * provide atomic fencing,
+ * Experimental persistence port for future durable actors. No implementation is
+ * installed by ActorRuntime yet. Storage drivers must provide atomic fencing,
  * inbox consumption, state CAS and outbox creation in ONE transaction.
  * Events and durable timers are deliberately outside this v0 API until their
  * typed payload and cancellation semantics are specified.
@@ -113,40 +111,6 @@ public interface DurableActorStore {
 
     /** Idempotent durable ingestion. Must work even while the actor is dormant. */
     boolean enqueue(Address address, Inbound message);
-
-    /**
-     * Actor-incarnation admission: verify the current activation fence and
-     * insert the message in one storage transaction. External callers should
-     * use enqueue(...) instead; they cannot claim ownership of an actor epoch.
-     * Unimplemented providers MUST fail closed, never silently use enqueue.
-     */
-    default boolean enqueueFenced(Address address, long epoch, Inbound message) {
-        throw new UnsupportedOperationException("fenced durable enqueue is unsupported");
-    }
-
-    /**
-     * Linearization check for an actor-private read: validate the active epoch
-     * and exact local snapshot version against the durable owner. A valid read
-     * may linearize at this check, provided the actor turn holds its own state
-     * lease until it copies the scalar result. Never fall back to local-only
-     * reads for adapters lacking this operation.
-     */
-    default void requireActive(Address address, long epoch, long stateVersion) {
-        throw new UnsupportedOperationException("durable activation read fence is unsupported");
-    }
-
-    /**
-     * Lookup the ORIGINAL committed receipt for the exact original inbound
-     * bytes, under the current epoch fence. Empty means no committed result
-     * exists yet (including an admitted-but-unprocessed delivery).
-     * A conflicting reused ID must throw rather than return another result.
-     * Providers without atomic receipt storage MUST fail closed.
-     */
-    default Optional<Snapshot> committedDelivery(
-            Address address, long epoch, Inbound original) {
-        throw new UnsupportedOperationException(
-                "transactional durable command receipts are unsupported");
-    }
 
     /**
      * Consume delivery ID, write the next snapshot, and insert outbox intents

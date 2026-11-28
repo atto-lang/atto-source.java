@@ -1,0 +1,3 @@
+// Executable parity target is contracts/v1/fixtures/actor-pubsub-v1.ores.
+// ActorGroup is non-generic; Topic<T> and Subscription<T> carry payload typing.
+// This proposal file intentionally points at the executable contract fixture.

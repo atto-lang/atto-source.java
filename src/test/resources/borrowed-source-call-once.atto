@@ -1,0 +1,32 @@
+// Isolated native execution regression for Java source-task calls.
+// No Zorde imports, no noncanonical list constructors, and no host shims.
+define class Cell as
+  pub val int value;
+end
+
+fnc borrowed_equal(borrow Cell left, borrow Cell right): bool {
+  // Loop forces the resumable source-task evaluation path.
+  let int i = 0;
+  loop do
+    if i >= 1 then break; fi
+    i = i + 1;
+  done
+  return left.value == right.value;
+}
+
+fnc delegated(borrow Cell left, borrow Cell right): bool {
+  return borrowed_equal(left, right);
+}
+
+pub fnc main(): void {
+  val Cell a = new Cell(17);
+  val Cell b = new Cell(18);
+  val bool different = borrowed_equal(rt borrow a, rt borrow b);
+  val bool same = borrowed_equal(rt borrow a, rt borrow a);
+  val bool via_delegate = delegated(rt borrow a, rt borrow a);
+  if different || !same || !via_delegate then
+    stdio.stdout.println("borrowed call result incorrect");
+    return;
+  fi
+  stdio.stdout.println("native borrowed call delivery passed");
+}

@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.function.BooleanSupplier;
 
 public final class SharedReactorPoolCheck {
@@ -166,14 +167,18 @@ public final class SharedReactorPoolCheck {
         try (Io io = new Io(); SharedReactorPool pool = new SharedReactorPool(io, 2, 2)) {
             io.pool = pool;
             AtomicInteger accepted = new AtomicInteger();
-            AtomicInteger finished = new AtomicInteger();
+            AtomicIntegerArray executions = new AtomicIntegerArray(4001);
+            boolean[] admitted = new boolean[4000];
             AtomicInteger entered = new AtomicInteger();
             Thread[] racing = new Thread[4];
             for (int p = 0; p < racing.length; ++p) {
+                final int producer = p;
                 racing[p] = new Thread(() -> {
                     entered.incrementAndGet();
                     for (int j = 0; j < 1000; ++j) {
-                        if (pool.try_submit(finished::incrementAndGet)) accepted.incrementAndGet();
+                        final int id = producer * 1000 + j;
+                        admitted[id] = pool.try_submit(() -> executions.incrementAndGet(id));
+                        if (admitted[id]) accepted.incrementAndGet();
                         else Thread.yield();
                     }
                 });
@@ -182,8 +187,12 @@ public final class SharedReactorPoolCheck {
             until(() -> entered.get() == 4 && accepted.get() > 0);
             pool.close();
             for (Thread t : racing) t.join();
-            check(accepted.get() == finished.get());
-            check(!pool.try_submit(finished::incrementAndGet));
+            check(pool.completed() == accepted.get());
+            for (int id = 0; id < admitted.length; ++id)
+                check(executions.get(id) == (admitted[id] ? 1 : 0));
+            check(!pool.try_submit(() -> executions.incrementAndGet(4000)));
+            pool.close();
+            check(executions.get(4000) == 0);
             check(io.active.get() == 0);
         }
         System.out.println("shared-reactor host: default-two, single-poller, real Pipe readiness, shared execution, "

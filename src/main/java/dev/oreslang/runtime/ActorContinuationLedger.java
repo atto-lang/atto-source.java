@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.IdentityHashMap;
 import java.util.Objects;
 
 /**
@@ -19,16 +18,29 @@ import java.util.Objects;
  */
 final class ActorContinuationLedger {
     enum Lane { ORDINARY, SOURCE_TASK }
-    private enum State { QUEUED, RUNNING, RETIRED, DISCARDED }
+    private enum State { QUEUED, RUNNING, RELEASING, RELEASE_FAILED, RETIRED, DISCARDED }
 
     record Snapshot(long generation, long lastSequence, int queued, int running) { }
 
     private final int capacity;
-    private final IdentityHashMap<Admission, Boolean> live = new IdentityHashMap<>();
+    // Non-reusable receipt identity and state already protect each transition.
+    private int queued;
+    // Includes physical callbacks, external releases and quarantined failures.
+    private int running;
     private long generation = 1L;
     private long lastSequence;
     private boolean ordinarySealed;
     private boolean allSealed;
+    private boolean releaseFailed;
+    // Root ambiguous releases without reintroducing a per-admission live map.
+    // Each failed receipt retains one of the existing bounded running credits.
+    private Admission failedReleaseHead;
+
+    synchronized boolean hasReleaseFailure() { return releaseFailed; }
+
+    synchronized boolean retirementReady() {
+        return allSealed && !releaseFailed && queued == 0 && running == 0;
+    }
 
     ActorContinuationLedger(int capacity) {
         if (capacity < 1) throw new IllegalArgumentException("ledger capacity must be positive");
@@ -36,19 +48,43 @@ final class ActorContinuationLedger {
     }
 
     synchronized Admission admit(Lane lane, Runnable callback) {
+        return admit(lane, callback, null);
+    }
+
+    /**
+     * Trusted-code image continuation receipt. The passed lease is transferred
+     * to this ledger only on successful admission. A rejected admission leaves
+     * its lease owned by the caller, which must close it in a finally block.
+     * Queued STOP/discard, normal return, and exceptional callback completion
+     * all release the same exact-image lease after physical callback exit.
+     */
+    synchronized Admission admit(Lane lane, Runnable callback,
+            AutoCloseable codeLease) {
         Objects.requireNonNull(lane, "lane");
         Objects.requireNonNull(callback, "callback");
-        if (allSealed || (lane == Lane.ORDINARY && ordinarySealed)) {
+        if (releaseFailed || allSealed || (lane == Lane.ORDINARY && ordinarySealed)) {
             throw new IllegalStateException("actor continuation ledger admission sealed");
         }
-        if (live.size() >= capacity) {
+        if (queued + running >= capacity) {
             throw new IllegalStateException("actor continuation ledger at capacity");
         }
         long sequence = Math.addExact(lastSequence, 1L);
-        Admission receipt = new Admission(lane, generation, sequence, callback);
+        Admission receipt = new Admission(lane, generation, sequence, callback, codeLease);
         lastSequence = sequence;
-        live.put(receipt, Boolean.TRUE);
+        queued++;
         return receipt;
+    }
+
+    /** External host-resource release happens after dropping this ledger monitor. */
+    private static void releaseTerminal(AutoCloseable resource) {
+        if (resource == null) return;
+        try {
+            resource.close();
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalStateException("owned continuation resource release failed", failure);
+        }
     }
 
     /** STOP revokes only ordinary callbacks. Pre-admitted lexical cleanup survives. */
@@ -66,12 +102,6 @@ final class ActorContinuationLedger {
     }
 
     synchronized Snapshot snapshot() {
-        int queued = 0;
-        int running = 0;
-        for (Admission receipt : live.keySet()) {
-            if (receipt.state == State.QUEUED) queued++;
-            if (receipt.state == State.RUNNING) running++;
-        }
         return new Snapshot(generation, lastSequence, queued, running);
     }
 
@@ -88,61 +118,123 @@ final class ActorContinuationLedger {
         // clear its closure at terminal transition to avoid pinning actor
         // state long after the callback's execution lifetime has ended.
         private Runnable callback;
+        // Exact physical code image pinned before publication. Never release
+        // while RUNNING even if a foreign cancellation closes this receipt.
+        private AutoCloseable codeLease;
         private State state = State.QUEUED;
+        private Admission nextFailedRelease;
 
         private Admission(Lane lane, long admittedGeneration, long sequence,
-                Runnable callback) {
+                Runnable callback, AutoCloseable codeLease) {
             this.lane = lane;
             this.admittedGeneration = admittedGeneration;
             this.sequence = sequence;
             this.callback = callback;
+            this.codeLease = codeLease;
         }
 
         long sequence() { return sequence; }
         long generation() { return admittedGeneration; }
         Lane lane() { return lane; }
 
+        // Preserve the existing credit until external release finishes.
+        // An ambiguous close cannot be retried or treated as retirement.
+        private void finishRelease(AutoCloseable resource, State terminal) {
+            try {
+                releaseTerminal(resource);
+            } catch (RuntimeException | Error failure) {
+                synchronized (ActorContinuationLedger.this) {
+                    codeLease = resource;
+                    state = State.RELEASE_FAILED;
+                    releaseFailed = true;
+                    nextFailedRelease = failedReleaseHead;
+                    failedReleaseHead = this;
+                }
+                throw failure;
+            }
+            synchronized (ActorContinuationLedger.this) {
+                state = terminal;
+                running--;
+            }
+        }
+
         @Override
         public void run() {
             final Runnable admittedCallback;
+            final AutoCloseable discardedCodeLease;
             synchronized (ActorContinuationLedger.this) {
                 if (state != State.QUEUED) {
                     throw new IllegalStateException("actor continuation receipt replay: " + sequence);
                 }
                 if (allSealed || (lane == Lane.ORDINARY
-                        && (ordinarySealed || admittedGeneration != generation))) {
+                        && (releaseFailed || ordinarySealed || admittedGeneration != generation))) {
                     callback = null;
-                    state = State.DISCARDED;
-                    live.remove(this);
-                    return;
+                    state = State.RELEASING;
+                    queued--;
+                    running++;
+                    discardedCodeLease = codeLease;
+                    codeLease = null;
+                    admittedCallback = null;
+                } else {
+                    admittedCallback = callback;
+                    // The executing stack is the sole callback owner from now on.
+                    // A foreign close() cannot retire this RUNNING receipt.
+                    callback = null;
+                    state = State.RUNNING;
+                    queued--;
+                    running++;
+                    discardedCodeLease = null;
                 }
-                admittedCallback = callback;
-                // The executing stack is the sole callback owner from now on.
-                // A foreign close() cannot retire this RUNNING receipt.
-                callback = null;
-                state = State.RUNNING;
             }
+            // Never acquire the code-loader monitor while holding the actor
+            // ledger monitor. A STOP-vs-cleanup race must not deadlock.
+            if (admittedCallback == null) {
+                finishRelease(discardedCodeLease, State.DISCARDED);
+                return;
+            }
+            Throwable callbackFailure = null;
             try {
                 admittedCallback.run();
+            } catch (RuntimeException | Error failure) {
+                callbackFailure = failure;
+                throw failure;
             } finally {
+                final AutoCloseable completedCodeLease;
                 synchronized (ActorContinuationLedger.this) {
-                    state = State.RETIRED;
-                    live.remove(this);
+                    state = State.RELEASING;
+                    completedCodeLease = codeLease;
+                    codeLease = null;
+                }
+                // Preserve the exact guest callback failure as primary; a
+                // failed owned-resource drop must remain visible as suppressed
+                // evidence instead of replacing that failure on unwind.
+                try {
+                    finishRelease(completedCodeLease, State.RETIRED);
+                } catch (RuntimeException | Error releaseFailure) {
+                    if (callbackFailure == null) throw releaseFailure;
+                    if (callbackFailure != releaseFailure)
+                        callbackFailure.addSuppressed(releaseFailure);
                 }
             }
         }
 
         @Override
         public void close() {
+            final AutoCloseable discardedCodeLease;
             synchronized (ActorContinuationLedger.this) {
                 if (state == State.QUEUED) {
                     callback = null;
-                    state = State.DISCARDED;
-                    live.remove(this);
+                    state = State.RELEASING;
+                    queued--;
+                    running++;
+                    discardedCodeLease = codeLease;
+                    codeLease = null;
+                } else {
+                    // RUNNING/RELEASING/RELEASE_FAILED retain physical credit.
+                    return;
                 }
-                // A RUNNING receipt is physically in flight and may only be
-                // retired by run()'s finally, never by a foreign cancellation.
             }
+            finishRelease(discardedCodeLease, State.DISCARDED);
         }
     }
 }
