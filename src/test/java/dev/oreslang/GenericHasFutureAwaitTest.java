@@ -419,7 +419,29 @@ final class GenericHasFutureAwaitTest {
                         end
                         fnc read(Child child): int { return await child; }
                         """));
-        assertTrue(error.getMessage().contains("effective HasFuture"), error.getMessage());
+        // Visibility is rejected by the earlier nominal override checker.
+        // Keep the exact member and access violation as the assertion; a
+        // generic parse failure or unrelated ownership error is insufficient.
+        assertTrue(error.getMessage().contains("private method 'Child.get_future'"), error.getMessage());
+        assertTrue(error.getMessage().contains("cannot override inherited public method"), error.getMessage());
+    }
+
+    @Test
+    void affineFutureFieldCannotBeReturnedThroughReadonlyReceiver() {
+        for (String contract : new String[]{"", " implements HasFuture<int>"}) {
+            String source = """
+                    define trait HasFuture<T> as
+                        get_future(): Future<T>;
+                    end
+                    define class Provider%s as
+                        pub val Future<int> pending;
+                        pub get_future(): Future<int> { return self.pending; }
+                    end
+                    """.formatted(contract);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source));
+            assertTrue(failure.getMessage().contains("E_BORROW"), failure.getMessage());
+        }
     }
 
     @Test
