@@ -606,10 +606,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return state.get();
     }
 
+    /**
+     * Pending host waits are legal only outside VM execution. A root/CONTROL
+     * scheduler turn is just as scarce as an actor carrier: parking even one
+     * of its workers can prevent the producer or critical-gate owner from
+     * running. The zero-timeout polling path and already-settled reads never
+     * reach this guard.
+     */
     private static void requireBlockingAllowed() {
-        if (ActorRuntime.inActorExecution()) {
+        if (ActorRuntime.inActorExecution()
+                || OresScheduler.current() != null
+                || OresScheduler.isSchedulerCarrierThread()) {
             throw new IllegalStateException(
-                    "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                    "pending Future wait would park an actor or scheduler/CONTROL carrier; "
+                    + "use a lowered await/suspends continuation instead of get()/join()");
         }
     }
 

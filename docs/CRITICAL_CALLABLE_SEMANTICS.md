@@ -5,6 +5,48 @@ critical gates; LLVM has a native FIFO ticket substrate but **must fail closed**
 on source critical declarations until its actor/compiler lowering exists. Do not
 claim language parity from passing the native substrate tests.
 
+## Recommended use on main/CONTROL and actor carriers
+
+Prefer `critical` to manual lock/unlock for a single protected callable
+scope. **Use `suspend critical` (alias `suspends critical`) whenever the
+callable may contend or await an asynchronous dependency.** Its admission
+queues the *logical continuation*, **not** a scarce ROOT/CONTROL, actor, or
+user-scheduler platform thread. The owner retains its logical gate ticket
+while suspended; it does not retain a host mutex or park a carrier.
+
+- A `critical` callable without `suspends` is for **short, synchronous,
+  non-suspending work**. When already held, a call from a scheduler/actor turn
+  must fail closed rather than physically wait. It must not be silently
+  converted into a Future or consume a carrier waiting for a permit.
+- `suspend critical` enters the scheduler await/resume path even if the gate
+  is currently free. Contenders remain WAITING until the owner releases, and
+  admission publication only queues work: it never runs guest code on the
+  releasing thread or under the gate metadata monitor.
+- Holding a critical ticket across *lowered* `await` is permitted only for
+  a properly checked resumable callable, and does **not** authorize an
+  independent mutable state loan to escape or cross suspension. Awaiting a
+  Future that transitively needs this same exclusive ticket is a deadlock
+  even though no physical thread is blocked: detect/reject logical cycles.
+- Do not implement critical with OS `synchronized`, `Semaphore.acquire`,
+  `Thread.sleep`, Future `get()`/`join()`, or a blocking channel receive
+  on an actor/ROOT/CONTROL carrier. In particular, even *ordinary*
+  `OresScheduler` work must reject pending Future host waits; zero-duration
+  polling and already-settled reads are nonparking.
+- The CONTROL lane must remain available for cancel, STOP, panic, supervisor,
+  wakeup, teardown, and deadlock diagnostics, independent of the ordinary
+  mailbox queue. Never let a user-held critical ticket protect VM coordinator
+  bookkeeping or prevent CONTROL from delivering cancellation and cleanup.
+- During cancellation, do not release the owner's ticket merely because a
+  public Future is cancelled. Permit release must follow physical guest-exit
+  quiescence, and neither metadata-lock callbacks nor private arena revocation
+  may race still-executing critical code.
+
+**Conformance gate:** with three scheduler carriers, run one critical
+lockholder awaiting an unresolved Future, three competing critical callers,
+and a fourth unrelated CONTROL-style task. That task must complete *before*
+the lockholder Future settles. After settlement all three contenders must
+run FIFO, no carrier should park, and the wait graph must be empty.
+
 ## Surface syntax and ownership
 
 ```ores
