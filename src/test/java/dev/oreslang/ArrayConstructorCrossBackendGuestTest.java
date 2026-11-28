@@ -29,6 +29,18 @@ final class ArrayConstructorCrossBackendGuestTest {
         }
     }
     @Test
+    void rejectsSelfDependentAndArbitraryCallBeforeFinalInitialization() {
+        for (String expression : new String[]{"self.a", "make()"}) {
+            String source = "define class Box as pub final mut Array<int> a; "
+                    + "constructor() { self.a = " + expression + "; } end "
+                    + "pub fnc main(): int { return 42; }";
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.parser.Parser.parse(source), expression);
+            assertTrue(failure.getMessage().contains("E_INIT"), failure::getMessage);
+        }
+    }
+
+    @Test
     void rejectsUnverifiedFreshAllocationProfilesBeforeEvaluation() {
         for (String[] row : new String[][]{
                 {"pub final Array<int> a;", "new Array<int>()"},
