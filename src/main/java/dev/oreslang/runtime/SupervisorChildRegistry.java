@@ -52,6 +52,10 @@ public final class SupervisorChildRegistry {
             if (incarnation < 1 || turnGeneration < 1)
                 throw new IllegalArgumentException("invalid STOP generation");
         }
+        // Prevent accidental nonce disclosure through logs or containing
+        // StopReceipt.toString(). Equals/hashCode retain full ticket identity.
+        @Override
+        public String toString() { return "StopReservation(redacted)"; }
     }
 
     /** A single-use host-side claim; the UUID is not a guest capability. */
@@ -63,6 +67,8 @@ public final class SupervisorChildRegistry {
             Objects.requireNonNull(nonce);
             if (incarnation <= 0) throw new IllegalArgumentException("invalid incarnation");
         }
+        @Override
+        public String toString() { return "RestartReservation(redacted)"; }
     }
     public record Snapshot(
             ChildId child,
@@ -86,7 +92,16 @@ public final class SupervisorChildRegistry {
      */
     record Transition(long sequence, String operation, Snapshot state,
                              UUID restartPermit, long stopTurn,
-                             ActorRuntime.ActorId replacement, UUID stopPermit) {}
+                             ActorRuntime.ActorId replacement, UUID stopPermit) {
+        // Full permit UUIDs remain available to the trusted audit machinery,
+        // but never appear in the implicit diagnostic form.
+        @Override
+        public String toString() {
+            return "Transition(sequence=" + sequence + ", operation=" + operation
+                    + ", state=" + state + ", stopTurn=" + stopTurn
+                    + ", replacement=" + replacement + ", permits=redacted)";
+        }
+    }
     private static final int MAX_TRANSITIONS = 100_000;
     private final List<Transition> transitions = new ArrayList<>();
     private boolean traceComplete = true;
@@ -357,8 +372,30 @@ public final class SupervisorChildRegistry {
             java.util.function.BooleanSupplier physicallyDone) {
         Objects.requireNonNull(candidate);
         Objects.requireNonNull(physicallyDone);
+        // Never run an external scheduler callback on behalf of a stale,
+        // foreign, or wrong-incarnation claim. Probe outside the monitor only
+        // after validating the exact reservation and staged candidate.
+        synchronized (this) {
+            checkReservation(permit);
+            ReplacementState current = replacements.get(permit.child().logicalId());
+            // The never-staged case intentionally has no registry-side ActorId
+            // binding yet. Its caller must already own the exact physical
+            // candidate under the reservation; ActorRuntime enforces that via
+            // pendingRestartPermits/pendingRestartCandidates under authorityLock.
+            if (current != null) {
+                if (!current.actor().equals(candidate)
+                        || current.generation() != permit.incarnation() + 1)
+                    throw new IllegalStateException("foreign or stale cleanup candidate");
+                if (current.phase() == ReplacementPhase.CLEANED) return;
+                if (current.phase() != ReplacementPhase.SPAWNED
+                        && current.phase() != ReplacementPhase.ADMITTED)
+                    throw new IllegalStateException("invalid replacement cleanup state");
+            }
+        }
         if (!physicallyDone.getAsBoolean())
             throw new IllegalStateException("restart candidate has not physically terminated");
+        // A concurrent abort/close or publication must not validate a probe
+        // made for the previous reservation. Recheck after callback return.
         synchronized (this) {
             checkReservation(permit);
             ReplacementState current = replacements.get(permit.child().logicalId());

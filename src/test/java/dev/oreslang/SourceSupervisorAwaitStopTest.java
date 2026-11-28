@@ -382,6 +382,104 @@ final class SourceSupervisorAwaitStopTest {
     }
 
     @Test
+    void twoIndependentSupervisorGroupsFenceForeignStopReconciliation() throws Exception {
+        var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var left = runtime.createActorGroup();
+            var right = runtime.createActorGroup();
+            var leftAck = new CompletableFuture<Void>();
+            var rightAck = new CompletableFuture<Void>();
+            var leftCalled = new CountDownLatch(1);
+            var rightCalled = new CountDownLatch(1);
+            var leftDecision = new AtomicReference<SupervisorProcess.Resolution>();
+            var rightDecision = new AtomicReference<SupervisorProcess.Resolution>();
+            var leftCalls = new AtomicInteger();
+            var rightCalls = new AtomicInteger();
+            var leftProcess = compiled.installAwaitingStop(left, 2, resolution -> {
+                leftCalls.incrementAndGet();
+                leftDecision.set(resolution);
+                leftCalled.countDown();
+                return leftAck;
+            });
+            var rightProcess = compiled.installAwaitingStop(right, 2, resolution -> {
+                rightCalls.incrementAndGet();
+                rightDecision.set(resolution);
+                rightCalled.countDown();
+                return rightAck;
+            });
+            try {
+                var leftActor = left.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+                        IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                            throw new IllegalStateException("left-supervisor-failure");
+                        });
+                var rightActor = right.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+                        IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                            throw new IllegalStateException("right-supervisor-failure");
+                        });
+                leftActor.getReady().get(5, TimeUnit.SECONDS);
+                rightActor.getReady().get(5, TimeUnit.SECONDS);
+                leftActor.send("panic");
+                rightActor.send("panic");
+                assertTrue(leftCalled.await(10, TimeUnit.SECONDS));
+                assertTrue(rightCalled.await(10, TimeUnit.SECONDS));
+                assertTrue(leftActor.done().isDone(),
+                        "left CONTROL ran before child physically finalized");
+                assertTrue(rightActor.done().isDone(),
+                        "right CONTROL ran before child physically finalized");
+                var leftPermit = left.reservedStopFor(leftDecision.get());
+                var rightPermit = right.reservedStopFor(rightDecision.get());
+                assertNotEquals(leftPermit.child().groupId(), rightPermit.child().groupId());
+                var verifierCalls = new AtomicInteger();
+                assertThrows(SecurityException.class, () ->
+                        left.reconcileConfirmedStop(rightPermit, () -> {
+                            verifierCalls.incrementAndGet();
+                            return true;
+                        }), "foreign group's STOP ticket bypassed authority");
+                assertThrows(SecurityException.class, () ->
+                        right.reconcileConfirmedStop(leftPermit, () -> {
+                            verifierCalls.incrementAndGet();
+                            return true;
+                        }), "reverse foreign STOP ticket bypassed authority");
+                assertEquals(0, verifierCalls.get(),
+                        "foreign ticket invoked trusted physical STOP verification");
+                assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                        left.childSnapshot(leftPermit.child()).phase());
+                assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                        right.childSnapshot(rightPermit.child()).phase());
+                assertEquals(0, leftProcess.resolved());
+                assertEquals(0, rightProcess.resolved());
+
+                leftAck.complete(null);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (leftProcess.resolved() == 0 && System.nanoTime() < deadline)
+                    Thread.sleep(1);
+                assertEquals(1, leftProcess.resolved());
+                assertEquals(0, rightProcess.resolved(),
+                        "acknowledgment of one group released another CONTROL lease");
+                assertEquals(SupervisorChildRegistry.Phase.STOPPED,
+                        left.childSnapshot(leftPermit.child()).phase());
+                assertEquals(SupervisorChildRegistry.Phase.STOPPING,
+                        right.childSnapshot(rightPermit.child()).phase());
+                rightAck.completeExceptionally(new IllegalStateException("unknown right STOP"));
+                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (rightProcess.failure().isEmpty() && System.nanoTime() < deadline)
+                    Thread.sleep(1);
+                assertTrue(rightProcess.failure().isPresent());
+                assertEquals(0, rightProcess.resolved());
+                assertEquals(SupervisorChildRegistry.StopReceiptStatus.UNCERTAIN,
+                        right.stopReceipt(rightPermit.child()).status());
+                assertEquals(1, leftCalls.get());
+                assertEquals(1, rightCalls.get());
+            } finally {
+                leftProcess.close();
+                rightProcess.close();
+                left.close();
+                right.close();
+            }
+        }
+    }
+
+    @Test
     void forgedReconciliationDoesNotInvokeHostVerifier() throws Exception {
         var compiled = OresCompiler.compileStopOnlySupervisor(SOURCE);
         try (ActorRuntime runtime = new ActorRuntime()) {
