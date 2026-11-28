@@ -75,13 +75,13 @@ then a final drain. Each emitted payload folds into
 required result is:
 
 ```
-fired=11085 cancelled=793 full=0 polls=4074 checksum=bcb6942ca7275487
+fired=11085 cancelled=793 full=0 polls=4074 checksum=cdc3f321e0578fc5
 ```
 
 A backend whose wheel diverges in firing time, order, bounded draining or
 cancellation produces a different checksum.
 
-## Verified (2026-11-28)
+## Initial revision verification (2026-11-28; historical)
 
 - Java: `OresTimerWheelTest` 12/12 (includes 200k-op differential vs a sorted
   model, 1M timers, steady-state zero-allocation check); `OresTimersTest` 35/35
@@ -89,3 +89,7 @@ cancellation produces a different checksum.
 - Native: the test passes on macOS arm64 (plain, ASan+UBSan, TSan) and Linux
   aarch64 Ubuntu 24.04 (plain, ASan+UBSan, TSan with ASLR disabled), and the
   vector matches.
+
+### Cascade-order correction
+
+A delayed poll traverses occupied expiry ticks before moving records to DUE. The prior Java and C wheels could agree on a checksum while emitting a later tick before an earlier tick in the same higher-level bucket. The regression covers expiry ticks 64, 65 and 127, overflow, bounded drain, queued cancellation and same-tick FIFO. The revised shared checksum matches LLVM #1138; exact-head execution is required to certify the correction.

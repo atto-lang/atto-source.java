@@ -67,6 +67,30 @@ final class OresTimerWheelTest {
     }
 
     @Test
+    void delayedPollPreservesExpiryTickOrderThroughCascadeAndOverflow() {
+        for (long base : new long[]{0, 1L << 36}) {
+            OresTimerWheel<Object> w = new OresTimerWheel<>(8, 8, 1, 0);
+            Sink s = new Sink();
+            assertNotEquals(0, w.arm(base + 127, 127));
+            assertNotEquals(0, w.arm(base + 64, 64));
+            assertNotEquals(0, w.arm(base + 65, 65));
+            long cancelled = w.arm(base + 65, 66);
+            assertNotEquals(0, cancelled);
+            assertEquals(List.of(), poll(w, base + 63, 8, s));
+            assertEquals(List.of(64), poll(w, base + 127, 1, s));
+            assertTrue(w.cancel(cancelled));
+            assertEquals(List.of(65, 127), poll(w, base + 127, 8, s));
+            assertEquals(0, w.size());
+        }
+        // A late poll within one expiry tick still preserves insertion FIFO.
+        OresTimerWheel<Object> w = new OresTimerWheel<>(8, 8, 10, 0);
+        Sink s = new Sink();
+        w.arm(649, 2);
+        w.arm(641, 1);
+        assertEquals(List.of(2, 1), poll(w, 649, 8, s));
+    }
+
+    @Test
     void longIdleJumpVisitsOnlyOccupiedSlots() {
         OresTimerWheel<Object> w = new OresTimerWheel<>(8, 8, MS, 0);
         Sink s = new Sink();
@@ -249,7 +273,7 @@ final class OresTimerWheelTest {
 
     static final class TimerConformanceVector {
         static final String EXPECTED =
-                "fired=11085 cancelled=793 full=0 polls=4074 checksum=bcb6942ca7275487";
+                "fired=11085 cancelled=793 full=0 polls=4074 checksum=cdc3f321e0578fc5";
 
         static String run() {
             OresTimerWheel<Object> w = new OresTimerWheel<>(4096, 4096, MS, 0);
